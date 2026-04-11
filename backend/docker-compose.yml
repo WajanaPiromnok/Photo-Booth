@@ -1,0 +1,60 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-photo_booth}
+      POSTGRES_USER: ${POSTGRES_USER:-photo_booth}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-photo_booth}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-photo_booth} -d ${POSTGRES_DB:-photo_booth}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: ./api
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PORT: 8080
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost}
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-photo_booth}
+      POSTGRES_USER: ${POSTGRES_USER:-photo_booth}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-photo_booth}
+      DEVICE_BEARER_TOKEN: ${DEVICE_BEARER_TOKEN:-}
+      DEVICE_ID_PREFIX: ${DEVICE_ID_PREFIX:-}
+      CORS_ORIGIN: ${CORS_ORIGIN:-*}
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-26214400}
+      UPLOADS_ROOT: /var/photo-booth/uploads
+    volumes:
+      - uploads_data:/var/photo-booth/uploads
+
+  caddy:
+    image: caddy:2.9-alpine
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      PUBLIC_HOSTNAME: ${PUBLIC_HOSTNAME:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  postgres_data:
+  uploads_data:
+  caddy_data:
+  caddy_config:

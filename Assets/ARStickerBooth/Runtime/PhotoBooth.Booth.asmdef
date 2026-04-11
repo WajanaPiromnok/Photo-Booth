@@ -1,0 +1,21 @@
+{
+  "name": "PhotoBooth.Booth",
+  "rootNamespace": "PhotoBooth.Booth",
+  "references": [
+    "Unity.Services.Core",
+    "Unity.Services.Core.Environments",
+    "Unity.Services.Authentication",
+    "Unity.Services.Analytics",
+    "Unity.Services.RemoteConfig",
+    "Unity.Services.CloudSave"
+  ],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}

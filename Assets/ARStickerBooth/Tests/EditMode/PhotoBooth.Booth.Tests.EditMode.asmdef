@@ -1,0 +1,23 @@
+{
+  "name": "PhotoBooth.Booth.Tests.EditMode",
+  "rootNamespace": "PhotoBooth.Booth.Tests.EditMode",
+  "references": [
+    "PhotoBooth.Booth"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": false,
+  "defineConstraints": [
+    "UNITY_INCLUDE_TESTS"
+  ],
+  "versionDefines": [],
+  "noEngineReferences": false,
+  "optionalUnityReferences": [
+    "TestAssemblies"
+  ]
+}

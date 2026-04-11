@@ -1,0 +1,18 @@
+{
+  "name": "PhotoBooth.Booth.Editor",
+  "rootNamespace": "PhotoBooth.Booth.Editor",
+  "references": [
+    "PhotoBooth.Booth"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}

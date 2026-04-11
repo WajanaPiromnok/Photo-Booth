@@ -39,3 +39,9 @@ sysinfo.txt
 
 # macOS
 .DS_Store
+
+# Backend / Node
+backend/.env
+backend/api/node_modules/
+backend/api/uploads/
+backend/.orbstack/

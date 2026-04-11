@@ -1,0 +1,12 @@
+{$PUBLIC_HOSTNAME} {
+    encode gzip zstd
+
+    @health path /healthz
+    handle @health {
+        reverse_proxy api:8080
+    }
+
+    handle {
+        reverse_proxy api:8080
+    }
+}
