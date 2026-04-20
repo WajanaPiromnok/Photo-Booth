@@ -119,6 +119,61 @@ namespace PhotoBooth.Booth.Services
             return Save(job, saved => telemetry?.OnPrintCompleted(saved));
         }
 
+        public BoothJob BeginSidecarPrint(string jobId, string printerName = null)
+        {
+            var job = repository.Get(jobId);
+            job.PrintStatus = BoothPrintStatus.Printing;
+            job.PrintAttempts += 1;
+            job.LastPrintError = null;
+            if (!string.IsNullOrWhiteSpace(printerName))
+            {
+                job.PrinterName = printerName;
+            }
+
+            Touch(job);
+            return repository.Save(job);
+        }
+
+        public BoothJob MarkPrintedWithoutStatusChange(string jobId, string printerName = null)
+        {
+            var job = repository.Get(jobId);
+            job.PrintStatus = BoothPrintStatus.Printed;
+            job.LastPrintError = null;
+            if (!string.IsNullOrWhiteSpace(printerName))
+            {
+                job.PrinterName = printerName;
+            }
+
+            return SaveWithTouch(job, saved => telemetry?.OnPrintCompleted(saved));
+        }
+
+        public BoothJob MarkPrintRetryWaitWithoutStatusChange(string jobId, string reason, string printerName = null)
+        {
+            var job = repository.Get(jobId);
+            job.PrintStatus = BoothPrintStatus.RetryWait;
+            job.LastPrintError = reason;
+            job.RetryCount += 1;
+            if (!string.IsNullOrWhiteSpace(printerName))
+            {
+                job.PrinterName = printerName;
+            }
+
+            return SaveWithTouch(job);
+        }
+
+        public BoothJob MarkPrintFailedWithoutStatusChange(string jobId, string reason, string printerName = null)
+        {
+            var job = repository.Get(jobId);
+            job.PrintStatus = BoothPrintStatus.FailedHard;
+            job.LastPrintError = reason;
+            if (!string.IsNullOrWhiteSpace(printerName))
+            {
+                job.PrinterName = printerName;
+            }
+
+            return SaveWithTouch(job);
+        }
+
         public BoothJob QueueUpload(string jobId)
         {
             var job = repository.Get(jobId);
@@ -185,6 +240,17 @@ namespace PhotoBooth.Booth.Services
             var saved = repository.Save(job);
             afterSave?.Invoke(saved);
             return saved;
+        }
+
+        private BoothJob SaveWithTouch(BoothJob job, Action<BoothJob> afterSave = null)
+        {
+            Touch(job);
+            return Save(job, afterSave);
+        }
+
+        private static void Touch(BoothJob job)
+        {
+            job.UpdatedAtUtc = DateTime.UtcNow.ToString("O");
         }
     }
 }

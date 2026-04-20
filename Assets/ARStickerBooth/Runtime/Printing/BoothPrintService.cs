@@ -30,7 +30,14 @@ namespace PhotoBooth.Booth.Printing
                 return job;
             }
 
-            if (job.Status != BoothJobStatus.Composed && job.Status != BoothJobStatus.Printing)
+            var preserveLifecycleStatus = job.Status == BoothJobStatus.UploadPending
+                || job.Status == BoothJobStatus.Uploading
+                || job.Status == BoothJobStatus.Uploaded
+                || job.Status == BoothJobStatus.LinkReady;
+
+            if (job.Status != BoothJobStatus.Composed
+                && job.Status != BoothJobStatus.Printing
+                && !preserveLifecycleStatus)
             {
                 throw new InvalidOperationException($"Job {jobId} is not ready to print from state {job.Status}.");
             }
@@ -43,6 +50,10 @@ namespace PhotoBooth.Booth.Printing
             if (job.Status == BoothJobStatus.Composed)
             {
                 job = sessionService.BeginPrinting(jobId);
+            }
+            else if (preserveLifecycleStatus && job.PrintStatus != BoothPrintStatus.Printing)
+            {
+                job = sessionService.BeginSidecarPrint(jobId, printerName);
             }
 
             var request = new PrintJobRequest
@@ -57,15 +68,21 @@ namespace PhotoBooth.Booth.Printing
             var result = await printHelperClient.PrintAsync(request, cancellationToken);
             if (result.Success)
             {
-                return sessionService.MarkPrinted(jobId, result.PrinterName);
+                return preserveLifecycleStatus
+                    ? sessionService.MarkPrintedWithoutStatusChange(jobId, result.PrinterName)
+                    : sessionService.MarkPrinted(jobId, result.PrinterName);
             }
 
             if (result.Retryable)
             {
-                return sessionService.MarkPrintRetryWait(jobId, result.Message, result.PrinterName);
+                return preserveLifecycleStatus
+                    ? sessionService.MarkPrintRetryWaitWithoutStatusChange(jobId, result.Message, result.PrinterName)
+                    : sessionService.MarkPrintRetryWait(jobId, result.Message, result.PrinterName);
             }
 
-            return sessionService.Fail(jobId, result.Message);
+            return preserveLifecycleStatus
+                ? sessionService.MarkPrintFailedWithoutStatusChange(jobId, result.Message, result.PrinterName)
+                : sessionService.Fail(jobId, result.Message);
         }
     }
 }

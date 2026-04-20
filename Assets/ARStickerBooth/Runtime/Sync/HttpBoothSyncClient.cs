@@ -97,22 +97,20 @@ namespace PhotoBooth.Booth.Sync
                 request.JobId);
 
             var composedBytes = File.ReadAllBytes(request.ComposedImagePath);
-            var sections = new List<IMultipartFormSection>
-            {
-                new MultipartFormDataSection("job_id", request.JobId ?? string.Empty),
-                new MultipartFormDataSection("device_id", ResolveDeviceId(request.DeviceId)),
-                new MultipartFormDataSection("theme_id", request.ThemeId ?? string.Empty),
-                new MultipartFormDataSection("currency", request.CurrencyCode ?? string.Empty),
-                new MultipartFormDataSection("amount_minor_units", request.AmountMinorUnits.ToString()),
-                new MultipartFormDataSection("payment_reference", request.PaymentReference ?? string.Empty),
-                new MultipartFormDataSection("composed_checksum", BoothChecksumUtility.ComputeSha256Tag(request.ComposedImagePath)),
-                new MultipartFormFileSection("composed_file", composedBytes, Path.GetFileName(request.ComposedImagePath), ResolveContentType(request.ComposedImagePath))
-            };
+            var sections = new List<IMultipartFormSection>();
+            AddMultipartField(sections, "job_id", request.JobId, true);
+            AddMultipartField(sections, "device_id", ResolveDeviceId(request.DeviceId), true);
+            AddMultipartField(sections, "theme_id", request.ThemeId, false);
+            AddMultipartField(sections, "currency", request.CurrencyCode, false);
+            AddMultipartField(sections, "amount_minor_units", request.AmountMinorUnits.ToString(), true);
+            AddMultipartField(sections, "payment_reference", request.PaymentReference, false);
+            AddMultipartField(sections, "composed_checksum", BoothChecksumUtility.ComputeSha256Tag(request.ComposedImagePath), true);
+            sections.Add(new MultipartFormFileSection("composed_file", composedBytes, Path.GetFileName(request.ComposedImagePath), ResolveContentType(request.ComposedImagePath)));
 
             if (config.UploadThumbnail && !string.IsNullOrWhiteSpace(request.ThumbnailPath) && File.Exists(request.ThumbnailPath))
             {
                 var thumbnailChecksum = BoothChecksumUtility.ComputeSha256Tag(request.ThumbnailPath);
-                sections.Add(new MultipartFormDataSection("thumbnail_checksum", thumbnailChecksum));
+                AddMultipartField(sections, "thumbnail_checksum", thumbnailChecksum, true);
                 sections.Add(new MultipartFormFileSection("thumbnail_file", File.ReadAllBytes(request.ThumbnailPath), Path.GetFileName(request.ThumbnailPath), ResolveContentType(request.ThumbnailPath)));
             }
 
@@ -475,6 +473,22 @@ namespace PhotoBooth.Booth.Sync
                 ".webp" => "image/webp",
                 _ => "application/octet-stream"
             };
+        }
+
+        private static void AddMultipartField(List<IMultipartFormSection> sections, string fieldName, string value, bool required)
+        {
+            var normalized = string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+            if (string.IsNullOrWhiteSpace(normalized))
+            {
+                if (required)
+                {
+                    throw new ArgumentException($"Multipart field '{fieldName}' is required.");
+                }
+
+                return;
+            }
+
+            sections.Add(new MultipartFormDataSection(fieldName, Encoding.UTF8.GetBytes(normalized), "text/plain; charset=utf-8"));
         }
     }
 }

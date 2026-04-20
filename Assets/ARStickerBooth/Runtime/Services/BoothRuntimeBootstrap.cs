@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Threading.Tasks;
 using PhotoBooth.Booth.Content;
 using PhotoBooth.Booth.Persistence;
@@ -43,6 +44,11 @@ namespace PhotoBooth.Booth.Services
         [SerializeField] private bool autoDownloadContentUpdate = false;
         [SerializeField] private bool autoLoadInstalledContentOnStart = true;
         [SerializeField] private string defaultPrinterName = "Photo Booth Printer";
+        [SerializeField] private string demoThemeId = "demo_theme";
+        [SerializeField] private long demoAmountMinorUnits = 12000;
+        [SerializeField] private int demoRawCaptureCount = 1;
+        [SerializeField] private Vector2Int demoComposedImageSize = new(1280, 720);
+        [SerializeField] private Vector2Int demoThumbnailSize = new(320, 180);
         [SerializeField] private string backendDeviceId = "booth-a01";
         [SerializeField] private string backendDeviceToken = string.Empty;
         [SerializeField] private string backendBoothApiBaseUrl = string.Empty;
@@ -69,6 +75,8 @@ namespace PhotoBooth.Booth.Services
         public BoothPrintService PrintService { get; private set; }
         public BoothSyncService SyncService { get; private set; }
         public Task InitializationTask { get; private set; }
+
+        private string lastDemoJobId;
 
         private void Awake()
         {
@@ -178,14 +186,18 @@ namespace PhotoBooth.Booth.Services
 
         public async void PrintJobFromUi(string jobId)
         {
-            if (string.IsNullOrWhiteSpace(jobId) || PrintService == null)
+            await EnsureRuntimeReadyForUiAsync();
+
+            var resolvedJobId = ResolveUiJobId(jobId);
+            if (string.IsNullOrWhiteSpace(resolvedJobId) || PrintService == null)
             {
+                onPrintStatusMessageChanged.Invoke("No demo job is ready for printing.");
                 return;
             }
 
             try
             {
-                var job = await PrintService.PrintAsync(jobId, defaultPrinterName);
+                var job = await PrintService.PrintAsync(resolvedJobId, defaultPrinterName);
                 onPrintStatusMessageChanged.Invoke($"Print status: {job.PrintStatus}");
             }
             catch (Exception exception)
@@ -197,20 +209,42 @@ namespace PhotoBooth.Booth.Services
 
         public async void SyncJobFromUi(string jobId)
         {
-            if (string.IsNullOrWhiteSpace(jobId) || SyncService == null)
+            await EnsureRuntimeReadyForUiAsync();
+
+            var resolvedJobId = ResolveUiJobId(jobId);
+            if (string.IsNullOrWhiteSpace(resolvedJobId) || SyncService == null)
             {
+                onSyncStatusMessageChanged.Invoke("No demo job is ready for sync.");
                 return;
             }
 
             try
             {
-                var job = await SyncService.SyncAsync(jobId);
+                var job = await SyncService.SyncAsync(resolvedJobId);
                 onSyncStatusMessageChanged.Invoke($"Sync status: {job.UploadStatus}");
             }
             catch (Exception exception)
             {
                 Debug.LogError($"Sync flow failed: {exception}");
                 onSyncStatusMessageChanged.Invoke($"Sync failed: {exception.Message}");
+            }
+        }
+
+        public async void CreateDemoJobFromUi()
+        {
+            try
+            {
+                await EnsureRuntimeReadyForUiAsync();
+                var job = CreateDemoJob();
+                lastDemoJobId = job.JobId;
+                onSyncStatusMessageChanged.Invoke($"Demo job ready: {job.JobId}");
+                onPrintStatusMessageChanged.Invoke($"Demo job ready: {job.JobId}");
+                onContentStatusMessageChanged.Invoke($"Demo job created: {job.JobId}");
+            }
+            catch (Exception exception)
+            {
+                Debug.LogError($"Demo job creation failed: {exception}");
+                onSyncStatusMessageChanged.Invoke($"Demo job creation failed: {exception.Message}");
             }
         }
 
@@ -316,6 +350,21 @@ namespace PhotoBooth.Booth.Services
             AnalyticsService.MarkReady(startAnalyticsDataCollection);
         }
 
+        private async Task EnsureRuntimeReadyForUiAsync()
+        {
+            if (SessionService != null)
+            {
+                return;
+            }
+
+            if (InitializationTask == null)
+            {
+                InitializationTask = InitializeAsync();
+            }
+
+            await InitializationTask;
+        }
+
         private async Task RefreshContentAsync(bool autoDownload)
         {
             var snapshot = await ContentManagementService.RefreshRemoteManifestAsync();
@@ -375,6 +424,68 @@ namespace PhotoBooth.Booth.Services
             }
 
             return new ScaffoldBoothSyncClient(config);
+        }
+
+        private PhotoBooth.Booth.Domain.BoothJob CreateDemoJob()
+        {
+            if (SessionService == null)
+            {
+                throw new InvalidOperationException("Session service is not initialized.");
+            }
+
+            var job = SessionService.CreateJob(Math.Max(0, demoAmountMinorUnits), "THB");
+            job = SessionService.SelectTheme(job.JobId, string.IsNullOrWhiteSpace(demoThemeId) ? "demo_theme" : demoThemeId.Trim());
+            job = SessionService.BypassPayment(job.JobId);
+            job = SessionService.BeginCapture(job.JobId);
+            job = SessionService.MarkCaptured(job.JobId, Math.Max(1, demoRawCaptureCount));
+            job = SessionService.BeginComposing(job.JobId);
+
+            var composedPath = Path.Combine(job.Paths.ComposedDirectory, "demo-composed.png");
+            var thumbnailPath = Path.Combine(job.Paths.ThumbsDirectory, "demo-thumb.png");
+            WriteDemoImage(composedPath, demoComposedImageSize.x, demoComposedImageSize.y, new Color(0.98f, 0.64f, 0.35f), new Color(0.19f, 0.44f, 0.92f));
+            WriteDemoImage(thumbnailPath, demoThumbnailSize.x, demoThumbnailSize.y, new Color(0.22f, 0.18f, 0.16f), new Color(0.88f, 0.84f, 0.72f));
+
+            job = SessionService.MarkComposed(job.JobId, composedPath, thumbnailPath);
+            return job;
+        }
+
+        private string ResolveUiJobId(string jobId)
+        {
+            if (!string.IsNullOrWhiteSpace(jobId))
+            {
+                return jobId.Trim();
+            }
+
+            return lastDemoJobId;
+        }
+
+        private static void WriteDemoImage(string absolutePath, int width, int height, Color topColor, Color bottomColor)
+        {
+            width = Math.Max(16, width);
+            height = Math.Max(16, height);
+
+            var texture = new Texture2D(width, height, TextureFormat.RGBA32, false);
+            try
+            {
+                var pixels = new Color[width * height];
+                for (var y = 0; y < height; y++)
+                {
+                    var t = height <= 1 ? 0f : y / (float)(height - 1);
+                    var rowColor = Color.Lerp(bottomColor, topColor, t);
+                    for (var x = 0; x < width; x++)
+                    {
+                        pixels[(y * width) + x] = rowColor;
+                    }
+                }
+
+                texture.SetPixels(pixels);
+                texture.Apply(false, false);
+                File.WriteAllBytes(absolutePath, texture.EncodeToPNG());
+            }
+            finally
+            {
+                UnityEngine.Object.Destroy(texture);
+            }
         }
 
         private ILocalRepository CreateRepository()
