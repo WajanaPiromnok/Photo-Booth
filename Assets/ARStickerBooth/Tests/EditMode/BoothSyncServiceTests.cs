@@ -39,7 +39,11 @@ namespace PhotoBooth.Booth.Tests.EditMode
             job = sessions.SelectTheme(job.JobId, "theme-a");
             job = sessions.BypassPayment(job.JobId);
             job = sessions.BeginCapture(job.JobId);
-            job = sessions.MarkCaptured(job.JobId, 1);
+            var motionFramePath = Path.Combine(job.Paths.RawDirectory, "motion_000.png");
+            File.WriteAllText(motionFramePath, "fake-motion-frame");
+            var motionVideoPath = Path.Combine(job.Paths.RawDirectory, "motion.mp4");
+            File.WriteAllText(motionVideoPath, "fake-motion-video");
+            job = sessions.MarkCaptured(job.JobId, 1, motionFramePath, new[] { motionFramePath }, motionVideoPath);
             job = sessions.BeginComposing(job.JobId);
 
             var composedPath = Path.Combine(job.Paths.ComposedDirectory, "final.png");
@@ -56,6 +60,9 @@ namespace PhotoBooth.Booth.Tests.EditMode
             Assert.That(syncedJob.Status, Is.EqualTo(PhotoBooth.Booth.Domain.BoothJobStatus.LinkReady));
             Assert.That(syncedJob.UploadStatus, Is.EqualTo(PhotoBooth.Booth.Domain.BoothUploadStatus.LinkReady));
             Assert.That(syncedJob.DownloadUrl, Is.EqualTo("https://example.invalid/d/" + job.JobId));
+            Assert.That(syncedJob.MotionClipUrl, Is.EqualTo("https://example.invalid/d/" + job.JobId + "/clip.mp4"));
+            Assert.That(syncedJob.MotionVideoUrl, Is.EqualTo("https://example.invalid/d/" + job.JobId + "/clip.mp4"));
+            Assert.That(syncedJob.MotionVideoPath, Is.EqualTo(motionVideoPath));
             Assert.That(syncedJob.UploadAttempts, Is.EqualTo(1));
         }
 
@@ -78,7 +85,12 @@ namespace PhotoBooth.Booth.Tests.EditMode
                     Retryable = retryable,
                     Message = success ? "Uploaded" : "Network timeout",
                     RemoteAssetKey = $"assets/{request.JobId}",
-                    DownloadUrl = $"https://example.invalid/d/{request.JobId}"
+                    DownloadUrl = $"https://example.invalid/d/{request.JobId}",
+                    MotionClipUrl = !string.IsNullOrWhiteSpace(request.MotionVideoPath) && File.Exists(request.MotionVideoPath)
+                        ? $"https://example.invalid/d/{request.JobId}/clip.mp4"
+                        : request.MotionClipFramePaths == null || request.MotionClipFramePaths.Length == 0
+                            ? null
+                            : $"https://example.invalid/d/{request.JobId}/clip"
                 });
             }
         }

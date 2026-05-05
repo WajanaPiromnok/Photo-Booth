@@ -5,6 +5,7 @@ const express = require("express");
 const multer = require("multer");
 const helmet = require("helmet");
 const cors = require("cors");
+const QRCode = require("qrcode");
 const { Pool } = require("pg");
 require("dotenv").config();
 
@@ -61,7 +62,9 @@ app.get("/healthz", async (req, res) => {
 
 app.post("/v1/jobs/:jobId/assets/upload", requireDeviceAuth, upload.fields([
   { name: "composed_file", maxCount: 1 },
-  { name: "thumbnail_file", maxCount: 1 }
+  { name: "thumbnail_file", maxCount: 1 },
+  { name: "motion_video_file", maxCount: 1 },
+  { name: "motion_frame_files", maxCount: 48 }
 ]), async (req, res) => {
   const jobId = normalizeJobId(req.params.jobId);
   if (!jobId) {
@@ -89,6 +92,16 @@ app.post("/v1/jobs/:jobId/assets/upload", requireDeviceAuth, upload.fields([
     const thumbnailFile = req.files?.thumbnail_file?.[0];
     if (thumbnailFile) {
       assets.push(writeUploadFile(jobId, "thumbnail", thumbnailFile));
+    }
+
+    const motionVideoFile = req.files?.motion_video_file?.[0];
+    if (motionVideoFile) {
+      assets.push(writeUploadFile(jobId, "motion_video", motionVideoFile));
+    }
+
+    const motionFrameFiles = req.files?.motion_frame_files || [];
+    for (const motionFrameFile of motionFrameFiles) {
+      assets.push(writeUploadFile(jobId, "motion_frame", motionFrameFile));
     }
 
     await ensureJob(client, {
@@ -185,6 +198,14 @@ app.post("/v1/jobs/:jobId/assets", requireDeviceAuth, async (req, res) => {
 
     await client.query("COMMIT");
 
+    const motionFrameResult = await pool.query(
+      `SELECT COUNT(1)::int AS motion_frame_count
+       FROM booth_assets
+       WHERE job_id = $1 AND asset_type = 'motion_frame'`,
+      [jobId]
+    );
+    const motionFrameCount = Number(motionFrameResult.rows[0]?.motion_frame_count || 0);
+
     return res.json({
       success: true,
       data: {
@@ -240,6 +261,27 @@ app.post("/v1/jobs/:jobId/publish", requireDeviceAuth, async (req, res) => {
 
     const asset = assetResult.rows[0];
     const downloadUrl = `${config.publicBaseUrl}/d/${encodeURIComponent(jobId)}`;
+    const motionVideoResult = await client.query(
+      `SELECT remote_key
+       FROM booth_assets
+       WHERE job_id = $1 AND asset_type = 'motion_video'
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [jobId]
+    );
+    const motionFrameResult = await client.query(
+      `SELECT COUNT(1)::int AS motion_frame_count
+       FROM booth_assets
+       WHERE job_id = $1 AND asset_type = 'motion_frame'`,
+      [jobId]
+    );
+    const hasMotionVideo = motionVideoResult.rowCount > 0;
+    const motionFrameCount = Number(motionFrameResult.rows[0]?.motion_frame_count || 0);
+    const motionClipUrl = hasMotionVideo
+      ? `${downloadUrl}/clip.mp4`
+      : motionFrameCount > 0
+        ? `${downloadUrl}/clip`
+        : null;
 
     await client.query(
       `UPDATE booth_jobs
@@ -261,6 +303,9 @@ app.post("/v1/jobs/:jobId/publish", requireDeviceAuth, async (req, res) => {
         job_id: jobId,
         upload_status: "LINK_READY",
         download_url: downloadUrl,
+        motion_clip_url: motionClipUrl,
+        motion_video_url: hasMotionVideo ? `${downloadUrl}/clip.mp4` : null,
+        motion_frame_count: motionFrameCount,
         remote_asset_key: asset.remote_key
       },
       error: null
@@ -317,6 +362,193 @@ app.get("/v1/jobs/:jobId", async (req, res) => {
   }
 });
 
+app.post("/v1/analytics/events", requireDeviceAuth, async (req, res) => {
+  const eventName = normalizeEventName(req.body?.event_name);
+  if (!eventName) {
+    return res.status(400).json(errorEnvelope("INVALID_EVENT_NAME", "event_name is required."));
+  }
+
+  const deviceId = normalizeOptional(req.get("X-Device-Id")) || normalizeOptional(req.body?.device_id) || "booth-local";
+  const durationSeconds = normalizeNullableInteger(req.body?.duration_seconds);
+  const metadata = normalizeMetadata(req.body?.metadata);
+
+  try {
+    const result = await pool.query(
+      `INSERT INTO booth_events (
+          event_name,
+          job_id,
+          device_id,
+          theme_id,
+          screen_id,
+          duration_seconds,
+          metadata
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
+        RETURNING id, created_at`,
+      [
+        eventName,
+        normalizeOptional(req.body?.job_id),
+        deviceId,
+        normalizeOptional(req.body?.theme_id),
+        normalizeOptional(req.body?.screen_id),
+        durationSeconds,
+        JSON.stringify(metadata)
+      ]
+    );
+
+    return res.status(201).json({
+      success: true,
+      data: {
+        event_id: result.rows[0].id,
+        accepted: true,
+        created_at: result.rows[0].created_at
+      },
+      error: null
+    });
+  } catch (error) {
+    console.error("analytics_event_failed", { eventName, error });
+    return res.status(500).json(errorEnvelope("ANALYTICS_EVENT_FAILED", error.message));
+  }
+});
+
+app.get("/d/:jobId/qr", async (req, res) => {
+  const jobId = normalizeJobId(req.params.jobId);
+  if (!jobId) {
+    return res.status(400).json(errorEnvelope("INVALID_JOB_ID", "Job id is required."));
+  }
+
+  try {
+    const result = await pool.query(
+      `SELECT upload_status, download_url
+       FROM booth_jobs
+       WHERE job_id = $1
+       LIMIT 1`,
+      [jobId]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json(errorEnvelope("JOB_NOT_FOUND", `Job ${jobId} was not found.`));
+    }
+
+    const job = result.rows[0];
+    if (job.upload_status !== "LINK_READY") {
+      return res.status(202).json(errorEnvelope("DOWNLOAD_NOT_READY", "Download link is still processing."));
+    }
+
+    const downloadUrl = job.download_url || `${config.publicBaseUrl}/d/${encodeURIComponent(jobId)}`;
+    const png = await QRCode.toBuffer(downloadUrl, {
+      type: "png",
+      errorCorrectionLevel: "M",
+      margin: 1,
+      width: 320
+    });
+
+    res.setHeader("Content-Type", "image/png");
+    res.setHeader("Cache-Control", "public, max-age=300");
+    return res.send(png);
+  } catch (error) {
+    console.error("qr_generation_failed", { jobId, error });
+    return res.status(500).json(errorEnvelope("QR_GENERATION_FAILED", error.message));
+  }
+});
+
+app.get("/d/:jobId/clip", async (req, res) => {
+  const jobId = normalizeJobId(req.params.jobId);
+  if (!jobId) {
+    return res.status(400).send("Invalid job id.");
+  }
+
+  try {
+    const jobResult = await pool.query(
+      `SELECT upload_status
+       FROM booth_jobs
+       WHERE job_id = $1
+       LIMIT 1`,
+      [jobId]
+    );
+
+    if (jobResult.rowCount === 0) {
+      return res.status(404).send("Job not found.");
+    }
+
+    if (jobResult.rows[0].upload_status !== "LINK_READY") {
+      return res.status(202).send("Countdown clip is still processing.");
+    }
+
+    const frameResult = await pool.query(
+      `SELECT remote_key, original_file_name
+       FROM booth_assets
+       WHERE job_id = $1 AND asset_type = 'motion_frame'
+       ORDER BY original_file_name ASC, created_at ASC`,
+      [jobId]
+    );
+
+    if (frameResult.rowCount === 0) {
+      return res.status(404).send("Countdown clip was not uploaded for this job.");
+    }
+
+    const frameUrls = frameResult.rows.map((row) => `/files/${encodeURIPath(row.remote_key)}`);
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("Cache-Control", "public, max-age=300");
+    res.setHeader("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'");
+    return res.send(renderMotionClipPage(jobId, frameUrls));
+  } catch (error) {
+    console.error("clip_render_failed", { jobId, error });
+    return res.status(500).send("Internal server error.");
+  }
+});
+
+app.get("/d/:jobId/clip.mp4", async (req, res) => {
+  const jobId = normalizeJobId(req.params.jobId);
+  if (!jobId) {
+    return res.status(400).send("Invalid job id.");
+  }
+
+  try {
+    const jobResult = await pool.query(
+      `SELECT upload_status
+       FROM booth_jobs
+       WHERE job_id = $1
+       LIMIT 1`,
+      [jobId]
+    );
+
+    if (jobResult.rowCount === 0) {
+      return res.status(404).send("Job not found.");
+    }
+
+    if (jobResult.rows[0].upload_status !== "LINK_READY") {
+      return res.status(202).send("Countdown video is still processing.");
+    }
+
+    const videoResult = await pool.query(
+      `SELECT remote_key, content_type
+       FROM booth_assets
+       WHERE job_id = $1 AND asset_type = 'motion_video'
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [jobId]
+    );
+
+    if (videoResult.rowCount === 0) {
+      return res.status(404).send("Countdown video was not uploaded for this job.");
+    }
+
+    const video = videoResult.rows[0];
+    const absolutePath = path.resolve(config.uploadsRoot, video.remote_key);
+    if (!absolutePath.startsWith(`${config.uploadsRoot}${path.sep}`) || !fs.existsSync(absolutePath)) {
+      return res.status(404).send("Countdown video file was not found.");
+    }
+
+    res.setHeader("Content-Type", video.content_type || "video/mp4");
+    res.setHeader("Cache-Control", "public, max-age=300");
+    return res.sendFile(absolutePath);
+  } catch (error) {
+    console.error("motion_video_download_failed", { jobId, error });
+    return res.status(500).send("Internal server error.");
+  }
+});
+
 app.get("/d/:jobId", async (req, res) => {
   const jobId = normalizeJobId(req.params.jobId);
   if (!jobId) {
@@ -364,6 +596,22 @@ initialize().then(() => {
 
 async function initialize() {
   await pool.query("SELECT 1");
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS booth_events (
+      id BIGSERIAL PRIMARY KEY,
+      event_name TEXT NOT NULL,
+      job_id TEXT,
+      device_id TEXT NOT NULL,
+      theme_id TEXT,
+      screen_id TEXT,
+      duration_seconds INTEGER,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  await pool.query("CREATE INDEX IF NOT EXISTS idx_booth_events_event_name ON booth_events(event_name)");
+  await pool.query("CREATE INDEX IF NOT EXISTS idx_booth_events_job_id ON booth_events(job_id)");
+  await pool.query("CREATE INDEX IF NOT EXISTS idx_booth_events_device_id ON booth_events(device_id)");
+  await pool.query("CREATE INDEX IF NOT EXISTS idx_booth_events_created_at ON booth_events(created_at DESC)");
 }
 
 function requireDeviceAuth(req, res, next) {
@@ -515,6 +763,44 @@ function normalizeInteger(value, fallback) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function normalizeNullableInteger(value) {
+  if (value === undefined || value === null || value === "") {
+    return null;
+  }
+
+  const parsed = Number.parseInt(String(value), 10);
+  return Number.isFinite(parsed) ? Math.max(0, parsed) : null;
+}
+
+function normalizeEventName(value) {
+  const normalized = normalizeOptional(value);
+  if (!normalized) {
+    return null;
+  }
+
+  return normalized.replace(/[^A-Za-z0-9._:-]/g, "_").slice(0, 96);
+}
+
+function normalizeMetadata(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+
+  const normalized = {};
+  for (const [key, entryValue] of Object.entries(value)) {
+    const normalizedKey = normalizeOptional(key);
+    if (!normalizedKey) {
+      continue;
+    }
+
+    normalized[normalizedKey.slice(0, 96)] = entryValue === undefined || entryValue === null
+      ? null
+      : String(entryValue).slice(0, 512);
+  }
+
+  return normalized;
+}
+
 function sanitizeFilename(fileName) {
   return fileName.replace(/[^A-Za-z0-9._-]/g, "_");
 }
@@ -527,6 +813,10 @@ function defaultExtensionForMimeType(mimeType) {
       return ".png";
     case "image/webp":
       return ".webp";
+    case "video/mp4":
+      return ".mp4";
+    case "video/quicktime":
+      return ".mov";
     default:
       return ".bin";
   }
@@ -538,6 +828,57 @@ function sha256(buffer) {
 
 function encodeURIPath(relativePath) {
   return relativePath.split("/").map((segment) => encodeURIComponent(segment)).join("/");
+}
+
+function renderMotionClipPage(jobId, frameUrls) {
+  const safeJobId = escapeHtml(jobId);
+  const framesJson = JSON.stringify(frameUrls);
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Countdown Clip ${safeJobId}</title>
+  <style>
+    :root { color-scheme: dark; font-family: ui-rounded, system-ui, -apple-system, BlinkMacSystemFont, sans-serif; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: radial-gradient(circle at top, #26384a, #060708 68%); color: #fff; }
+    main { width: min(920px, 94vw); text-align: center; }
+    h1 { margin: 0 0 18px; font-size: clamp(28px, 6vw, 58px); letter-spacing: 0.02em; }
+    .stage { border: 1px solid rgba(255,255,255,0.18); border-radius: 28px; padding: 18px; background: rgba(255,255,255,0.08); box-shadow: 0 24px 80px rgba(0,0,0,0.38); }
+    img { width: 100%; max-height: 70vh; object-fit: contain; border-radius: 18px; background: #101214; }
+    p { opacity: 0.74; font-size: 15px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Countdown Clip</h1>
+    <section class="stage">
+      <img id="frame" alt="Countdown clip frame">
+    </section>
+    <p>Job ${safeJobId} · ${frameUrls.length} frames</p>
+  </main>
+  <script>
+    const frames = ${framesJson};
+    const image = document.getElementById('frame');
+    let index = 0;
+    function tick() {
+      image.src = frames[index % frames.length];
+      index += 1;
+    }
+    tick();
+    setInterval(tick, 250);
+  </script>
+</body>
+</html>`;
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function errorEnvelope(code, message) {

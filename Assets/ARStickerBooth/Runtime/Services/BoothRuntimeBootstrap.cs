@@ -75,6 +75,10 @@ namespace PhotoBooth.Booth.Services
         public BoothPrintService PrintService { get; private set; }
         public BoothSyncService SyncService { get; private set; }
         public Task InitializationTask { get; private set; }
+        public string BackendDeviceId => string.IsNullOrWhiteSpace(backendDeviceId) ? boothId : backendDeviceId.Trim();
+        public string BackendDeviceToken => backendDeviceToken ?? string.Empty;
+        public string BackendBoothApiBaseUrl => backendBoothApiBaseUrl ?? string.Empty;
+        public int BackendRequestTimeoutSeconds => Math.Max(1, backendRequestTimeoutSeconds);
 
         private string lastDemoJobId;
 
@@ -91,6 +95,11 @@ namespace PhotoBooth.Booth.Services
         public void Initialize()
         {
             InitializationTask = InitializeAsync();
+        }
+
+        public async Task EnsureReadyAsync()
+        {
+            await EnsureRuntimeReadyForUiAsync();
         }
 
         public async Task InitializeAsync()

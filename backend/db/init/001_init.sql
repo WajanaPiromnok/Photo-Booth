@@ -35,3 +35,20 @@ CREATE TABLE IF NOT EXISTS booth_assets (
 
 CREATE INDEX IF NOT EXISTS idx_booth_assets_job_id ON booth_assets(job_id);
 CREATE INDEX IF NOT EXISTS idx_booth_assets_type ON booth_assets(asset_type);
+
+CREATE TABLE IF NOT EXISTS booth_events (
+    id BIGSERIAL PRIMARY KEY,
+    event_name TEXT NOT NULL,
+    job_id TEXT,
+    device_id TEXT NOT NULL,
+    theme_id TEXT,
+    screen_id TEXT,
+    duration_seconds INTEGER,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_booth_events_event_name ON booth_events(event_name);
+CREATE INDEX IF NOT EXISTS idx_booth_events_job_id ON booth_events(job_id);
+CREATE INDEX IF NOT EXISTS idx_booth_events_device_id ON booth_events(device_id);
+CREATE INDEX IF NOT EXISTS idx_booth_events_created_at ON booth_events(created_at DESC);

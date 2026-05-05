@@ -48,7 +48,7 @@ namespace PhotoBooth.Booth.Sync
 
             if (config.SeparateAssetRegistration)
             {
-                var registrationResponse = await RegisterAssetsAsync(request, uploadResponse.RemoteAssetKey, cancellationToken);
+                var registrationResponse = await RegisterAssetsAsync(request, uploadResponse, cancellationToken);
                 if (!registrationResponse.Success)
                 {
                     return registrationResponse;
@@ -79,6 +79,15 @@ namespace PhotoBooth.Booth.Sync
             if (string.IsNullOrWhiteSpace(publishResponse.DownloadUrl))
             {
                 publishResponse.DownloadUrl = BuildDownloadUrl(request.JobId);
+            }
+
+            if (HasMotionVideo(request))
+            {
+                publishResponse.MotionClipUrl = $"{publishResponse.DownloadUrl.TrimEnd('/')}/clip.mp4";
+            }
+            else if (HasMotionClipFrames(request))
+            {
+                publishResponse.MotionClipUrl = $"{publishResponse.DownloadUrl.TrimEnd('/')}/clip";
             }
 
             if (string.IsNullOrWhiteSpace(publishResponse.Message))
@@ -114,6 +123,20 @@ namespace PhotoBooth.Booth.Sync
                 sections.Add(new MultipartFormFileSection("thumbnail_file", File.ReadAllBytes(request.ThumbnailPath), Path.GetFileName(request.ThumbnailPath), ResolveContentType(request.ThumbnailPath)));
             }
 
+            if (HasMotionVideo(request))
+            {
+                AddMultipartField(sections, "motion_video_checksum", BoothChecksumUtility.ComputeSha256Tag(request.MotionVideoPath), true);
+                sections.Add(new MultipartFormFileSection("motion_video_file", File.ReadAllBytes(request.MotionVideoPath), Path.GetFileName(request.MotionVideoPath), ResolveContentType(request.MotionVideoPath)));
+            }
+
+            var motionFrameIndex = 0;
+            foreach (var framePath in EnumerateExistingMotionFrames(request))
+            {
+                AddMultipartField(sections, $"motion_frame_checksum_{motionFrameIndex}", BoothChecksumUtility.ComputeSha256Tag(framePath), true);
+                sections.Add(new MultipartFormFileSection("motion_frame_files", File.ReadAllBytes(framePath), Path.GetFileName(framePath), ResolveContentType(framePath)));
+                motionFrameIndex += 1;
+            }
+
             using var requestMessage = UnityWebRequest.Post(uploadUrl, sections);
             requestMessage.timeout = ResolveTimeoutSeconds();
             requestMessage.downloadHandler = new DownloadHandlerBuffer();
@@ -123,7 +146,7 @@ namespace PhotoBooth.Booth.Sync
             return ParseUploadResponse(request.JobId, requestMessage);
         }
 
-        private async Task<SyncJobResult> RegisterAssetsAsync(SyncJobRequest request, string remoteAssetKey, CancellationToken cancellationToken)
+        private async Task<SyncJobResult> RegisterAssetsAsync(SyncJobRequest request, SyncJobResult uploadResponse, CancellationToken cancellationToken)
         {
             var registerUrl = BoothBackendPathResolver.Resolve(
                 config.BoothApiBaseUrl,
@@ -135,7 +158,7 @@ namespace PhotoBooth.Booth.Sync
                 new BoothAssetRegistrationItem
                 {
                     asset_type = "composed",
-                    remote_key = string.IsNullOrWhiteSpace(remoteAssetKey) ? $"{ResolveDeviceId(request.DeviceId)}/{request.JobId}/composed" : remoteAssetKey,
+                    remote_key = ResolveUploadedAssetKey(uploadResponse, "composed") ?? uploadResponse?.RemoteAssetKey ?? $"{ResolveDeviceId(request.DeviceId)}/{request.JobId}/composed",
                     content_type = ResolveContentType(request.ComposedImagePath),
                     checksum = BoothChecksumUtility.ComputeSha256Tag(request.ComposedImagePath)
                 }
@@ -146,10 +169,35 @@ namespace PhotoBooth.Booth.Sync
                 assets.Add(new BoothAssetRegistrationItem
                 {
                     asset_type = "thumbnail",
-                    remote_key = $"{ResolveDeviceId(request.DeviceId)}/{request.JobId}/thumbnail",
+                    remote_key = ResolveUploadedAssetKey(uploadResponse, "thumbnail") ?? $"{ResolveDeviceId(request.DeviceId)}/{request.JobId}/thumbnail",
                     content_type = ResolveContentType(request.ThumbnailPath),
                     checksum = BoothChecksumUtility.ComputeSha256Tag(request.ThumbnailPath)
                 });
+            }
+
+            if (HasMotionVideo(request))
+            {
+                assets.Add(new BoothAssetRegistrationItem
+                {
+                    asset_type = "motion_video",
+                    remote_key = ResolveUploadedAssetKey(uploadResponse, "motion_video") ?? $"{ResolveDeviceId(request.DeviceId)}/{request.JobId}/motion.mp4",
+                    content_type = ResolveContentType(request.MotionVideoPath),
+                    checksum = BoothChecksumUtility.ComputeSha256Tag(request.MotionVideoPath)
+                });
+            }
+
+            var motionFrameIndex = 0;
+            foreach (var framePath in EnumerateExistingMotionFrames(request))
+            {
+                var uploadedKey = ResolveUploadedAssetKey(uploadResponse, "motion_frame", motionFrameIndex);
+                assets.Add(new BoothAssetRegistrationItem
+                {
+                    asset_type = "motion_frame",
+                    remote_key = uploadedKey ?? $"{ResolveDeviceId(request.DeviceId)}/{request.JobId}/motion/{motionFrameIndex:000}",
+                    content_type = ResolveContentType(framePath),
+                    checksum = BoothChecksumUtility.ComputeSha256Tag(framePath)
+                });
+                motionFrameIndex += 1;
             }
 
             var payload = JsonUtility.ToJson(new BoothAssetRegistrationRequest { assets = assets.ToArray() });
@@ -249,7 +297,8 @@ namespace PhotoBooth.Booth.Sync
                 Retryable = false,
                 Message = "Asset upload completed.",
                 RemoteAssetKey = remoteAssetKey,
-                DownloadUrl = envelope?.data?.download_url
+                DownloadUrl = envelope?.data?.download_url,
+                Assets = envelope?.data?.assets
             };
         }
 
@@ -345,7 +394,9 @@ namespace PhotoBooth.Booth.Sync
                 Retryable = false,
                 Message = "Publish completed.",
                 RemoteAssetKey = remoteAssetKey,
-                DownloadUrl = envelope?.data?.download_url
+                DownloadUrl = envelope?.data?.download_url,
+                MotionClipUrl = envelope?.data?.motion_clip_url,
+                MotionVideoUrl = envelope?.data?.motion_video_url
             };
         }
 
@@ -462,6 +513,63 @@ namespace PhotoBooth.Booth.Sync
             return string.IsNullOrWhiteSpace(config.DeviceId) ? "booth-local" : config.DeviceId.Trim();
         }
 
+        private static bool HasMotionClipFrames(SyncJobRequest request)
+        {
+            foreach (var _ in EnumerateExistingMotionFrames(request))
+            {
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool HasMotionVideo(SyncJobRequest request)
+        {
+            return !string.IsNullOrWhiteSpace(request?.MotionVideoPath) && File.Exists(request.MotionVideoPath);
+        }
+
+        private static IEnumerable<string> EnumerateExistingMotionFrames(SyncJobRequest request)
+        {
+            if (request?.MotionClipFramePaths == null)
+            {
+                yield break;
+            }
+
+            foreach (var framePath in request.MotionClipFramePaths)
+            {
+                if (!string.IsNullOrWhiteSpace(framePath) && File.Exists(framePath))
+                {
+                    yield return framePath;
+                }
+            }
+        }
+
+        private static string ResolveUploadedAssetKey(SyncJobResult uploadResponse, string assetType, int occurrenceIndex = 0)
+        {
+            if (uploadResponse?.Assets == null || string.IsNullOrWhiteSpace(assetType))
+            {
+                return null;
+            }
+
+            var matchIndex = 0;
+            foreach (var asset in uploadResponse.Assets)
+            {
+                if (asset == null || !string.Equals(asset.asset_type, assetType, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (matchIndex == occurrenceIndex)
+                {
+                    return asset.remote_key;
+                }
+
+                matchIndex += 1;
+            }
+
+            return null;
+        }
+
         private static string ResolveContentType(string filePath)
         {
             var extension = Path.GetExtension(filePath)?.ToLowerInvariant();
@@ -471,6 +579,8 @@ namespace PhotoBooth.Booth.Sync
                 ".jpeg" => "image/jpeg",
                 ".png" => "image/png",
                 ".webp" => "image/webp",
+                ".mp4" => "video/mp4",
+                ".mov" => "video/quicktime",
                 _ => "application/octet-stream"
             };
         }

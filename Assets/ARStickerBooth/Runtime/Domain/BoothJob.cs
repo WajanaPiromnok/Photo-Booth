@@ -11,6 +11,9 @@ namespace PhotoBooth.Booth.Domain
         public BoothPrintStatus PrintStatus;
         public BoothUploadStatus UploadStatus;
         public string ThemeId;
+        public string PassengerName;
+        public string AiStyleId;
+        public string AiStylePrompt;
         public string PaymentReference;
         public long AmountMinorUnits;
         public string CurrencyCode;
@@ -19,6 +22,8 @@ namespace PhotoBooth.Booth.Domain
         public int UploadAttempts;
         public BoothJobPaths Paths;
         public string DownloadUrl;
+        public string MotionClipUrl;
+        public string MotionVideoUrl;
         public string PrinterName;
         public string RemoteAssetKey;
         public string PublishedAtUtc;
@@ -26,6 +31,8 @@ namespace PhotoBooth.Booth.Domain
         public string LastError;
         public string LastPrintError;
         public string LastUploadError;
+        public string[] MotionClipFramePaths;
+        public string MotionVideoPath;
         public string CreatedAtUtc;
         public string UpdatedAtUtc;
     }
@@ -39,6 +46,7 @@ namespace PhotoBooth.Booth.Domain
         public string ThumbsDirectory;
         public string LogsDirectory;
         public string SnapshotPath;
+        public string RawImagePath;
         public string ComposedImagePath;
         public string ThumbnailPath;
     }

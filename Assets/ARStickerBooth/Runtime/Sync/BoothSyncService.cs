@@ -61,16 +61,18 @@ namespace PhotoBooth.Booth.Sync
                 ThemeId = job.ThemeId,
                 ComposedImagePath = job.Paths.ComposedImagePath,
                 ThumbnailPath = job.Paths.ThumbnailPath,
+                MotionVideoPath = job.MotionVideoPath,
                 CurrencyCode = job.CurrencyCode,
                 AmountMinorUnits = job.AmountMinorUnits,
-                PaymentReference = job.PaymentReference
+                PaymentReference = job.PaymentReference,
+                MotionClipFramePaths = job.MotionClipFramePaths
             };
 
             var result = await syncClient.UploadAndPublishAsync(request, cancellationToken);
             if (result.Success)
             {
                 sessionService.MarkUploaded(jobId, result.RemoteAssetKey);
-                return sessionService.MarkLinkReady(jobId, result.DownloadUrl);
+                return sessionService.MarkLinkReady(jobId, result.DownloadUrl, string.IsNullOrWhiteSpace(result.MotionVideoUrl) ? result.MotionClipUrl : result.MotionVideoUrl);
             }
 
             if (result.Retryable)

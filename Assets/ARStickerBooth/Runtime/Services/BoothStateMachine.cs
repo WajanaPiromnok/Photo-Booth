@@ -15,9 +15,9 @@ namespace PhotoBooth.Booth.Services
             [BoothJobStatus.PaymentConfirmed] = new HashSet<BoothJobStatus> { BoothJobStatus.Capturing, BoothJobStatus.Cancelled, BoothJobStatus.Failed },
             [BoothJobStatus.PaymentBypassed] = new HashSet<BoothJobStatus> { BoothJobStatus.Capturing, BoothJobStatus.Cancelled, BoothJobStatus.Failed },
             [BoothJobStatus.Capturing] = new HashSet<BoothJobStatus> { BoothJobStatus.Captured, BoothJobStatus.Cancelled, BoothJobStatus.Failed },
-            [BoothJobStatus.Captured] = new HashSet<BoothJobStatus> { BoothJobStatus.Composing, BoothJobStatus.Cancelled, BoothJobStatus.Failed },
-            [BoothJobStatus.Composing] = new HashSet<BoothJobStatus> { BoothJobStatus.Composed, BoothJobStatus.Failed },
-            [BoothJobStatus.Composed] = new HashSet<BoothJobStatus> { BoothJobStatus.Printing, BoothJobStatus.UploadPending, BoothJobStatus.Failed },
+            [BoothJobStatus.Captured] = new HashSet<BoothJobStatus> { BoothJobStatus.Capturing, BoothJobStatus.Composing, BoothJobStatus.Cancelled, BoothJobStatus.Failed },
+            [BoothJobStatus.Composing] = new HashSet<BoothJobStatus> { BoothJobStatus.Capturing, BoothJobStatus.Composed, BoothJobStatus.Failed },
+            [BoothJobStatus.Composed] = new HashSet<BoothJobStatus> { BoothJobStatus.Capturing, BoothJobStatus.Printing, BoothJobStatus.UploadPending, BoothJobStatus.Failed },
             [BoothJobStatus.Printing] = new HashSet<BoothJobStatus> { BoothJobStatus.Composed, BoothJobStatus.Printed, BoothJobStatus.Failed },
             [BoothJobStatus.Printed] = new HashSet<BoothJobStatus> { BoothJobStatus.UploadPending, BoothJobStatus.Done, BoothJobStatus.Failed },
             [BoothJobStatus.UploadPending] = new HashSet<BoothJobStatus> { BoothJobStatus.Uploading, BoothJobStatus.Failed },
@@ -94,6 +94,21 @@ namespace PhotoBooth.Booth.Services
         public BoothJob BeginCapture(BoothJob job)
         {
             Transition(job, BoothJobStatus.Capturing);
+            return job;
+        }
+
+        public BoothJob BeginRetake(BoothJob job)
+        {
+            Transition(job, BoothJobStatus.Capturing);
+            job.RawCaptureCount = 0;
+            job.MotionClipFramePaths = null;
+            job.MotionVideoPath = null;
+            job.MotionVideoUrl = null;
+            job.MotionClipUrl = null;
+            job.Paths.RawImagePath = null;
+            job.Paths.ComposedImagePath = null;
+            job.Paths.ThumbnailPath = null;
+            job.LastError = null;
             return job;
         }
 

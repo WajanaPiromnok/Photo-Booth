@@ -26,9 +26,11 @@ namespace PhotoBooth.Booth.Sync
         public string ThemeId;
         public string ComposedImagePath;
         public string ThumbnailPath;
+        public string MotionVideoPath;
         public string CurrencyCode;
         public long AmountMinorUnits;
         public string PaymentReference;
+        public string[] MotionClipFramePaths;
     }
 
     [Serializable]
@@ -39,6 +41,9 @@ namespace PhotoBooth.Booth.Sync
         public string Message;
         public string RemoteAssetKey;
         public string DownloadUrl;
+        public string MotionClipUrl;
+        public string MotionVideoUrl;
+        public BoothAssetRecord[] Assets;
     }
 
     [Serializable]
@@ -118,6 +123,8 @@ namespace PhotoBooth.Booth.Sync
         public string job_id;
         public string upload_status;
         public string download_url;
+        public string motion_clip_url;
+        public string motion_video_url;
         public string remote_asset_key;
         public string remote_key;
         public BoothAssetRecord[] assets;

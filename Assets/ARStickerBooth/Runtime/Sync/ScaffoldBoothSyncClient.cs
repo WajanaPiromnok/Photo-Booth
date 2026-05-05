@@ -45,8 +45,31 @@ namespace PhotoBooth.Booth.Sync
                 Retryable = false,
                 Message = "Scaffold sync completed.",
                 RemoteAssetKey = remoteAssetKey,
-                DownloadUrl = BuildDownloadUrl(request.JobId)
+                DownloadUrl = BuildDownloadUrl(request.JobId),
+                MotionClipUrl = ResolveMotionClipUrl(request)
             };
+        }
+
+        private string ResolveMotionClipUrl(SyncJobRequest request)
+        {
+            var downloadUrl = BuildDownloadUrl(request.JobId);
+            if (!string.IsNullOrWhiteSpace(request.MotionVideoPath) && File.Exists(request.MotionVideoPath))
+            {
+                return $"{downloadUrl}/clip.mp4";
+            }
+
+            if (request.MotionClipFramePaths != null)
+            {
+                foreach (var framePath in request.MotionClipFramePaths)
+                {
+                    if (!string.IsNullOrWhiteSpace(framePath) && File.Exists(framePath))
+                    {
+                        return $"{downloadUrl}/clip";
+                    }
+                }
+            }
+
+            return null;
         }
 
         private string BuildDownloadUrl(string jobId)

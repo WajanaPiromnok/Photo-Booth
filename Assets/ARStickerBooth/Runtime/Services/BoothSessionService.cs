@@ -44,6 +44,21 @@ namespace PhotoBooth.Booth.Services
             return Save(job, saved => telemetry?.OnThemeSelected(saved));
         }
 
+        public BoothJob SelectAiStyle(string jobId, string styleId, string prompt = null)
+        {
+            var job = repository.Get(jobId);
+            job.AiStyleId = styleId;
+            job.AiStylePrompt = prompt;
+            return SaveWithTouch(job);
+        }
+
+        public BoothJob SetPassengerName(string jobId, string passengerName)
+        {
+            var job = repository.Get(jobId);
+            job.PassengerName = string.IsNullOrWhiteSpace(passengerName) ? null : passengerName.Trim();
+            return SaveWithTouch(job);
+        }
+
         public BoothJob SetPaymentPending(string jobId, string paymentReference = null)
         {
             var job = repository.Get(jobId);
@@ -72,10 +87,47 @@ namespace PhotoBooth.Booth.Services
             return repository.Save(job);
         }
 
+        public BoothJob BeginRetake(string jobId)
+        {
+            var job = repository.Get(jobId);
+            if (job.UploadStatus == BoothUploadStatus.Uploading
+                || job.UploadStatus == BoothUploadStatus.Uploaded
+                || job.UploadStatus == BoothUploadStatus.LinkReady)
+            {
+                throw new InvalidOperationException($"Job {jobId} cannot retake after upload has started.");
+            }
+
+            stateMachine.BeginRetake(job);
+            return repository.Save(job);
+        }
+
         public BoothJob MarkCaptured(string jobId, int rawCaptureCount)
         {
             var job = repository.Get(jobId);
             stateMachine.MarkCaptured(job, rawCaptureCount);
+            return Save(job, saved => telemetry?.OnCaptureCompleted(saved));
+        }
+
+        public BoothJob MarkCaptured(string jobId, int rawCaptureCount, string rawImagePath)
+        {
+            var job = repository.Get(jobId);
+            stateMachine.MarkCaptured(job, rawCaptureCount);
+            job.Paths.RawImagePath = rawImagePath;
+            return Save(job, saved => telemetry?.OnCaptureCompleted(saved));
+        }
+
+        public BoothJob MarkCaptured(string jobId, int rawCaptureCount, string rawImagePath, string[] motionClipFramePaths)
+        {
+            return MarkCaptured(jobId, rawCaptureCount, rawImagePath, motionClipFramePaths, null);
+        }
+
+        public BoothJob MarkCaptured(string jobId, int rawCaptureCount, string rawImagePath, string[] motionClipFramePaths, string motionVideoPath)
+        {
+            var job = repository.Get(jobId);
+            stateMachine.MarkCaptured(job, rawCaptureCount);
+            job.Paths.RawImagePath = rawImagePath;
+            job.MotionClipFramePaths = motionClipFramePaths;
+            job.MotionVideoPath = motionVideoPath;
             return Save(job, saved => telemetry?.OnCaptureCompleted(saved));
         }
 
@@ -206,6 +258,17 @@ namespace PhotoBooth.Booth.Services
         {
             var job = repository.Get(jobId);
             stateMachine.MarkLinkReady(job, downloadUrl);
+            return Save(job, saved => telemetry?.OnDownloadLinkReady(saved));
+        }
+
+        public BoothJob MarkLinkReady(string jobId, string downloadUrl, string motionClipUrl)
+        {
+            var job = repository.Get(jobId);
+            stateMachine.MarkLinkReady(job, downloadUrl);
+            job.MotionClipUrl = motionClipUrl;
+            job.MotionVideoUrl = !string.IsNullOrWhiteSpace(motionClipUrl) && motionClipUrl.EndsWith(".mp4", StringComparison.OrdinalIgnoreCase)
+                ? motionClipUrl
+                : null;
             return Save(job, saved => telemetry?.OnDownloadLinkReady(saved));
         }
 

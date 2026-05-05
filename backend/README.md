@@ -77,6 +77,10 @@ Recommended values:
 - `composed_file`
 - `thumbnail_checksum` optional
 - `thumbnail_file` optional
+- `motion_video_checksum` optional
+- `motion_video_file` optional MP4/MOV countdown clip
+- `motion_frame_checksum_<index>` optional fallback frame checksums
+- `motion_frame_files` optional fallback PNG frame sequence
 
 ## Notes
 
