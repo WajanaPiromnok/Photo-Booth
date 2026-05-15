@@ -11,6 +11,7 @@ namespace PhotoBooth.Booth.Sync
         public string PublishApiBaseUrl;
         public string DownloadBaseUrl;
         public string AssetUploadPathTemplate;
+        public string RawCaptureUploadPathTemplate;
         public string AssetRegistrationPathTemplate;
         public string PublishPathTemplate;
         public bool SeparateAssetRegistration;
@@ -26,11 +27,41 @@ namespace PhotoBooth.Booth.Sync
         public string ThemeId;
         public string ComposedImagePath;
         public string ThumbnailPath;
+        public string LiveImagePath;
         public string MotionVideoPath;
         public string CurrencyCode;
         public long AmountMinorUnits;
         public string PaymentReference;
         public string[] MotionClipFramePaths;
+        public string SessionStartedAtUtc;
+    }
+
+    [Serializable]
+    public sealed class RawCaptureUploadRequest
+    {
+        public string JobId;
+        public string DeviceId;
+        public string ThemeId;
+        public string RawCapturePath;
+        public int CaptureIndex;
+        public int CaptureTotal;
+        public string SessionStartedAtUtc;
+        public string CaptureTakenAtUtc;
+        public string CurrencyCode;
+        public long AmountMinorUnits;
+        public string PaymentReference;
+    }
+
+    [Serializable]
+    public sealed class RawCaptureUploadResult
+    {
+        public bool Success;
+        public bool Retryable;
+        public string Message;
+        public string RemoteAssetKey;
+        public string FileUrl;
+        public string SessionFolder;
+        public BoothAssetRecord[] Assets;
     }
 
     [Serializable]
@@ -76,6 +107,26 @@ namespace PhotoBooth.Booth.Sync
     {
         public bool success;
         public BoothAssetUploadResponseData data;
+        public BoothApiError error;
+    }
+
+    [Serializable]
+    public sealed class BoothRawCaptureUploadResponseData
+    {
+        public bool accepted;
+        public int capture_index;
+        public int capture_total;
+        public string session_folder;
+        public string remote_asset_key;
+        public string remote_key;
+        public BoothAssetRecord[] assets;
+    }
+
+    [Serializable]
+    public sealed class BoothRawCaptureUploadResponseEnvelope
+    {
+        public bool success;
+        public BoothRawCaptureUploadResponseData data;
         public BoothApiError error;
     }
 

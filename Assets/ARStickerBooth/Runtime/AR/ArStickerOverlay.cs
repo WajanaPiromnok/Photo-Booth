@@ -7,10 +7,10 @@ namespace PhotoBooth.Booth.AR
     [Serializable]
     public sealed class ArStickerDefinition
     {
-        public string stickerId = "default_sunglasses";
+        public string stickerId;
         public bool enabled = true;
         public Texture2D texture;
-        public ArStickerBuiltinShape builtinShape = ArStickerBuiltinShape.Sunglasses;
+        public ArStickerBuiltinShape builtinShape = ArStickerBuiltinShape.None;
         public ArStickerAnchor anchor = ArStickerAnchor.Eyes;
         public Vector2 normalizedOffset;
         public Vector2 sizeScale = Vector2.one;
@@ -68,7 +68,7 @@ namespace PhotoBooth.Booth.AR
 
             var leftEyeFallback = new Vector2(face.NormalizedBounds.xMin + (face.NormalizedBounds.width * 0.34f), face.NormalizedBounds.yMin + (face.NormalizedBounds.height * 0.74f));
             var rightEyeFallback = new Vector2(face.NormalizedBounds.xMin + (face.NormalizedBounds.width * 0.66f), face.NormalizedBounds.yMin + (face.NormalizedBounds.height * 0.74f));
-            var useFaceBoundsEyeGuide = sticker.builtinShape == ArStickerBuiltinShape.Sunglasses && sticker.anchor == ArStickerAnchor.Eyes;
+            var useFaceBoundsEyeGuide = sticker.builtinShape == ArStickerBuiltinShape.Nose && sticker.anchor == ArStickerAnchor.Eyes;
             var detectorLeftEye = GetPoint(face, LeftEyeIndex, leftEyeFallback);
             var detectorRightEye = GetPoint(face, RightEyeIndex, rightEyeFallback);
             var useDetectorEyes = (!useFaceBoundsEyeGuide || face.HasReliableEyeLandmarks)
@@ -186,41 +186,13 @@ namespace PhotoBooth.Booth.AR
 
     public sealed class ArStickerRenderer : IDisposable
     {
-        private Texture2D defaultSunglasses;
-        private Texture2D defaultCrown;
-        private Texture2D defaultMustache;
+        private Texture2D defaultHorn;
+        private Texture2D defaultMushroomHorn;
+        private Texture2D defaultLozado;
 
         public static ArStickerDefinition[] CreateDefaultStickers()
         {
-            return new[]
-            {
-                new ArStickerDefinition
-                {
-                    stickerId = "default_sunglasses",
-                    builtinShape = ArStickerBuiltinShape.Sunglasses,
-                    anchor = ArStickerAnchor.Eyes,
-                    sizeScale = new Vector2(1.25f, 1.25f),
-                    tint = Color.white
-                },
-                new ArStickerDefinition
-                {
-                    stickerId = "default_crown",
-                    builtinShape = ArStickerBuiltinShape.Crown,
-                    anchor = ArStickerAnchor.Forehead,
-                    normalizedOffset = new Vector2(0f, -0.55f),
-                    sizeScale = new Vector2(1.18f, 1f),
-                    tint = Color.white
-                },
-                new ArStickerDefinition
-                {
-                    stickerId = "default_mustache",
-                    builtinShape = ArStickerBuiltinShape.Mustache,
-                    anchor = ArStickerAnchor.Mouth,
-                    normalizedOffset = new Vector2(0f, -0.22f),
-                    sizeScale = new Vector2(0.82f, 0.72f),
-                    tint = Color.white
-                }
-            };
+            return Array.Empty<ArStickerDefinition>();
         }
 
         public Texture2D RenderOverlayTexture(ArTrackingFrame frame, ArStickerDefinition[] stickers, int width, int height, bool mirrorHorizontally)
@@ -306,12 +278,12 @@ namespace PhotoBooth.Booth.AR
 
         public void Dispose()
         {
-            DestroyTexture(defaultSunglasses);
-            DestroyTexture(defaultCrown);
-            DestroyTexture(defaultMustache);
-            defaultSunglasses = null;
-            defaultCrown = null;
-            defaultMustache = null;
+            DestroyTexture(defaultHorn);
+            DestroyTexture(defaultMushroomHorn);
+            DestroyTexture(defaultLozado);
+            defaultHorn = null;
+            defaultMushroomHorn = null;
+            defaultLozado = null;
         }
 
         private Texture2D ResolveStickerTexture(ArStickerDefinition sticker)
@@ -323,9 +295,10 @@ namespace PhotoBooth.Booth.AR
 
             return sticker.builtinShape switch
             {
-                ArStickerBuiltinShape.Crown => defaultCrown ??= CreateCrownTexture(),
-                ArStickerBuiltinShape.Mustache => defaultMustache ??= CreateMustacheTexture(),
-                _ => defaultSunglasses ??= CreateSunglassesTexture()
+                ArStickerBuiltinShape.Horn => defaultHorn ??= CreateCrownTexture(),
+                ArStickerBuiltinShape.MushroomHorn => defaultMushroomHorn ??= CreateMustacheTexture(),
+                ArStickerBuiltinShape.Lozado => defaultLozado ??= CreateMustacheTexture(),
+                _ => null
             };
         }
 
@@ -387,18 +360,6 @@ namespace PhotoBooth.Booth.AR
                 (byte)Mathf.Clamp(Mathf.RoundToInt((source.g * 255f * sourceAlpha) + (destination.g * inverse)), 0, 255),
                 (byte)Mathf.Clamp(Mathf.RoundToInt((source.b * 255f * sourceAlpha) + (destination.b * inverse)), 0, 255),
                 (byte)Mathf.Clamp(Mathf.RoundToInt((sourceAlpha * 255f) + (destination.a * inverse)), 0, 255));
-        }
-
-        private static Texture2D CreateSunglassesTexture()
-        {
-            var texture = CreateTransparentTexture(256, 96);
-            FillEllipse(texture, new Rect(14, 24, 92, 54), Color.black);
-            FillEllipse(texture, new Rect(150, 24, 92, 54), Color.black);
-            FillRect(texture, new Rect(102, 48, 52, 12), Color.black);
-            FillRect(texture, new Rect(0, 52, 28, 8), Color.black);
-            FillRect(texture, new Rect(228, 52, 28, 8), Color.black);
-            texture.Apply(false, false);
-            return texture;
         }
 
         private static Texture2D CreateCrownTexture()

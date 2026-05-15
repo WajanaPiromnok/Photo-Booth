@@ -66,15 +66,89 @@ namespace PhotoBooth.Booth.Tests.EditMode
             Assert.That(syncedJob.UploadAttempts, Is.EqualTo(1));
         }
 
+        [Test]
+        public async Task UploadRawCaptureAsync_FillsConfiguredDeviceId()
+        {
+            var repository = new FileSystemLocalRepository(tempRootDirectory);
+            var sessions = new BoothSessionService(repository, new BoothStateMachine());
+            sessions.Initialize();
+
+            var fakeClient = new FakeSyncClient(success: true, retryable: false);
+            var syncService = new BoothSyncService(
+                sessions,
+                fakeClient,
+                new BoothBackendScaffoldConfig { DeviceId = "booth-a01" });
+
+            var result = await syncService.UploadRawCaptureAsync(new RawCaptureUploadRequest
+            {
+                JobId = "JOB-001",
+                RawCapturePath = Path.Combine(tempRootDirectory, "capture.png"),
+                CaptureIndex = 1,
+                CaptureTotal = 4,
+                SessionStartedAtUtc = DateTime.UtcNow.ToString("O"),
+                CaptureTakenAtUtc = DateTime.UtcNow.ToString("O")
+            });
+
+            Assert.That(result.Success, Is.True);
+            Assert.That(fakeClient.LastRawCaptureRequest.DeviceId, Is.EqualTo("booth-a01"));
+            Assert.That(fakeClient.LastRawCaptureRequest.CaptureIndex, Is.EqualTo(1));
+            Assert.That(fakeClient.LastRawCaptureRequest.CaptureTotal, Is.EqualTo(4));
+        }
+
+        [Test]
+        public async Task RawCaptureUploadQueue_WhenRetryableFailure_DoesNotThrow()
+        {
+            var repository = new FileSystemLocalRepository(tempRootDirectory);
+            var sessions = new BoothSessionService(repository, new BoothStateMachine());
+            sessions.Initialize();
+
+            var syncService = new BoothSyncService(
+                sessions,
+                new FakeSyncClient(success: false, retryable: true, rawSuccess: false),
+                new BoothBackendScaffoldConfig { DeviceId = "booth-a01" });
+
+            var queue = new BoothRawCaptureUploadQueue(syncService, maxAttempts: 1);
+            queue.Enqueue(new RawCaptureUploadRequest
+            {
+                JobId = "JOB-001",
+                RawCapturePath = Path.Combine(tempRootDirectory, "capture.png"),
+                CaptureIndex = 1,
+                CaptureTotal = 4,
+                SessionStartedAtUtc = DateTime.UtcNow.ToString("O"),
+                CaptureTakenAtUtc = DateTime.UtcNow.ToString("O")
+            });
+
+            await queue.FlushAsync();
+
+            Assert.That(queue.PendingCount, Is.EqualTo(0));
+        }
+
         private sealed class FakeSyncClient : IBoothSyncClient
         {
             private readonly bool success;
             private readonly bool retryable;
+            private readonly bool rawSuccess;
 
-            public FakeSyncClient(bool success, bool retryable)
+            public FakeSyncClient(bool success, bool retryable, bool rawSuccess = true)
             {
                 this.success = success;
                 this.retryable = retryable;
+                this.rawSuccess = rawSuccess;
+            }
+
+            public RawCaptureUploadRequest LastRawCaptureRequest { get; private set; }
+
+            public Task<RawCaptureUploadResult> UploadRawCaptureAsync(RawCaptureUploadRequest request, CancellationToken cancellationToken = default)
+            {
+                LastRawCaptureRequest = request;
+                return Task.FromResult(new RawCaptureUploadResult
+                {
+                    Success = rawSuccess,
+                    Retryable = !rawSuccess && retryable,
+                    Message = rawSuccess ? "Raw uploaded" : "Raw timeout",
+                    RemoteAssetKey = $"raw/{request.JobId}/{request.CaptureIndex:00}",
+                    FileUrl = $"https://example.invalid/files/raw/{request.JobId}/{request.CaptureIndex:00}"
+                });
             }
 
             public Task<SyncJobResult> UploadAndPublishAsync(SyncJobRequest request, CancellationToken cancellationToken = default)

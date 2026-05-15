@@ -61,11 +61,13 @@ namespace PhotoBooth.Booth.Sync
                 ThemeId = job.ThemeId,
                 ComposedImagePath = job.Paths.ComposedImagePath,
                 ThumbnailPath = job.Paths.ThumbnailPath,
+                LiveImagePath = ResolveLiveImagePath(job),
                 MotionVideoPath = job.MotionVideoPath,
                 CurrencyCode = job.CurrencyCode,
                 AmountMinorUnits = job.AmountMinorUnits,
                 PaymentReference = job.PaymentReference,
-                MotionClipFramePaths = job.MotionClipFramePaths
+                MotionClipFramePaths = job.MotionClipFramePaths,
+                SessionStartedAtUtc = ResolveSessionStartedAtUtc(job)
             };
 
             var result = await syncClient.UploadAndPublishAsync(request, cancellationToken);
@@ -83,9 +85,42 @@ namespace PhotoBooth.Booth.Sync
             return sessionService.Fail(jobId, result.Message);
         }
 
+        public Task<RawCaptureUploadResult> UploadRawCaptureAsync(RawCaptureUploadRequest request, CancellationToken cancellationToken = default)
+        {
+            if (request == null)
+            {
+                throw new ArgumentNullException(nameof(request));
+            }
+
+            if (string.IsNullOrWhiteSpace(request.DeviceId))
+            {
+                request.DeviceId = ResolveDeviceId();
+            }
+
+            return syncClient.UploadRawCaptureAsync(request, cancellationToken);
+        }
+
         private string ResolveDeviceId()
         {
             return string.IsNullOrWhiteSpace(config.DeviceId) ? "booth-local" : config.DeviceId.Trim();
+        }
+
+        private static string ResolveSessionStartedAtUtc(BoothJob job)
+        {
+            return string.IsNullOrWhiteSpace(job?.CreatedAtUtc)
+                ? DateTime.UtcNow.ToString("O")
+                : job.CreatedAtUtc;
+        }
+
+        private static string ResolveLiveImagePath(BoothJob job)
+        {
+            if (string.IsNullOrWhiteSpace(job?.Paths?.ComposedDirectory))
+            {
+                return null;
+            }
+
+            var liveImagePath = Path.Combine(job.Paths.ComposedDirectory, "live.png");
+            return File.Exists(liveImagePath) ? liveImagePath : null;
         }
     }
 }

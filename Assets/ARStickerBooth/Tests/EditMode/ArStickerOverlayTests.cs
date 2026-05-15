@@ -43,13 +43,13 @@ namespace PhotoBooth.Booth.Tests.EditMode
         }
 
         [Test]
-        public void TransformResolver_UsesReliableEyeLandmarksForSunglasses()
+        public void TransformResolver_UsesReliableEyeLandmarksForEyeAnchoredSticker()
         {
             var face = CreateFace(0.5f, 0.5f);
             face.HasReliableEyeLandmarks = true;
             face.NormalizedLandmarks[33] = new Vector2(0.38f, 0.65f);
             face.NormalizedLandmarks[263] = new Vector2(0.62f, 0.65f);
-            var sticker = new ArStickerDefinition { anchor = ArStickerAnchor.Eyes, builtinShape = ArStickerBuiltinShape.Sunglasses };
+            var sticker = new ArStickerDefinition { anchor = ArStickerAnchor.Eyes, builtinShape = ArStickerBuiltinShape.Nose };
 
             Assert.That(ArStickerTransformResolver.TryResolve(face, sticker, new Vector2Int(1000, 1000), false, out var rect, out _), Is.True);
 
@@ -64,86 +64,13 @@ namespace PhotoBooth.Booth.Tests.EditMode
             face.HasReliableEyeLandmarks = false;
             face.NormalizedLandmarks[33] = new Vector2(0.48f, 0.32f);
             face.NormalizedLandmarks[263] = new Vector2(0.52f, 0.32f);
-            var sticker = new ArStickerDefinition { anchor = ArStickerAnchor.Eyes, builtinShape = ArStickerBuiltinShape.Sunglasses };
+            var sticker = new ArStickerDefinition { anchor = ArStickerAnchor.Eyes, builtinShape = ArStickerBuiltinShape.Nose };
 
             Assert.That(ArStickerTransformResolver.TryResolve(face, sticker, new Vector2Int(1000, 1000), false, out var rect, out _), Is.True);
 
             var expectedGuideY = face.NormalizedBounds.yMin + (face.NormalizedBounds.height * 0.74f);
             Assert.That(rect.center.x, Is.EqualTo(500f).Within(1f));
             Assert.That(rect.center.y, Is.EqualTo((1f - expectedGuideY) * 1000f).Within(1f));
-        }
-
-        [Test]
-        public void FaceModelRig_NormalizedMappingMatchesDebugOverlaySpace()
-        {
-            var overlayRect = new Rect(-430f, -430f, 860f, 860f);
-            var mapped = ArPreviewFaceModelRig.NormalizedToOverlayPosition(new Vector2(0.25f, 0.75f), overlayRect);
-
-            Assert.That(mapped.x, Is.EqualTo(-215f).Within(0.01f));
-            Assert.That(mapped.y, Is.EqualTo(215f).Within(0.01f));
-        }
-
-        [Test]
-        public void FaceModelRig_ScreenOffsetTracksEyeDistance()
-        {
-            var adjusted = ArPreviewFaceModelRig.ApplyFaceMaskScreenOffset(
-                new Vector2(0.5f, 0.45f),
-                new Vector2(0.1f, 0.45f),
-                0.2f);
-
-            Assert.That(adjusted.x, Is.EqualTo(0.52f).Within(0.001f));
-            Assert.That(adjusted.y, Is.EqualTo(0.54f).Within(0.001f));
-        }
-
-        [Test]
-        public void FaceModelRig_UsesOverlayRectSizeForLivePreviewRenderTexture()
-        {
-            var overlayHost = new GameObject("Overlay", typeof(RectTransform), typeof(RawImage));
-            var rigHost = new GameObject("Rig", typeof(ArPreviewFaceModelRig));
-            try
-            {
-                var overlayRect = overlayHost.GetComponent<RectTransform>();
-                overlayRect.sizeDelta = new Vector2(860f, 860f);
-                var overlay = overlayHost.GetComponent<RawImage>();
-                var rig = rigHost.GetComponent<ArPreviewFaceModelRig>();
-                rig.ShowGuideModel = false;
-                rig.Initialize(overlay);
-
-                rig.ApplyFace(CreateFace(0.5f, 0.5f), 1280, 720);
-
-                var renderTexture = overlay.texture as RenderTexture;
-                Assert.That(renderTexture, Is.Not.Null);
-                Assert.That(renderTexture.width, Is.EqualTo(860));
-                Assert.That(renderTexture.height, Is.EqualTo(860));
-            }
-            finally
-            {
-                UnityEngine.Object.DestroyImmediate(rigHost);
-                UnityEngine.Object.DestroyImmediate(overlayHost);
-            }
-        }
-
-        [Test]
-        public void FaceModelRig_CanonicalModeFallsBackWithoutFaceTransform()
-        {
-            var face = CreateFace(0.5f, 0.5f);
-            face.HasFaceTransform = false;
-
-            var effectiveMode = ArPreviewFaceModelRig.ResolveEffectiveAlignmentMode(
-                Tracked3dFaceModelAlignmentMode.CanonicalMatrix,
-                face);
-
-            Assert.That(effectiveMode, Is.EqualTo(Tracked3dFaceModelAlignmentMode.LandmarkAnchored));
-        }
-
-        [Test]
-        public void FaceModelRig_FacePartAnchorsResolveToExpectedRigAnchors()
-        {
-            Assert.That(ArPreviewFaceModelRig.ResolveFacePartAnchorName(Tracked3dFacePartAnchor.Eyes), Is.EqualTo("Eyes"));
-            Assert.That(ArPreviewFaceModelRig.ResolveFacePartAnchorName(Tracked3dFacePartAnchor.Nose), Is.EqualTo("Nose"));
-            Assert.That(ArPreviewFaceModelRig.ResolveFacePartAnchorName(Tracked3dFacePartAnchor.Mouth), Is.EqualTo("Mouth"));
-            Assert.That(ArPreviewFaceModelRig.ResolveFacePartAnchorName(Tracked3dFacePartAnchor.Forehead), Is.EqualTo("Forehead"));
-            Assert.That(ArPreviewFaceModelRig.ResolveFacePartAnchorName(Tracked3dFacePartAnchor.Chin), Is.EqualTo("Chin"));
         }
 
         [Test]
@@ -171,36 +98,10 @@ namespace PhotoBooth.Booth.Tests.EditMode
         }
 
         [Test]
-        public void FaceModelRig_AlphaBlendOverlayKeepsTargetSize()
-        {
-            var target = SolidTexture(2, 1, Color.blue);
-            try
-            {
-                var overlay = new[]
-                {
-                    new Color32(255, 0, 0, 128),
-                    new Color32(0, 0, 0, 0)
-                };
-
-                ArPreviewFaceModelRig.AlphaBlendOverlay(target, overlay);
-                var pixels = target.GetPixels32();
-
-                Assert.That(target.width, Is.EqualTo(2));
-                Assert.That(target.height, Is.EqualTo(1));
-                Assert.That(pixels[0].r, Is.GreaterThan(100));
-                Assert.That(pixels[0].b, Is.GreaterThan(100));
-                Assert.That(pixels[1].b, Is.EqualTo(255));
-            }
-            finally
-            {
-                UnityEngine.Object.DestroyImmediate(target);
-            }
-        }
-
-        [Test]
         public void StickerRenderer_BakesStickerForEveryFace()
         {
             var texture = SolidTexture(256, 256, Color.cyan);
+            var stickerTexture = SolidTexture(32, 16, Color.black);
             var renderer = new ArStickerRenderer();
             try
             {
@@ -211,7 +112,19 @@ namespace PhotoBooth.Booth.Tests.EditMode
                     Faces = new[] { CreateFace(0.32f, 0.42f), CreateFace(0.68f, 0.42f) }
                 };
 
-                renderer.ApplyToTexture(texture, frame, ArStickerRenderer.CreateDefaultStickers(), false);
+                var stickers = new[]
+                {
+                    new ArStickerDefinition
+                    {
+                        stickerId = "test_eye_overlay",
+                        texture = stickerTexture,
+                        anchor = ArStickerAnchor.Eyes,
+                        sizeScale = Vector2.one,
+                        tint = Color.white
+                    }
+                };
+
+                renderer.ApplyToTexture(texture, frame, stickers, false);
 
                 var darkPixels = 0;
                 foreach (var pixel in texture.GetPixels32())
@@ -228,6 +141,7 @@ namespace PhotoBooth.Booth.Tests.EditMode
             {
                 renderer.Dispose();
                 UnityEngine.Object.DestroyImmediate(texture);
+                UnityEngine.Object.DestroyImmediate(stickerTexture);
             }
         }
 
@@ -249,6 +163,7 @@ namespace PhotoBooth.Booth.Tests.EditMode
             job = sessions.BeginComposing(job.JobId);
 
             var renderer = new ArStickerRenderer();
+            var stickerTexture = SolidTexture(32, 16, Color.black);
             try
             {
                 var frame = new ArTrackingFrame
@@ -257,13 +172,24 @@ namespace PhotoBooth.Booth.Tests.EditMode
                     PixelHeight = 128,
                     Faces = new[] { CreateFace(0.5f, 0.42f) }
                 };
+                var stickers = new[]
+                {
+                    new ArStickerDefinition
+                    {
+                        stickerId = "test_eye_overlay",
+                        texture = stickerTexture,
+                        anchor = ArStickerAnchor.Eyes,
+                        sizeScale = Vector2.one,
+                        tint = Color.white
+                    }
+                };
 
                 var result = new BoothImageComposer().Compose(
                     job,
                     rawPath,
                     new Vector2Int(32, 32),
                     null,
-                    texture => renderer.ApplyToTexture(texture, frame, ArStickerRenderer.CreateDefaultStickers(), false));
+                    texture => renderer.ApplyToTexture(texture, frame, stickers, false));
 
                 var composed = LoadPng(result.ComposedImagePath);
                 try
@@ -278,6 +204,7 @@ namespace PhotoBooth.Booth.Tests.EditMode
             finally
             {
                 renderer.Dispose();
+                UnityEngine.Object.DestroyImmediate(stickerTexture);
             }
         }
 

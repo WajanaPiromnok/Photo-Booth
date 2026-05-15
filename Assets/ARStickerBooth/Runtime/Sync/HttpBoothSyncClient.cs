@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -16,6 +17,50 @@ namespace PhotoBooth.Booth.Sync
         public HttpBoothSyncClient(BoothBackendScaffoldConfig config)
         {
             this.config = config ?? throw new ArgumentNullException(nameof(config));
+        }
+
+        public async Task<RawCaptureUploadResult> UploadRawCaptureAsync(RawCaptureUploadRequest request, CancellationToken cancellationToken = default)
+        {
+            if (request == null)
+            {
+                throw new ArgumentNullException(nameof(request));
+            }
+
+            if (string.IsNullOrWhiteSpace(request.RawCapturePath) || !File.Exists(request.RawCapturePath))
+            {
+                return RawFailure("Raw capture file is missing.", false);
+            }
+
+            if (string.IsNullOrWhiteSpace(config.BoothApiBaseUrl))
+            {
+                return RawFailure("Booth API base URL is not configured.", false);
+            }
+
+            var uploadUrl = BoothBackendPathResolver.Resolve(
+                config.BoothApiBaseUrl,
+                string.IsNullOrWhiteSpace(config.RawCaptureUploadPathTemplate) ? "/v1/jobs/{jobId}/assets/raw-capture" : config.RawCaptureUploadPathTemplate,
+                request.JobId);
+
+            var sections = new List<IMultipartFormSection>();
+            AddMultipartField(sections, "job_id", request.JobId, true);
+            AddMultipartField(sections, "device_id", ResolveDeviceId(request.DeviceId), true);
+            AddMultipartField(sections, "theme_id", request.ThemeId, false);
+            AddMultipartField(sections, "currency", request.CurrencyCode, false);
+            AddMultipartField(sections, "amount_minor_units", request.AmountMinorUnits.ToString(), true);
+            AddMultipartField(sections, "payment_reference", request.PaymentReference, false);
+            AddMultipartField(sections, "capture_index", Math.Max(1, request.CaptureIndex).ToString(), true);
+            AddMultipartField(sections, "capture_total", Math.Max(1, request.CaptureTotal).ToString(), true);
+            AddMultipartField(sections, "session_started_at_utc", request.SessionStartedAtUtc, true);
+            AddMultipartField(sections, "capture_taken_at_utc", request.CaptureTakenAtUtc, true);
+            sections.Add(new MultipartFormFileSection("raw_capture_file", File.ReadAllBytes(request.RawCapturePath), Path.GetFileName(request.RawCapturePath), ResolveContentType(request.RawCapturePath)));
+
+            using var requestMessage = UnityWebRequest.Post(uploadUrl, sections);
+            requestMessage.timeout = ResolveTimeoutSeconds();
+            requestMessage.downloadHandler = new DownloadHandlerBuffer();
+            ApplyHeaders(requestMessage, ResolveDeviceId(request.DeviceId));
+
+            await SendAsync(requestMessage, cancellationToken);
+            return ParseRawCaptureUploadResponse(request.JobId, requestMessage);
         }
 
         public async Task<SyncJobResult> UploadAndPublishAsync(SyncJobRequest request, CancellationToken cancellationToken = default)
@@ -76,16 +121,11 @@ namespace PhotoBooth.Booth.Sync
                 publishResponse.DownloadUrl = uploadResponse.DownloadUrl;
             }
 
-            if (string.IsNullOrWhiteSpace(publishResponse.DownloadUrl))
-            {
-                publishResponse.DownloadUrl = BuildDownloadUrl(request.JobId);
-            }
-
-            if (HasMotionVideo(request))
+            if (!string.IsNullOrWhiteSpace(publishResponse.DownloadUrl) && HasMotionVideo(request))
             {
                 publishResponse.MotionClipUrl = $"{publishResponse.DownloadUrl.TrimEnd('/')}/clip.mp4";
             }
-            else if (HasMotionClipFrames(request))
+            else if (!string.IsNullOrWhiteSpace(publishResponse.DownloadUrl) && HasMotionClipFrames(request))
             {
                 publishResponse.MotionClipUrl = $"{publishResponse.DownloadUrl.TrimEnd('/')}/clip";
             }
@@ -105,6 +145,7 @@ namespace PhotoBooth.Booth.Sync
                 string.IsNullOrWhiteSpace(config.AssetUploadPathTemplate) ? "/v1/jobs/{jobId}/assets/upload" : config.AssetUploadPathTemplate,
                 request.JobId);
 
+            var existingMotionFramePaths = EnumerateExistingMotionFrames(request).ToArray();
             var composedBytes = File.ReadAllBytes(request.ComposedImagePath);
             var sections = new List<IMultipartFormSection>();
             AddMultipartField(sections, "job_id", request.JobId, true);
@@ -113,6 +154,7 @@ namespace PhotoBooth.Booth.Sync
             AddMultipartField(sections, "currency", request.CurrencyCode, false);
             AddMultipartField(sections, "amount_minor_units", request.AmountMinorUnits.ToString(), true);
             AddMultipartField(sections, "payment_reference", request.PaymentReference, false);
+            AddMultipartField(sections, "session_started_at_utc", request.SessionStartedAtUtc, false);
             AddMultipartField(sections, "composed_checksum", BoothChecksumUtility.ComputeSha256Tag(request.ComposedImagePath), true);
             sections.Add(new MultipartFormFileSection("composed_file", composedBytes, Path.GetFileName(request.ComposedImagePath), ResolveContentType(request.ComposedImagePath)));
 
@@ -123,6 +165,12 @@ namespace PhotoBooth.Booth.Sync
                 sections.Add(new MultipartFormFileSection("thumbnail_file", File.ReadAllBytes(request.ThumbnailPath), Path.GetFileName(request.ThumbnailPath), ResolveContentType(request.ThumbnailPath)));
             }
 
+            if (HasLiveImage(request))
+            {
+                AddMultipartField(sections, "live_image_checksum", BoothChecksumUtility.ComputeSha256Tag(request.LiveImagePath), true);
+                sections.Add(new MultipartFormFileSection("live_image_file", File.ReadAllBytes(request.LiveImagePath), Path.GetFileName(request.LiveImagePath), ResolveContentType(request.LiveImagePath)));
+            }
+
             if (HasMotionVideo(request))
             {
                 AddMultipartField(sections, "motion_video_checksum", BoothChecksumUtility.ComputeSha256Tag(request.MotionVideoPath), true);
@@ -130,12 +178,23 @@ namespace PhotoBooth.Booth.Sync
             }
 
             var motionFrameIndex = 0;
-            foreach (var framePath in EnumerateExistingMotionFrames(request))
+            foreach (var framePath in existingMotionFramePaths)
             {
                 AddMultipartField(sections, $"motion_frame_checksum_{motionFrameIndex}", BoothChecksumUtility.ComputeSha256Tag(framePath), true);
                 sections.Add(new MultipartFormFileSection("motion_frame_files", File.ReadAllBytes(framePath), Path.GetFileName(framePath), ResolveContentType(framePath)));
                 motionFrameIndex += 1;
             }
+
+            Debug.Log(
+                "Photo booth final upload requested: " +
+                $"job={request.JobId}, " +
+                $"url={uploadUrl}, " +
+                $"composed={File.Exists(request.ComposedImagePath)}, " +
+                $"thumbnail={config.UploadThumbnail && !string.IsNullOrWhiteSpace(request.ThumbnailPath) && File.Exists(request.ThumbnailPath)}, " +
+                $"liveImage={HasLiveImage(request)}, " +
+                $"motionVideo={HasMotionVideo(request)}, " +
+                $"motionFrames={existingMotionFramePaths.Length}, " +
+                $"sessionStartedAtUtc={request.SessionStartedAtUtc}");
 
             using var requestMessage = UnityWebRequest.Post(uploadUrl, sections);
             requestMessage.timeout = ResolveTimeoutSeconds();
@@ -172,6 +231,17 @@ namespace PhotoBooth.Booth.Sync
                     remote_key = ResolveUploadedAssetKey(uploadResponse, "thumbnail") ?? $"{ResolveDeviceId(request.DeviceId)}/{request.JobId}/thumbnail",
                     content_type = ResolveContentType(request.ThumbnailPath),
                     checksum = BoothChecksumUtility.ComputeSha256Tag(request.ThumbnailPath)
+                });
+            }
+
+            if (HasLiveImage(request))
+            {
+                assets.Add(new BoothAssetRegistrationItem
+                {
+                    asset_type = "live_image",
+                    remote_key = ResolveUploadedAssetKey(uploadResponse, "live_image") ?? $"{ResolveDeviceId(request.DeviceId)}/{request.JobId}/live.png",
+                    content_type = ResolveContentType(request.LiveImagePath),
+                    checksum = BoothChecksumUtility.ComputeSha256Tag(request.LiveImagePath)
                 });
             }
 
@@ -302,6 +372,37 @@ namespace PhotoBooth.Booth.Sync
             };
         }
 
+        private RawCaptureUploadResult ParseRawCaptureUploadResponse(string jobId, UnityWebRequest request)
+        {
+            if (!IsSuccess(request))
+            {
+                return ParseRawFailure(request, $"Raw capture upload failed for {jobId}.");
+            }
+
+            var envelope = TryParseJson<BoothRawCaptureUploadResponseEnvelope>(request.downloadHandler.text);
+            if (envelope != null && !envelope.success)
+            {
+                return RawFailure(BuildEnvelopeErrorMessage(envelope.error, "Raw capture upload was rejected."), IsRetryable(request));
+            }
+
+            var remoteAssetKey = envelope?.data?.remote_asset_key;
+            if (string.IsNullOrWhiteSpace(remoteAssetKey))
+            {
+                remoteAssetKey = envelope?.data?.remote_key;
+            }
+
+            return new RawCaptureUploadResult
+            {
+                Success = true,
+                Retryable = false,
+                Message = "Raw capture upload completed.",
+                RemoteAssetKey = remoteAssetKey,
+                FileUrl = BuildFileUrl(remoteAssetKey),
+                SessionFolder = envelope?.data?.session_folder,
+                Assets = envelope?.data?.assets
+            };
+        }
+
         private SyncJobResult ParseRegistrationResponse(string jobId, UnityWebRequest request)
         {
             if (!IsSuccess(request))
@@ -420,6 +521,12 @@ namespace PhotoBooth.Booth.Sync
         private static SyncJobResult ParseFailure(UnityWebRequest request, string fallbackMessage)
         {
             var body = request.downloadHandler?.text;
+            var rawEnvelope = TryParseJson<BoothRawCaptureUploadResponseEnvelope>(body);
+            if (rawEnvelope?.error != null)
+            {
+                return Failure(BuildEnvelopeErrorMessage(rawEnvelope.error, fallbackMessage), IsRetryable(request));
+            }
+
             var uploadEnvelope = TryParseJson<BoothAssetUploadResponseEnvelope>(body);
             if (uploadEnvelope?.error != null)
             {
@@ -439,6 +546,18 @@ namespace PhotoBooth.Booth.Sync
             }
 
             return Failure($"{fallbackMessage} HTTP {(long)request.responseCode}: {request.error}", IsRetryable(request));
+        }
+
+        private static RawCaptureUploadResult ParseRawFailure(UnityWebRequest request, string fallbackMessage)
+        {
+            var body = request.downloadHandler?.text;
+            var rawEnvelope = TryParseJson<BoothRawCaptureUploadResponseEnvelope>(body);
+            if (rawEnvelope?.error != null)
+            {
+                return RawFailure(BuildEnvelopeErrorMessage(rawEnvelope.error, fallbackMessage), IsRetryable(request));
+            }
+
+            return RawFailure($"{fallbackMessage} HTTP {(long)request.responseCode}: {request.error}", IsRetryable(request));
         }
 
         private static string BuildEnvelopeErrorMessage(BoothApiError error, string fallbackMessage)
@@ -476,6 +595,16 @@ namespace PhotoBooth.Booth.Sync
             };
         }
 
+        private static RawCaptureUploadResult RawFailure(string message, bool retryable)
+        {
+            return new RawCaptureUploadResult
+            {
+                Success = false,
+                Retryable = retryable,
+                Message = message
+            };
+        }
+
         private static bool IsSuccess(UnityWebRequest request)
         {
             return request.result == UnityWebRequest.Result.Success && request.responseCode is >= 200 and < 300;
@@ -503,6 +632,22 @@ namespace PhotoBooth.Booth.Sync
             return $"{baseUrl}/{Uri.EscapeDataString(jobId ?? string.Empty)}";
         }
 
+        private string BuildFileUrl(string remoteAssetKey)
+        {
+            if (string.IsNullOrWhiteSpace(remoteAssetKey) || string.IsNullOrWhiteSpace(config.BoothApiBaseUrl))
+            {
+                return null;
+            }
+
+            var baseUrl = config.BoothApiBaseUrl.Trim().TrimEnd('/');
+            return $"{baseUrl}/files/{EncodePath(remoteAssetKey)}";
+        }
+
+        private static string EncodePath(string relativePath)
+        {
+            return string.Join("/", relativePath.Split('/').Select(Uri.EscapeDataString));
+        }
+
         private string ResolveDeviceId(string requestedDeviceId)
         {
             if (!string.IsNullOrWhiteSpace(requestedDeviceId))
@@ -526,6 +671,11 @@ namespace PhotoBooth.Booth.Sync
         private static bool HasMotionVideo(SyncJobRequest request)
         {
             return !string.IsNullOrWhiteSpace(request?.MotionVideoPath) && File.Exists(request.MotionVideoPath);
+        }
+
+        private static bool HasLiveImage(SyncJobRequest request)
+        {
+            return !string.IsNullOrWhiteSpace(request?.LiveImagePath) && File.Exists(request.LiveImagePath);
         }
 
         private static IEnumerable<string> EnumerateExistingMotionFrames(SyncJobRequest request)

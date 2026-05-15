@@ -85,6 +85,51 @@ namespace PhotoBooth.Booth.Tests.EditMode
         }
 
         [Test]
+        public void Composer_PhotoTemplateUsesAllCapturedImages()
+        {
+            var sessions = CreateSessionService();
+            var job = sessions.CreateJob(12000, "THB");
+            job = sessions.SelectTheme(job.JobId, "classic");
+            job = sessions.BypassPayment(job.JobId);
+            job = sessions.BeginCapture(job.JobId);
+
+            var rawPaths = new[]
+            {
+                Path.Combine(job.Paths.RawDirectory, "capture_01.png"),
+                Path.Combine(job.Paths.RawDirectory, "capture_02.png"),
+                Path.Combine(job.Paths.RawDirectory, "capture_03.png"),
+                Path.Combine(job.Paths.RawDirectory, "capture_04.png")
+            };
+
+            WriteTestPng(rawPaths[0], 64, 48, Color.red);
+            WriteTestPng(rawPaths[1], 64, 48, Color.green);
+            WriteTestPng(rawPaths[2], 64, 48, Color.blue);
+            WriteTestPng(rawPaths[3], 64, 48, Color.yellow);
+            job = sessions.MarkCaptured(job.JobId, 4, rawPaths[3], rawPaths);
+            job = sessions.BeginComposing(job.JobId);
+
+            var result = new BoothImageComposer().ComposePhotoGrid(job, rawPaths, new Vector2Int(32, 24));
+
+            Assert.That(File.Exists(result.ComposedImagePath), Is.True);
+            Assert.That(File.Exists(result.ThumbnailPath), Is.True);
+
+            var composed = LoadPng(result.ComposedImagePath);
+            try
+            {
+            Assert.That(composed.width, Is.EqualTo(4096));
+            Assert.That(composed.height, Is.EqualTo(4096));
+            Assert.That(composed.GetPixel(1313, 2075).r, Is.GreaterThan(0.8f));
+            Assert.That(composed.GetPixel(2776, 2075).g, Is.GreaterThan(0.4f));
+            Assert.That(composed.GetPixel(1313, 911).b, Is.GreaterThan(0.8f));
+            Assert.That(composed.GetPixel(2776, 911).r, Is.GreaterThan(0.8f));
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(composed);
+            }
+        }
+
+        [Test]
         public void BeginRetake_ResetsCaptureArtifactsBeforeUpload()
         {
             var sessions = CreateSessionService();
@@ -122,6 +167,11 @@ namespace PhotoBooth.Booth.Tests.EditMode
 
         private static void WriteTestPng(string path, int width, int height)
         {
+            WriteTestPng(path, width, height, Color.cyan);
+        }
+
+        private static void WriteTestPng(string path, int width, int height, Color color)
+        {
             Directory.CreateDirectory(Path.GetDirectoryName(path));
             var texture = new Texture2D(width, height, TextureFormat.RGBA32, false);
             try
@@ -129,7 +179,7 @@ namespace PhotoBooth.Booth.Tests.EditMode
                 var pixels = new Color[width * height];
                 for (var i = 0; i < pixels.Length; i++)
                 {
-                    pixels[i] = Color.cyan;
+                    pixels[i] = color;
                 }
 
                 texture.SetPixels(pixels);
@@ -140,6 +190,13 @@ namespace PhotoBooth.Booth.Tests.EditMode
             {
                 UnityEngine.Object.DestroyImmediate(texture);
             }
+        }
+
+        private static Texture2D LoadPng(string path)
+        {
+            var texture = new Texture2D(2, 2, TextureFormat.RGBA32, false);
+            ImageConversion.LoadImage(texture, File.ReadAllBytes(path));
+            return texture;
         }
     }
 }

@@ -55,6 +55,7 @@ namespace PhotoBooth.Booth.Services
         [SerializeField] private string backendPublishApiBaseUrl = string.Empty;
         [SerializeField] private string backendDownloadBaseUrl = "https://example.invalid/d";
         [SerializeField] private string backendAssetUploadPathTemplate = "/v1/jobs/{jobId}/assets/upload";
+        [SerializeField] private string backendRawCaptureUploadPathTemplate = "/v1/jobs/{jobId}/assets/raw-capture";
         [SerializeField] private string backendAssetRegistrationPathTemplate = "/v1/jobs/{jobId}/assets";
         [SerializeField] private string backendPublishPathTemplate = "/v1/jobs/{jobId}/publish";
         [SerializeField] private bool backendSeparateAssetRegistration = true;
@@ -78,6 +79,7 @@ namespace PhotoBooth.Booth.Services
         public string BackendDeviceId => string.IsNullOrWhiteSpace(backendDeviceId) ? boothId : backendDeviceId.Trim();
         public string BackendDeviceToken => backendDeviceToken ?? string.Empty;
         public string BackendBoothApiBaseUrl => backendBoothApiBaseUrl ?? string.Empty;
+        public string BackendDownloadBaseUrl => backendDownloadBaseUrl ?? string.Empty;
         public int BackendRequestTimeoutSeconds => Math.Max(1, backendRequestTimeoutSeconds);
 
         private string lastDemoJobId;
@@ -417,6 +419,7 @@ namespace PhotoBooth.Booth.Services
                 PublishApiBaseUrl = backendPublishApiBaseUrl,
                 DownloadBaseUrl = backendDownloadBaseUrl,
                 AssetUploadPathTemplate = backendAssetUploadPathTemplate,
+                RawCaptureUploadPathTemplate = backendRawCaptureUploadPathTemplate,
                 AssetRegistrationPathTemplate = backendAssetRegistrationPathTemplate,
                 PublishPathTemplate = backendPublishPathTemplate,
                 SeparateAssetRegistration = backendSeparateAssetRegistration,

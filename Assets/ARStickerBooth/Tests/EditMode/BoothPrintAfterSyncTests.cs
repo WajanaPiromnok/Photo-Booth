@@ -81,6 +81,17 @@ namespace PhotoBooth.Booth.Tests.EditMode
 
         private sealed class FakeSyncClient : IBoothSyncClient
         {
+            public Task<RawCaptureUploadResult> UploadRawCaptureAsync(RawCaptureUploadRequest request, CancellationToken cancellationToken = default)
+            {
+                return Task.FromResult(new RawCaptureUploadResult
+                {
+                    Success = true,
+                    Retryable = false,
+                    RemoteAssetKey = $"raw/{request.JobId}/{request.CaptureIndex:00}",
+                    FileUrl = $"https://example.invalid/files/raw/{request.JobId}/{request.CaptureIndex:00}"
+                });
+            }
+
             public Task<SyncJobResult> UploadAndPublishAsync(SyncJobRequest request, CancellationToken cancellationToken = default)
             {
                 return Task.FromResult(new SyncJobResult

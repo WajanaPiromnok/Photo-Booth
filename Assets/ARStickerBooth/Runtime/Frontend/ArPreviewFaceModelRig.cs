@@ -27,6 +27,63 @@ namespace PhotoBooth.Booth.Frontend
         RightCheek = 10
     }
 
+    public readonly struct ArFaceProjectionGeometry
+    {
+        public ArFaceProjectionGeometry(int sourceWidth, int sourceHeight, int renderWidth, int renderHeight, Rect viewportRect)
+        {
+            SourceWidth = Mathf.Max(1, sourceWidth);
+            SourceHeight = Mathf.Max(1, sourceHeight);
+            RenderWidth = Mathf.Max(1, renderWidth);
+            RenderHeight = Mathf.Max(1, renderHeight);
+            ViewportRect = viewportRect.width > 0f && viewportRect.height > 0f
+                ? viewportRect
+                : new Rect(0f, 0f, RenderWidth, RenderHeight);
+        }
+
+        public int SourceWidth { get; }
+        public int SourceHeight { get; }
+        public int RenderWidth { get; }
+        public int RenderHeight { get; }
+        public Rect ViewportRect { get; }
+        public bool IsValid => SourceWidth > 0 && SourceHeight > 0 && RenderWidth > 0 && RenderHeight > 0 && ViewportRect.width > 0f && ViewportRect.height > 0f;
+
+        public static ArFaceProjectionGeometry CreateStretched(int sourceWidth, int sourceHeight, int renderWidth, int renderHeight)
+        {
+            var resolvedRenderWidth = Mathf.Max(1, renderWidth);
+            var resolvedRenderHeight = Mathf.Max(1, renderHeight);
+            return new ArFaceProjectionGeometry(
+                sourceWidth,
+                sourceHeight,
+                resolvedRenderWidth,
+                resolvedRenderHeight,
+                new Rect(0f, 0f, resolvedRenderWidth, resolvedRenderHeight));
+        }
+
+        public Vector2 ProjectToRenderNormalized(Vector2 normalizedPoint)
+        {
+            var pixelX = ViewportRect.xMin + (Mathf.Clamp01(normalizedPoint.x) * ViewportRect.width);
+            var pixelY = ViewportRect.yMin + (Mathf.Clamp01(normalizedPoint.y) * ViewportRect.height);
+            return new Vector2(pixelX / RenderWidth, pixelY / RenderHeight);
+        }
+
+        public Vector3 ProjectToWorld(
+            Vector2 normalizedPoint,
+            float normalizedDepth,
+            float orthographicSize,
+            float baseDepth,
+            float depthScale)
+        {
+            var renderNormalizedPoint = ProjectToRenderNormalized(normalizedPoint);
+            var aspect = RenderHeight > 0 ? RenderWidth / (float)RenderHeight : 1f;
+            var worldHeight = orthographicSize * 2f;
+            var worldWidth = worldHeight * aspect;
+            return new Vector3(
+                (renderNormalizedPoint.x - 0.5f) * worldWidth,
+                (renderNormalizedPoint.y - 0.5f) * worldHeight,
+                baseDepth + (normalizedDepth * depthScale));
+        }
+    }
+
     [Serializable]
     public sealed class Tracked3dFacePartBinding
     {
@@ -58,14 +115,22 @@ namespace PhotoBooth.Booth.Frontend
         [SerializeField] private string modelAttachAnchorName = "FaceMaskCenter";
         [SerializeField] private float faceDepth = 0f;
         [SerializeField] private float faceDepthScale = 1.4f;
+        // Scale multiplier for the 3D face model based on eye distance.
+        // Diagnosis 2026-05-07: 2D tracking is accurate, adjust this only after localPositionOffset is correct.
         [SerializeField] private float modelScaleMultiplier = 1.9f;
+        // Weight for canonical matrix scale (0=landmark-based, 1=canonical matrix scale).
         [SerializeField] private float canonicalMatrixScaleWeight = 0.35f;
         [SerializeField] private float neutralFaceMaskNoseBlend = 0.38f;
         [SerializeField] private float sideFaceMaskNoseBlend = 0.85f;
         [SerializeField] private float fullSideYawDegrees = 35f;
         [SerializeField] private Vector2 faceMaskScreenOffsetByEyeDistance = Vector2.zero;
-        [SerializeField] private Vector3 modelLocalPositionOffset = Vector3.zero;
+        // Local position offset applied to model relative to FaceMaskCenter anchor.
+        // Diagnosis 2026-05-07: Model appeared offset to bottom-right. Fixed by moving LEFT (negative X) and UP (positive Y).
+        // Adjustment guide: X- = left, X+ = right, Y+ = up, Y- = down, Z = depth (adjust last).
+        [SerializeField] private Vector3 modelLocalPositionOffset = new(-0.8f, 0.6f, 0f);
+        // Local rotation offset (degrees) applied to model. Y=180° flips model to face camera.
         [SerializeField] private Vector3 modelLocalEulerOffset = new(0f, 180f, 0f);
+        // Base local scale applied before modelScaleMultiplier. Adjust AFTER localPositionOffset is correct.
         [SerializeField] private Vector3 modelLocalScaleOffset = new(9f, 9f, 9f);
         [SerializeField] private bool mirrorModelX = true;
         [SerializeField] private bool invertFaceYaw = true;
@@ -90,6 +155,7 @@ namespace PhotoBooth.Booth.Frontend
         private int currentSourceHeight;
         private int currentRenderWidth;
         private int currentRenderHeight;
+        private ArFaceProjectionGeometry currentProjectionGeometry;
 
         // Debug values for runtime display
         private float lastEyeWorldDistance;
@@ -97,6 +163,11 @@ namespace PhotoBooth.Booth.Frontend
         private Vector3 lastFaceMaskCenter;
         private Vector3 lastHeadEulerDegrees;
         private Tracked3dFaceModelAlignmentMode lastAlignmentMode;
+        private Vector2Int lastSourceSize;
+        private Vector2Int lastRenderSize;
+        private Rect lastViewportRect;
+        private Bounds lastModelBounds;
+        private bool lastHasModelBounds;
 
         public Transform HeadCenter => GetAnchor("HeadCenter");
         public Transform FaceMaskCenter => GetAnchor("FaceMaskCenter");
@@ -213,6 +284,12 @@ namespace PhotoBooth.Booth.Frontend
         public Vector3 LastFaceMaskCenter => lastFaceMaskCenter;
         public Vector3 LastHeadEulerDegrees => lastHeadEulerDegrees;
         public Tracked3dFaceModelAlignmentMode LastAlignmentMode => lastAlignmentMode;
+        public ArFaceProjectionGeometry LastProjectionGeometry => currentProjectionGeometry;
+        public Vector2Int LastSourceSize => lastSourceSize;
+        public Vector2Int LastRenderSize => lastRenderSize;
+        public Rect LastViewportRect => lastViewportRect;
+        public bool LastHasModelBounds => lastHasModelBounds;
+        public Bounds LastModelBounds => lastModelBounds;
 
         public static Vector2 NormalizedToOverlayPosition(Vector2 normalizedPoint, Rect overlayRect)
         {
@@ -372,8 +449,26 @@ namespace PhotoBooth.Booth.Frontend
                 return;
             }
 
-            EnsureCameraAndTexture(sourceWidth, sourceHeight, matchTargetOverlayRect: true);
-            if (!ApplyFaceTransform(face, sourceWidth, sourceHeight, out var eyeWorldDistance, enableModel: true))
+            var geometry = CreateLivePreviewProjectionGeometry(sourceWidth, sourceHeight);
+            ApplyFace(face, geometry);
+        }
+
+        public void ApplyFace(FaceTrack face, ArFaceProjectionGeometry geometry)
+        {
+            if (face == null)
+            {
+                Hide();
+                return;
+            }
+
+            if (!geometry.IsValid)
+            {
+                Hide();
+                return;
+            }
+
+            EnsureCameraAndTexture(geometry);
+            if (!ApplyFaceTransform(face, geometry, out var eyeWorldDistance, enableModel: true))
             {
                 Hide();
                 return;
@@ -391,19 +486,39 @@ namespace PhotoBooth.Booth.Frontend
             if (!loggedModelVisible && modelInstance != null && showGuideModel)
             {
                 loggedModelVisible = true;
-                Debug.Log($"PhotoBooth AR face model visible: position={FaceMaskCenter.position}, scale={FaceMaskCenter.localScale.x:0.000}, eyeWorldDistance={eyeWorldDistance:0.000}, mode={ResolveEffectiveAlignmentMode(alignmentMode, face)}");
+                Debug.Log($"PhotoBooth AR face model visible: position={FaceMaskCenter.position}, scale={FaceMaskCenter.localScale.x:0.000}, eyeWorldDistance={eyeWorldDistance:0.000}, source={geometry.SourceWidth}x{geometry.SourceHeight}, render={geometry.RenderWidth}x{geometry.RenderHeight}, viewport={geometry.ViewportRect}, mode={ResolveEffectiveAlignmentMode(alignmentMode, face)}");
             }
         }
 
         public bool CompositeFaceModel(Texture2D target, FaceTrack face)
+        {
+            if (target == null)
+            {
+                return false;
+            }
+
+            var geometry = ArFaceProjectionGeometry.CreateStretched(target.width, target.height, target.width, target.height);
+            return CompositeFaceModel(target, face, geometry);
+        }
+
+        public bool CompositeFaceModel(Texture2D target, FaceTrack face, ArFaceProjectionGeometry geometry)
         {
             if ((!showGuideModel && !HasFacePartModels()) || target == null || face == null)
             {
                 return false;
             }
 
-            EnsureCameraAndTexture(target.width, target.height);
-            if (!ApplyFaceTransform(face, target.width, target.height, out _, enableModel: true))
+            if (!geometry.IsValid || geometry.RenderWidth != target.width || geometry.RenderHeight != target.height)
+            {
+                geometry = ArFaceProjectionGeometry.CreateStretched(
+                    geometry.IsValid ? geometry.SourceWidth : target.width,
+                    geometry.IsValid ? geometry.SourceHeight : target.height,
+                    target.width,
+                    target.height);
+            }
+
+            EnsureCameraAndTexture(geometry);
+            if (!ApplyFaceTransform(face, geometry, out _, enableModel: true))
             {
                 return false;
             }
@@ -515,10 +630,10 @@ namespace PhotoBooth.Booth.Frontend
             ReleaseRenderTexture();
         }
 
-        private bool ApplyFaceTransform(FaceTrack face, int sourceWidth, int sourceHeight, out float eyeWorldDistance, bool enableModel)
+        private bool ApplyFaceTransform(FaceTrack face, ArFaceProjectionGeometry geometry, out float eyeWorldDistance, bool enableModel)
         {
             eyeWorldDistance = 0f;
-            if (face == null || sourceWidth <= 0 || sourceHeight <= 0)
+            if (face == null || !geometry.IsValid)
             {
                 return false;
             }
@@ -554,17 +669,17 @@ namespace PhotoBooth.Booth.Frontend
                 faceMaskScreenOffsetByEyeDistance,
                 eyeDistanceNormalized);
 
-            SetAnchor("HeadCenter", AverageOrFallback(landmarks, face.NormalizedBounds.center, 10, 152, 234, 454, 1), ResolveDepth(landmarks3D, 1), rotation, sourceWidth, sourceHeight);
-            SetAnchor("FaceMaskCenter", faceMaskCenter, ResolveDepth(landmarks3D, 1), rotation, sourceWidth, sourceHeight);
-            SetAnchor("Eyes", eyeCenter, (ResolveDepth(landmarks3D, 263) + ResolveDepth(landmarks3D, 33)) * 0.5f, rotation, sourceWidth, sourceHeight);
-            SetAnchor("LeftEye", leftEyePoint, ResolveDepth(landmarks3D, 263), rotation, sourceWidth, sourceHeight);
-            SetAnchor("RightEye", rightEyePoint, ResolveDepth(landmarks3D, 33), rotation, sourceWidth, sourceHeight);
-            SetAnchor("Nose", nosePoint, ResolveDepth(landmarks3D, 1), rotation, sourceWidth, sourceHeight);
-            SetAnchor("Mouth", AverageOrFallback(landmarks, mouthFallback, 13, 14, 61, 291), ResolveDepth(landmarks3D, 13), rotation, sourceWidth, sourceHeight);
-            SetAnchor("Forehead", PointOrFallback(landmarks, 10, foreheadFallback), ResolveDepth(landmarks3D, 10), rotation, sourceWidth, sourceHeight);
-            SetAnchor("LeftCheek", PointOrFallback(landmarks, 454, new Vector2(face.NormalizedBounds.xMax, face.NormalizedBounds.center.y)), ResolveDepth(landmarks3D, 454), rotation, sourceWidth, sourceHeight);
-            SetAnchor("RightCheek", PointOrFallback(landmarks, 234, new Vector2(face.NormalizedBounds.xMin, face.NormalizedBounds.center.y)), ResolveDepth(landmarks3D, 234), rotation, sourceWidth, sourceHeight);
-            SetAnchor("Chin", PointOrFallback(landmarks, 152, chinFallback), ResolveDepth(landmarks3D, 152), rotation, sourceWidth, sourceHeight);
+            SetAnchor("HeadCenter", AverageOrFallback(landmarks, face.NormalizedBounds.center, 10, 152, 234, 454, 1), ResolveDepth(landmarks3D, 1), rotation, geometry);
+            SetAnchor("FaceMaskCenter", faceMaskCenter, ResolveDepth(landmarks3D, 1), rotation, geometry);
+            SetAnchor("Eyes", eyeCenter, (ResolveDepth(landmarks3D, 263) + ResolveDepth(landmarks3D, 33)) * 0.5f, rotation, geometry);
+            SetAnchor("LeftEye", leftEyePoint, ResolveDepth(landmarks3D, 263), rotation, geometry);
+            SetAnchor("RightEye", rightEyePoint, ResolveDepth(landmarks3D, 33), rotation, geometry);
+            SetAnchor("Nose", nosePoint, ResolveDepth(landmarks3D, 1), rotation, geometry);
+            SetAnchor("Mouth", AverageOrFallback(landmarks, mouthFallback, 13, 14, 61, 291), ResolveDepth(landmarks3D, 13), rotation, geometry);
+            SetAnchor("Forehead", PointOrFallback(landmarks, 10, foreheadFallback), ResolveDepth(landmarks3D, 10), rotation, geometry);
+            SetAnchor("LeftCheek", PointOrFallback(landmarks, 454, new Vector2(face.NormalizedBounds.xMax, face.NormalizedBounds.center.y)), ResolveDepth(landmarks3D, 454), rotation, geometry);
+            SetAnchor("RightCheek", PointOrFallback(landmarks, 234, new Vector2(face.NormalizedBounds.xMin, face.NormalizedBounds.center.y)), ResolveDepth(landmarks3D, 234), rotation, geometry);
+            SetAnchor("Chin", PointOrFallback(landmarks, 152, chinFallback), ResolveDepth(landmarks3D, 152), rotation, geometry);
 
             eyeWorldDistance = Vector3.Distance(LeftEye.position, RightEye.position);
             var matrixScale = effectiveMode == Tracked3dFaceModelAlignmentMode.CanonicalMatrix
@@ -580,6 +695,9 @@ namespace PhotoBooth.Booth.Frontend
             lastFaceMaskCenter = FaceMaskCenter.position;
             lastHeadEulerDegrees = face.FaceEulerDegrees;
             lastAlignmentMode = effectiveMode;
+            lastSourceSize = new Vector2Int(geometry.SourceWidth, geometry.SourceHeight);
+            lastRenderSize = new Vector2Int(geometry.RenderWidth, geometry.RenderHeight);
+            lastViewportRect = geometry.ViewportRect;
 
             rigRoot.gameObject.SetActive(true);
 
@@ -599,6 +717,7 @@ namespace PhotoBooth.Booth.Frontend
             }
 
             ApplyFacePartModels(eyeWorldDistance, enableModel);
+            CaptureModelBoundsDebugInfo();
 
             return true;
         }
@@ -648,7 +767,6 @@ namespace PhotoBooth.Booth.Frontend
 
         private void EnsureCameraAndTexture(int sourceWidth = 0, int sourceHeight = 0, bool matchTargetOverlayRect = false)
         {
-            EnsureCamera();
             var resolvedSourceWidth = sourceWidth > 0 ? sourceWidth : (currentSourceWidth > 0 ? currentSourceWidth : renderTextureSize.x);
             var resolvedSourceHeight = sourceHeight > 0 ? sourceHeight : (currentSourceHeight > 0 ? currentSourceHeight : renderTextureSize.y);
             var width = Mathf.Max(256, resolvedSourceWidth);
@@ -659,15 +777,27 @@ namespace PhotoBooth.Booth.Frontend
                 height = Mathf.Max(256, overlaySize.y);
             }
 
-            currentSourceWidth = resolvedSourceWidth;
-            currentSourceHeight = resolvedSourceHeight;
-            currentRenderWidth = width;
-            currentRenderHeight = height;
+            EnsureCameraAndTexture(ArFaceProjectionGeometry.CreateStretched(resolvedSourceWidth, resolvedSourceHeight, width, height));
+        }
 
-            if (renderTexture == null || renderTexture.width != width || renderTexture.height != height)
+        private void EnsureCameraAndTexture(ArFaceProjectionGeometry geometry)
+        {
+            EnsureCamera();
+            if (!geometry.IsValid)
+            {
+                geometry = ArFaceProjectionGeometry.CreateStretched(renderTextureSize.x, renderTextureSize.y, renderTextureSize.x, renderTextureSize.y);
+            }
+
+            currentProjectionGeometry = geometry;
+            currentSourceWidth = geometry.SourceWidth;
+            currentSourceHeight = geometry.SourceHeight;
+            currentRenderWidth = Mathf.Max(256, geometry.RenderWidth);
+            currentRenderHeight = Mathf.Max(256, geometry.RenderHeight);
+
+            if (renderTexture == null || renderTexture.width != currentRenderWidth || renderTexture.height != currentRenderHeight)
             {
                 ReleaseRenderTexture();
-                renderTexture = new RenderTexture(width, height, 24, RenderTextureFormat.ARGB32)
+                renderTexture = new RenderTexture(currentRenderWidth, currentRenderHeight, 24, RenderTextureFormat.ARGB32)
                 {
                     name = "ArFaceModelOverlayRT"
                 };
@@ -681,6 +811,21 @@ namespace PhotoBooth.Booth.Frontend
                 targetOverlay.texture = renderTexture;
                 targetOverlay.raycastTarget = false;
             }
+        }
+
+        private ArFaceProjectionGeometry CreateLivePreviewProjectionGeometry(int sourceWidth, int sourceHeight)
+        {
+            var resolvedSourceWidth = sourceWidth > 0 ? sourceWidth : (currentSourceWidth > 0 ? currentSourceWidth : renderTextureSize.x);
+            var resolvedSourceHeight = sourceHeight > 0 ? sourceHeight : (currentSourceHeight > 0 ? currentSourceHeight : renderTextureSize.y);
+            var renderWidth = Mathf.Max(256, resolvedSourceWidth);
+            var renderHeight = Mathf.Max(256, resolvedSourceHeight);
+            if (TryGetTargetOverlayRenderSize(out var overlaySize))
+            {
+                renderWidth = Mathf.Max(256, overlaySize.x);
+                renderHeight = Mathf.Max(256, overlaySize.y);
+            }
+
+            return ArFaceProjectionGeometry.CreateStretched(resolvedSourceWidth, resolvedSourceHeight, renderWidth, renderHeight);
         }
 
         private bool TryGetTargetOverlayRenderSize(out Vector2Int size)
@@ -1037,6 +1182,34 @@ namespace PhotoBooth.Booth.Frontend
             }
         }
 
+        private void CaptureModelBoundsDebugInfo()
+        {
+            lastHasModelBounds = false;
+            lastModelBounds = default;
+            if (rigRoot == null)
+            {
+                return;
+            }
+
+            var renderers = rigRoot.GetComponentsInChildren<Renderer>(false);
+            foreach (var renderer in renderers)
+            {
+                if (renderer == null || !renderer.enabled)
+                {
+                    continue;
+                }
+
+                if (!lastHasModelBounds)
+                {
+                    lastModelBounds = renderer.bounds;
+                    lastHasModelBounds = true;
+                    continue;
+                }
+
+                lastModelBounds.Encapsulate(renderer.bounds);
+            }
+        }
+
         public static string ResolveFacePartAnchorName(Tracked3dFacePartAnchor anchor)
         {
             return anchor switch
@@ -1061,22 +1234,18 @@ namespace PhotoBooth.Booth.Frontend
             return string.IsNullOrWhiteSpace(binding?.name) ? binding?.anchor.ToString() ?? "Part" : binding.name;
         }
 
-        private void SetAnchor(string anchorName, Vector2 normalizedPoint, float normalizedDepth, Quaternion rotation, int sourceWidth, int sourceHeight)
+        private void SetAnchor(string anchorName, Vector2 normalizedPoint, float normalizedDepth, Quaternion rotation, ArFaceProjectionGeometry geometry)
         {
             var anchor = anchors[anchorName];
-            anchor.position = ViewportToWorld(normalizedPoint, normalizedDepth, sourceWidth, sourceHeight);
+            anchor.position = ViewportToWorld(normalizedPoint, normalizedDepth, geometry);
             anchor.rotation = rotation;
         }
 
-        private Vector3 ViewportToWorld(Vector2 normalizedPoint, float normalizedDepth, int sourceWidth, int sourceHeight)
+        private Vector3 ViewportToWorld(Vector2 normalizedPoint, float normalizedDepth, ArFaceProjectionGeometry geometry)
         {
-            var renderWidth = currentRenderWidth > 0 ? currentRenderWidth : sourceWidth;
-            var renderHeight = currentRenderHeight > 0 ? currentRenderHeight : sourceHeight;
-            return NormalizedToWorldPosition(
+            return geometry.ProjectToWorld(
                 normalizedPoint,
                 normalizedDepth,
-                renderWidth,
-                renderHeight,
                 overlayOrthographicSize,
                 faceDepth,
                 faceDepthScale);
@@ -1180,7 +1349,7 @@ namespace PhotoBooth.Booth.Frontend
             }
 
             const int boxWidth = 320;
-            const int boxHeight = 220;
+            const int boxHeight = 290;
             const int padding = 10;
 
             var skin = GUI.skin;
@@ -1206,6 +1375,13 @@ namespace PhotoBooth.Booth.Frontend
                 GUILayout.Label($"Face Mask Center: ({lastFaceMaskCenter.x:F2}, {lastFaceMaskCenter.y:F2}, {lastFaceMaskCenter.z:F2})");
                 GUILayout.Label($"Head Rotation: Y={lastHeadEulerDegrees.y:F1}°, P={lastHeadEulerDegrees.x:F1}°, R={lastHeadEulerDegrees.z:F1}°");
                 GUILayout.Label($"Alignment Mode: {lastAlignmentMode}");
+                GUILayout.Label($"Source: {lastSourceSize.x}x{lastSourceSize.y}");
+                GUILayout.Label($"Render: {lastRenderSize.x}x{lastRenderSize.y}");
+                GUILayout.Label($"Viewport: x={lastViewportRect.x:F0}, y={lastViewportRect.y:F0}, w={lastViewportRect.width:F0}, h={lastViewportRect.height:F0}");
+                GUILayout.Label(lastHasModelBounds
+                    ? $"Model Bounds: c=({lastModelBounds.center.x:F2},{lastModelBounds.center.y:F2},{lastModelBounds.center.z:F2}) s=({lastModelBounds.size.x:F2},{lastModelBounds.size.y:F2},{lastModelBounds.size.z:F2})"
+                    : "Model Bounds: none");
+                GUILayout.Label($"Camera: ortho={overlayOrthographicSize:F2}, aspect={(lastRenderSize.y > 0 ? lastRenderSize.x / (float)lastRenderSize.y : 0f):F3}");
                 GUILayout.Label($"Model Scale Multiplier: {modelScaleMultiplier:F4}");
                 GUILayout.Label($"Screen Offset: ({faceMaskScreenOffsetByEyeDistance.x:F3}, {faceMaskScreenOffsetByEyeDistance.y:F3})");
                 GUILayout.Label($"Nose Blend (Neutral): {neutralFaceMaskNoseBlend:F3}");
@@ -1241,6 +1417,30 @@ namespace PhotoBooth.Booth.Frontend
                       $"Notes={notes}";
 
             Debug.Log(csv);
+        }
+
+        /// <summary>
+        /// Applies a calibration preset from diagnosis testing. Use this to quickly test different calibration values.
+        /// Call this method during runtime or from editor scripts to test different offset configurations.
+        /// </summary>
+        /// <param name="offsetX">X offset: negative = left, positive = right</param>
+        /// <param name="offsetY">Y offset: positive = up, negative = down</param>
+        /// <param name="offsetZ">Z offset: depth (usually keep at 0 unless model clips)</param>
+        /// <param name="logSession">Whether to log the calibration session</param>
+        public void ApplyCalibrationOffset(float offsetX, float offsetY, float offsetZ = 0f, bool logSession = true)
+        {
+            modelLocalPositionOffset = new Vector3(offsetX, offsetY, offsetZ);
+            preserveExistingModelLocalTransform = false;
+
+            if (modelInstance != null)
+            {
+                modelInstanceWasReused = false;
+            }
+
+            if (logSession)
+            {
+                Debug.Log($"[CALIBRATION] Applied offset: X={offsetX:F3}, Y={offsetY:F3}, Z={offsetZ:F3}. Test: face front, turn left, turn right, tilt up/down.");
+            }
         }
     }
 }

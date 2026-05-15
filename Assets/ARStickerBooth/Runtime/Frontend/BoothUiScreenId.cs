@@ -12,6 +12,7 @@ namespace PhotoBooth.Booth.Frontend
         Printing = 7,
         Done = 8,
         Error = 9,
-        Operator = 10
+        Operator = 10,
+        ArSelect = 11
     }
 }

@@ -16,6 +16,39 @@ namespace PhotoBooth.Booth.Sync
             this.latencyMilliseconds = Math.Max(0, latencyMilliseconds);
         }
 
+        public async Task<RawCaptureUploadResult> UploadRawCaptureAsync(RawCaptureUploadRequest request, CancellationToken cancellationToken = default)
+        {
+            if (request == null)
+            {
+                throw new ArgumentNullException(nameof(request));
+            }
+
+            if (string.IsNullOrWhiteSpace(request.RawCapturePath) || !File.Exists(request.RawCapturePath))
+            {
+                return new RawCaptureUploadResult
+                {
+                    Success = false,
+                    Retryable = false,
+                    Message = "Raw capture file is missing."
+                };
+            }
+
+            if (latencyMilliseconds > 0)
+            {
+                await Task.Delay(latencyMilliseconds, cancellationToken);
+            }
+
+            return new RawCaptureUploadResult
+            {
+                Success = true,
+                Retryable = false,
+                Message = "Scaffold raw capture upload completed.",
+                RemoteAssetKey = $"{ResolveDeviceId(request.DeviceId)}/{request.JobId}/raw/capture_{Math.Max(1, request.CaptureIndex):00}",
+                FileUrl = $"{(string.IsNullOrWhiteSpace(config.BoothApiBaseUrl) ? "https://example.invalid" : config.BoothApiBaseUrl.Trim().TrimEnd('/'))}/files/{ResolveDeviceId(request.DeviceId)}/{request.JobId}/raw/capture_{Math.Max(1, request.CaptureIndex):00}",
+                SessionFolder = $"{request.SessionStartedAtUtc ?? "session"}_{request.JobId}"
+            };
+        }
+
         public async Task<SyncJobResult> UploadAndPublishAsync(SyncJobRequest request, CancellationToken cancellationToken = default)
         {
             if (request == null)

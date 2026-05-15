@@ -12,6 +12,7 @@ Minimal backend scaffold for the Unity booth runtime.
 ## Endpoints
 
 - `POST /v1/jobs/:jobId/assets/upload`
+- `POST /v1/jobs/:jobId/assets/raw-capture`
 - `POST /v1/jobs/:jobId/assets`
 - `POST /v1/jobs/:jobId/publish`
 - `GET /v1/jobs/:jobId`
@@ -60,12 +61,29 @@ Recommended values:
 - `backendPublishApiBaseUrl`: `https://api.example.com`
 - `backendDownloadBaseUrl`: `https://api.example.com/d`
 - `backendAssetUploadPathTemplate`: `/v1/jobs/{jobId}/assets/upload`
+- `backendRawCaptureUploadPathTemplate`: `/v1/jobs/{jobId}/assets/raw-capture`
 - `backendAssetRegistrationPathTemplate`: `/v1/jobs/{jobId}/assets`
 - `backendPublishPathTemplate`: `/v1/jobs/{jobId}/publish`
 - `backendSeparateAssetRegistration`: `true`
 - `backendUploadThumbnail`: `true`
 
 ## Expected upload form fields
+
+Raw capture upload (`/v1/jobs/:jobId/assets/raw-capture`):
+
+- `raw_capture_file`
+- `capture_index`
+- `capture_total`
+- `session_started_at_utc`
+- `capture_taken_at_utc`
+- `job_id`
+- `device_id`
+- `theme_id`
+- `currency`
+- `amount_minor_units`
+- `payment_reference`
+
+Final asset upload (`/v1/jobs/:jobId/assets/upload`):
 
 - `job_id`
 - `device_id`
@@ -77,6 +95,8 @@ Recommended values:
 - `composed_file`
 - `thumbnail_checksum` optional
 - `thumbnail_file` optional
+- `live_image_checksum` optional
+- `live_image_file` optional PNG contact sheet / live image
 - `motion_video_checksum` optional
 - `motion_video_file` optional MP4/MOV countdown clip
 - `motion_frame_checksum_<index>` optional fallback frame checksums
@@ -85,5 +105,6 @@ Recommended values:
 ## Notes
 
 - Files are stored in a Docker volume mounted at `/var/photo-booth/uploads`
-- Download links resolve through `/d/:jobId` and redirect to `/files/...`
+- Job files are grouped under `jobs/<yyyyMMdd_HHmmss_JOB-ID>/...` using `session_started_at_utc` converted to `Asia/Bangkok`
+- Download links resolve through `/d/:jobId` as a mobile-friendly session page with QR, framed image, liveview/clip, and download buttons. Direct final image access is available at `/d/:jobId/image`.
 - The scaffold uses local-disk storage first. You can move asset storage to S3/R2 later without changing the Unity contract much.

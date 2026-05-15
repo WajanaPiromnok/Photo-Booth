@@ -27,9 +27,10 @@ namespace PhotoBooth.Booth.AR
     public enum ArStickerBuiltinShape
     {
         None = 0,
-        Sunglasses = 1,
-        Crown = 2,
-        Mustache = 3
+        Nose = 1,
+        Horn = 2,
+        MushroomHorn = 3,
+        Lozado = 4
     }
 
     [Serializable]

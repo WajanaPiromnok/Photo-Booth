@@ -9,6 +9,8 @@ CREATE TABLE IF NOT EXISTS booth_jobs (
     currency_code TEXT NOT NULL DEFAULT 'THB',
     payment_reference TEXT,
     remote_asset_key TEXT,
+    session_folder TEXT,
+    session_started_at_utc TIMESTAMPTZ,
     download_url TEXT,
     published_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -18,6 +20,7 @@ CREATE TABLE IF NOT EXISTS booth_jobs (
 CREATE INDEX IF NOT EXISTS idx_booth_jobs_status ON booth_jobs(status);
 CREATE INDEX IF NOT EXISTS idx_booth_jobs_upload_status ON booth_jobs(upload_status);
 CREATE INDEX IF NOT EXISTS idx_booth_jobs_device_id ON booth_jobs(device_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_booth_jobs_session_folder ON booth_jobs(session_folder) WHERE session_folder IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS booth_assets (
     id BIGSERIAL PRIMARY KEY,
