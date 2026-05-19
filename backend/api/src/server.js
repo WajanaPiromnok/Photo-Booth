@@ -688,6 +688,55 @@ app.get("/d/:jobId/clip.mp4", async (req, res) => {
   }
 });
 
+app.get("/d/:jobId/clip-download.mp4", async (req, res) => {
+  const jobId = normalizeJobId(req.params.jobId);
+  if (!jobId) {
+    return res.status(400).send("Invalid job id.");
+  }
+
+  try {
+    const jobResult = await pool.query(
+      `SELECT upload_status
+       FROM booth_jobs
+       WHERE job_id = $1
+       LIMIT 1`,
+      [jobId]
+    );
+
+    if (jobResult.rowCount === 0) {
+      return res.status(404).send("Job not found.");
+    }
+
+    if (jobResult.rows[0].upload_status !== "LINK_READY") {
+      return res.status(202).send("Countdown video is still processing.");
+    }
+
+    const videoResult = await pool.query(
+      `SELECT remote_key, content_type
+       FROM booth_assets
+       WHERE job_id = $1 AND asset_type = 'motion_video'
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [jobId]
+    );
+
+    if (videoResult.rowCount === 0) {
+      return res.status(404).send("Countdown video was not uploaded for this job.");
+    }
+
+    const video = videoResult.rows[0];
+    const absolutePath = absoluteUploadPath(video.remote_key);
+    if (!fs.existsSync(absolutePath)) {
+      return res.status(404).send("Countdown video file was not found.");
+    }
+
+    return sendAttachmentFile(res, absolutePath, video.content_type || "video/mp4", `${jobId}-countdown.mp4`);
+  } catch (error) {
+    console.error("motion_video_attachment_download_failed", { jobId, error });
+    return res.status(500).send("Internal server error.");
+  }
+});
+
 app.get("/d/:jobId/liveview.mp4", async (req, res) => {
   const jobId = normalizeJobId(req.params.jobId);
   if (!jobId) {
@@ -1079,8 +1128,10 @@ function generatedDirectory(job) {
 
 function sendAttachmentFile(res, absolutePath, contentType, fileName) {
   const safeName = sanitizeFilename(fileName || "download.bin");
+  const encodedName = encodeURIComponent(safeName);
   res.setHeader("Content-Type", contentType || "application/octet-stream");
-  res.setHeader("Content-Disposition", `attachment; filename="${safeName}"`);
+  res.setHeader("Content-Disposition", `attachment; filename="${safeName}"; filename*=UTF-8''${encodedName}`);
+  res.setHeader("Content-Length", fs.statSync(absolutePath).size);
   res.setHeader("Cache-Control", "private, max-age=0, no-store");
   return res.sendFile(absolutePath);
 }
@@ -1661,6 +1712,7 @@ function renderDownloadPage({ job, composed, thumbnail, liveImage, motionVideo, 
   const framedCountdownVideoDownloadUrl = `/d/${encodeURIComponent(jobId)}/countdown-download.mp4`;
   const qrUrl = `/d/${encodeURIComponent(jobId)}/qr`;
   const motionVideoUrl = motionVideo ? `/d/${encodeURIComponent(jobId)}/clip.mp4` : "";
+  const motionVideoDownloadUrl = motionVideo ? `/d/${encodeURIComponent(jobId)}/clip-download.mp4` : "";
   const motionClipUrl = motionFrames.length > 0 ? `/d/${encodeURIComponent(jobId)}/clip` : "";
   const rawCaptureUrls = rawCaptures.map(assetUrl).filter(Boolean);
   const countdownSlotFrameUrls = buildCountdownSlotFrameUrls(motionFrames);
@@ -1771,7 +1823,7 @@ function renderDownloadPage({ job, composed, thumbnail, liveImage, motionVideo, 
       <div class="asset-row video-row">
         <img class="asset-icon video-icon" src="/assets/website/video.png" alt="">
         <div class="asset-label">VDO</div>
-        ${canDownloadCountdownPreview ? `<a class="download-image-button" href="${framedCountdownVideoDownloadUrl}" download>Download MP4</a>` : canDownloadWebPreview ? `<a class="download-image-button" href="${liveviewVideoDownloadUrl}" download>Download MP4</a>` : motionVideoUrl ? `<a class="download-image-button" href="${motionVideoUrl}" download>Download</a>` : `<span></span>`}
+        ${canDownloadCountdownPreview ? `<a class="download-image-button" href="${framedCountdownVideoDownloadUrl}" download>Download MP4</a>` : canDownloadWebPreview ? `<a class="download-image-button" href="${liveviewVideoDownloadUrl}" download>Download MP4</a>` : motionVideoDownloadUrl ? `<a class="download-image-button" href="${motionVideoDownloadUrl}" download>Download MP4</a>` : `<span></span>`}
       </div>
       <div class="video-stage">
         ${countdownClipMarkup || liveViewMarkup}
