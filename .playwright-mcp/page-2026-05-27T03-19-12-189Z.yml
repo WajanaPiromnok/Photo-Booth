@@ -1,0 +1,42 @@
+- main [ref=e2]:
+  - heading "The Furryways" [level=1] [ref=e3]:
+    - generic [ref=e4]: The
+    - generic [ref=e5]: Furryways
+  - region "Scan to download the image" [ref=e6]:
+    - paragraph [ref=e7]:
+      - text: Scan to
+      - strong [ref=e8]: Download
+      - text: the image
+    - img "Download QR code" [ref=e9]
+  - region "MRKREME World Tour Session" [ref=e10]:
+    - generic [ref=e12]:
+      - generic [ref=e13]: The
+      - generic [ref=e14]: Furryways
+    - generic [ref=e16]:
+      - generic [ref=e17]:
+        - generic [ref=e18]: From
+        - text: HGG
+      - generic [ref=e19]:
+        - generic [ref=e20]:
+          - text: Keep
+          - text: Cool
+        - generic [ref=e21]:
+          - generic [ref=e22]: Weight
+          - text: 99 KG
+      - generic [ref=e23]:
+        - generic [ref=e24]: To
+        - text: Kooky World
+      - generic [ref=e25]:
+        - text: Monster
+        - text: Pass
+    - generic [ref=e28]:
+      - generic [ref=e29]: Bangkok-A - กรุงเทพ
+      - generic [ref=e30]: K_O_O_KY_BANGKOK-A
+    - img "Captured photo" [ref=e31]
+    - generic [ref=e32]:
+      - generic [ref=e33]: Order No K - design-test
+      - generic [ref=e34]: Pos. 1
+  - link "Download Image" [ref=e35] [cursor=pointer]:
+    - /url: /world-tour/design-test/image-download
+  - link "Back to Home" [ref=e36] [cursor=pointer]:
+    - /url: /

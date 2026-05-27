@@ -45,6 +45,7 @@ namespace PhotoBooth.Booth.Sync
             AddMultipartField(sections, "job_id", request.JobId, true);
             AddMultipartField(sections, "device_id", ResolveDeviceId(request.DeviceId), true);
             AddMultipartField(sections, "theme_id", request.ThemeId, false);
+            AddMultipartField(sections, "image_preview_id", ResolveImagePreviewId(request.ImagePreviewId, request.ThemeId), false);
             AddMultipartField(sections, "currency", request.CurrencyCode, false);
             AddMultipartField(sections, "amount_minor_units", request.AmountMinorUnits.ToString(), true);
             AddMultipartField(sections, "payment_reference", request.PaymentReference, false);
@@ -151,6 +152,7 @@ namespace PhotoBooth.Booth.Sync
             AddMultipartField(sections, "job_id", request.JobId, true);
             AddMultipartField(sections, "device_id", ResolveDeviceId(request.DeviceId), true);
             AddMultipartField(sections, "theme_id", request.ThemeId, false);
+            AddMultipartField(sections, "image_preview_id", ResolveImagePreviewId(request.ImagePreviewId, request.ThemeId), false);
             AddMultipartField(sections, "currency", request.CurrencyCode, false);
             AddMultipartField(sections, "amount_minor_units", request.AmountMinorUnits.ToString(), true);
             AddMultipartField(sections, "payment_reference", request.PaymentReference, false);
@@ -283,7 +285,11 @@ namespace PhotoBooth.Booth.Sync
                 string.IsNullOrWhiteSpace(config.PublishPathTemplate) ? "/v1/jobs/{jobId}/publish" : config.PublishPathTemplate,
                 request.JobId);
 
-            var payload = JsonUtility.ToJson(new BoothPublishRequest { primary_asset_type = "composed" });
+            var payload = JsonUtility.ToJson(new BoothPublishRequest
+            {
+                primary_asset_type = "composed",
+                image_preview_id = ResolveImagePreviewId(request.ImagePreviewId, request.ThemeId)
+            });
             using var requestMessage = CreateJsonRequest(publishUrl, UnityWebRequest.kHttpVerbPOST, payload, ResolveDeviceId(request.DeviceId));
             await SendAsync(requestMessage, cancellationToken);
             return ParsePublishResponse(request.JobId, requestMessage);
@@ -312,6 +318,15 @@ namespace PhotoBooth.Booth.Sync
             {
                 request.SetRequestHeader("Authorization", $"Bearer {config.DeviceToken.Trim()}");
             }
+        }
+
+        private static string ResolveImagePreviewId(string imagePreviewId, string themeId)
+        {
+            return !string.IsNullOrWhiteSpace(imagePreviewId)
+                ? imagePreviewId.Trim()
+                : !string.IsNullOrWhiteSpace(themeId)
+                    ? themeId.Trim()
+                    : null;
         }
 
         private static async Task SendAsync(UnityWebRequest request, CancellationToken cancellationToken)
@@ -627,7 +642,7 @@ namespace PhotoBooth.Booth.Sync
         private string BuildDownloadUrl(string jobId)
         {
             var baseUrl = string.IsNullOrWhiteSpace(config.DownloadBaseUrl)
-                ? "https://example.invalid/d"
+                ? "https://example.invalid/world-tour"
                 : config.DownloadBaseUrl.Trim().TrimEnd('/');
             return $"{baseUrl}/{Uri.EscapeDataString(jobId ?? string.Empty)}";
         }

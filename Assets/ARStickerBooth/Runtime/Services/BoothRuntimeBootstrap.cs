@@ -53,7 +53,7 @@ namespace PhotoBooth.Booth.Services
         [SerializeField] private string backendDeviceToken = string.Empty;
         [SerializeField] private string backendBoothApiBaseUrl = string.Empty;
         [SerializeField] private string backendPublishApiBaseUrl = string.Empty;
-        [SerializeField] private string backendDownloadBaseUrl = "https://example.invalid/d";
+        [SerializeField] private string backendDownloadBaseUrl = "https://example.invalid/world-tour";
         [SerializeField] private string backendAssetUploadPathTemplate = "/v1/jobs/{jobId}/assets/upload";
         [SerializeField] private string backendRawCaptureUploadPathTemplate = "/v1/jobs/{jobId}/assets/raw-capture";
         [SerializeField] private string backendAssetRegistrationPathTemplate = "/v1/jobs/{jobId}/assets";

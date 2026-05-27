@@ -1,0 +1,8 @@
+- main [ref=e2]:
+  - img "The Furryways" [ref=e3]
+  - region "MRKREME World Tour Session" [ref=e4]:
+    - generic [ref=e5]:
+      - img "Furryways frame 1"
+      - img "Captured photo" [ref=e6]
+  - link "Download Image" [ref=e7] [cursor=pointer]:
+    - /url: /world-tour/template-1-test/image-download

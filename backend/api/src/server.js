@@ -27,7 +27,8 @@ const config = {
   requiredDeviceToken: (process.env.DEVICE_BEARER_TOKEN || "").trim(),
   requiredDeviceIdPrefix: (process.env.DEVICE_ID_PREFIX || "").trim(),
   allowCorsOrigin: (process.env.CORS_ORIGIN || "*").trim(),
-  downloadPageTitle: (process.env.DOWNLOAD_PAGE_TITLE || "MRKREME Photo Session").trim()
+  downloadPageTitle: (process.env.DOWNLOAD_PAGE_TITLE || "MRKREME Photo Session").trim(),
+  defaultDownloadRoutePrefix: normalizeDownloadRoutePrefix(process.env.DEFAULT_DOWNLOAD_ROUTE_PREFIX || "world-tour")
 };
 
 const pool = new Pool({
@@ -92,6 +93,7 @@ app.post("/v1/jobs/:jobId/assets/upload", requireDeviceAuth, upload.fields([
 
     const deviceId = normalizeOptional(req.get("X-Device-Id")) || normalizeOptional(req.body.device_id) || "booth-local";
     const themeId = normalizeOptional(req.body.theme_id);
+    const imagePreviewId = normalizeImagePreviewId(req.body.image_preview_id || themeId);
     const currencyCode = normalizeCurrency(req.body.currency);
     const amountMinorUnits = normalizeInteger(req.body.amount_minor_units, 0);
     const paymentReference = normalizeOptional(req.body.payment_reference);
@@ -101,6 +103,7 @@ app.post("/v1/jobs/:jobId/assets/upload", requireDeviceAuth, upload.fields([
       jobId,
       deviceId,
       themeId,
+      imagePreviewId,
       amountMinorUnits,
       currencyCode,
       paymentReference,
@@ -202,6 +205,7 @@ app.post("/v1/jobs/:jobId/assets/raw-capture", requireDeviceAuth, upload.fields(
       jobId,
       deviceId,
       themeId: normalizeOptional(req.body.theme_id),
+      imagePreviewId: normalizeImagePreviewId(req.body.image_preview_id || req.body.theme_id),
       amountMinorUnits: normalizeInteger(req.body.amount_minor_units, 0),
       currencyCode: normalizeCurrency(req.body.currency),
       paymentReference: normalizeOptional(req.body.payment_reference),
@@ -219,7 +223,10 @@ app.post("/v1/jobs/:jobId/assets/raw-capture", requireDeviceAuth, upload.fields(
     );
     const rawCaptureCount = Number(rawCaptureCountResult.rows[0]?.raw_capture_count || 0);
     const rawCapturesComplete = rawCaptureCount >= captureTotal;
-    const downloadUrl = `${config.publicBaseUrl}/d/${encodeURIComponent(jobId)}`;
+    const themeId = normalizeOptional(req.body.theme_id);
+    const imagePreviewId = normalizeImagePreviewId(req.body.image_preview_id || themeId);
+    const routePrefix = resolveDownloadRoutePrefix(themeId, imagePreviewId);
+    const downloadUrl = `${config.publicBaseUrl}/${routePrefix}/${encodeURIComponent(jobId)}`;
     await client.query(
       `UPDATE booth_jobs
        SET status = CASE WHEN $2 THEN 'LINK_READY' ELSE status END,
@@ -284,6 +291,7 @@ app.post("/v1/jobs/:jobId/assets", requireDeviceAuth, async (req, res) => {
       jobId,
       deviceId: normalizeOptional(req.get("X-Device-Id")) || "booth-local",
       themeId: null,
+      imagePreviewId: normalizeImagePreviewId(req.body?.image_preview_id),
       amountMinorUnits: 0,
       currencyCode: "THB",
       paymentReference: null
@@ -355,7 +363,7 @@ app.post("/v1/jobs/:jobId/publish", requireDeviceAuth, async (req, res) => {
     await client.query("BEGIN");
 
     const jobResult = await client.query(
-      `SELECT job_id, status, upload_status, remote_asset_key
+      `SELECT job_id, status, upload_status, remote_asset_key, theme_id, image_preview_id
        FROM booth_jobs
        WHERE job_id = $1
        LIMIT 1`,
@@ -380,7 +388,22 @@ app.post("/v1/jobs/:jobId/publish", requireDeviceAuth, async (req, res) => {
     }
 
     const asset = assetResult.rows[0];
-    const downloadUrl = `${config.publicBaseUrl}/d/${encodeURIComponent(jobId)}`;
+    const job = jobResult.rows[0];
+    const publishImagePreviewId = normalizeImagePreviewId(req.body?.image_preview_id || job.image_preview_id || job.theme_id);
+    if (publishImagePreviewId) {
+      await client.query(
+        `UPDATE booth_jobs
+         SET image_preview_id = $2,
+             updated_at = NOW()
+         WHERE job_id = $1`,
+        [jobId, publishImagePreviewId]
+      );
+      job.image_preview_id = publishImagePreviewId;
+    }
+
+    const themeId = job.theme_id;
+    const routePrefix = resolveDownloadRoutePrefix(themeId, job.image_preview_id);
+    const downloadUrl = `${config.publicBaseUrl}/${routePrefix}/${encodeURIComponent(jobId)}`;
     const motionVideoResult = await client.query(
       `SELECT remote_key
        FROM booth_assets
@@ -455,7 +478,7 @@ app.get("/v1/jobs/:jobId", async (req, res) => {
 
   try {
     const result = await pool.query(
-      `SELECT job_id, status, payment_status, upload_status, download_url, remote_asset_key, session_folder, session_started_at_utc, theme_id, amount_minor_units, currency_code, created_at, updated_at
+      `SELECT job_id, status, payment_status, upload_status, download_url, remote_asset_key, session_folder, session_started_at_utc, theme_id, image_preview_id, amount_minor_units, currency_code, created_at, updated_at
        FROM booth_jobs
        WHERE job_id = $1
        LIMIT 1`,
@@ -475,6 +498,7 @@ app.get("/v1/jobs/:jobId", async (req, res) => {
         payment_status: row.payment_status,
         upload_status: row.upload_status,
         theme_id: row.theme_id,
+        image_preview_id: row.image_preview_id,
         amount_minor_units: Number(row.amount_minor_units || 0),
         currency_code: row.currency_code,
         download_url: row.download_url,
@@ -541,7 +565,7 @@ app.post("/v1/analytics/events", requireDeviceAuth, async (req, res) => {
   }
 });
 
-app.get("/d/:jobId/qr", async (req, res) => {
+app.get(["/d/:jobId/qr", "/world-tour/:jobId/qr"], async (req, res) => {
   const jobId = normalizeJobId(req.params.jobId);
   if (!jobId) {
     return res.status(400).json(errorEnvelope("INVALID_JOB_ID", "Job id is required."));
@@ -574,7 +598,8 @@ app.get("/d/:jobId/qr", async (req, res) => {
       }
     }
 
-    const downloadUrl = job.download_url || `${config.publicBaseUrl}/d/${encodeURIComponent(jobId)}`;
+    const routePrefix = downloadRoutePrefixFromRequest(req);
+    const downloadUrl = buildDownloadUrl(routePrefix, jobId);
     const png = await QRCode.toBuffer(downloadUrl, {
       type: "png",
       errorCorrectionLevel: "M",
@@ -591,15 +616,16 @@ app.get("/d/:jobId/qr", async (req, res) => {
   }
 });
 
-app.get("/d/:jobId/clip", async (req, res) => {
+app.get(["/d/:jobId/clip", "/world-tour/:jobId/clip"], async (req, res) => {
   const jobId = normalizeJobId(req.params.jobId);
   if (!jobId) {
     return res.status(400).send("Invalid job id.");
   }
 
   try {
+    const routePrefix = downloadRoutePrefixFromRequest(req);
     const jobResult = await pool.query(
-      `SELECT upload_status
+      `SELECT job_id, upload_status, session_folder, theme_id, image_preview_id
        FROM booth_jobs
        WHERE job_id = $1
        LIMIT 1`,
@@ -637,15 +663,16 @@ app.get("/d/:jobId/clip", async (req, res) => {
   }
 });
 
-app.get("/d/:jobId/clip.mp4", async (req, res) => {
+app.get(["/d/:jobId/clip.mp4", "/world-tour/:jobId/clip.mp4"], async (req, res) => {
   const jobId = normalizeJobId(req.params.jobId);
   if (!jobId) {
     return res.status(400).send("Invalid job id.");
   }
 
   try {
+    const routePrefix = downloadRoutePrefixFromRequest(req);
     const jobResult = await pool.query(
-      `SELECT upload_status
+      `SELECT job_id, upload_status, session_folder, theme_id, image_preview_id
        FROM booth_jobs
        WHERE job_id = $1
        LIMIT 1`,
@@ -679,24 +706,28 @@ app.get("/d/:jobId/clip.mp4", async (req, res) => {
       return res.status(404).send("Countdown video file was not found.");
     }
 
-    res.setHeader("Content-Type", video.content_type || "video/mp4");
+    const responsePath = routePrefix === "world-tour"
+      ? await ensureWorldTourMotionVideo(jobResult.rows[0], absolutePath)
+      : absolutePath;
+    res.setHeader("Content-Type", "video/mp4");
     res.setHeader("Cache-Control", "public, max-age=300");
-    return res.sendFile(absolutePath);
+    return res.sendFile(responsePath);
   } catch (error) {
     console.error("motion_video_download_failed", { jobId, error });
     return res.status(500).send("Internal server error.");
   }
 });
 
-app.get("/d/:jobId/clip-download.mp4", async (req, res) => {
+app.get(["/d/:jobId/clip-download.mp4", "/world-tour/:jobId/clip-download.mp4"], async (req, res) => {
   const jobId = normalizeJobId(req.params.jobId);
   if (!jobId) {
     return res.status(400).send("Invalid job id.");
   }
 
   try {
+    const routePrefix = downloadRoutePrefixFromRequest(req);
     const jobResult = await pool.query(
-      `SELECT upload_status
+      `SELECT job_id, upload_status, session_folder, theme_id, image_preview_id
        FROM booth_jobs
        WHERE job_id = $1
        LIMIT 1`,
@@ -730,14 +761,17 @@ app.get("/d/:jobId/clip-download.mp4", async (req, res) => {
       return res.status(404).send("Countdown video file was not found.");
     }
 
-    return sendAttachmentFile(res, absolutePath, video.content_type || "video/mp4", `${jobId}-countdown.mp4`);
+    const responsePath = routePrefix === "world-tour"
+      ? await ensureWorldTourMotionVideo(jobResult.rows[0], absolutePath)
+      : absolutePath;
+    return sendAttachmentFile(res, responsePath, "video/mp4", `${jobId}-countdown.mp4`);
   } catch (error) {
     console.error("motion_video_attachment_download_failed", { jobId, error });
     return res.status(500).send("Internal server error.");
   }
 });
 
-app.get("/d/:jobId/liveview.mp4", async (req, res) => {
+app.get(["/d/:jobId/liveview.mp4", "/world-tour/:jobId/liveview.mp4"], async (req, res) => {
   const jobId = normalizeJobId(req.params.jobId);
   if (!jobId) {
     return res.status(400).send("Invalid job id.");
@@ -760,7 +794,7 @@ app.get("/d/:jobId/liveview.mp4", async (req, res) => {
   }
 });
 
-app.get("/d/:jobId/liveview-download.mp4", async (req, res) => {
+app.get(["/d/:jobId/liveview-download.mp4", "/world-tour/:jobId/liveview-download.mp4"], async (req, res) => {
   const jobId = normalizeJobId(req.params.jobId);
   if (!jobId) {
     return res.status(400).send("Invalid job id.");
@@ -781,20 +815,23 @@ app.get("/d/:jobId/liveview-download.mp4", async (req, res) => {
   }
 });
 
-app.get("/d/:jobId/framed-countdown.mp4", async (req, res) => {
+app.get(["/d/:jobId/framed-countdown.mp4", "/world-tour/:jobId/framed-countdown.mp4"], async (req, res) => {
   const jobId = normalizeJobId(req.params.jobId);
   if (!jobId) {
     return res.status(400).send("Invalid job id.");
   }
 
   try {
+    const routePrefix = downloadRoutePrefixFromRequest(req);
     const { job, assets } = await loadDownloadJobAssets(jobId);
     const motionFrames = assets.filter((asset) => asset.asset_type === "motion_frame");
     if (motionFrames.length === 0) {
       return res.status(404).send("Motion frames were not uploaded for this job.");
     }
 
-    const outputPath = await ensureFramedCountdownVideo(job, motionFrames);
+    const outputPath = routePrefix === "world-tour"
+      ? await ensureWorldTourCountdownVideo(job, motionFrames)
+      : await ensureLegacyFramedCountdownVideo(job, motionFrames);
     res.setHeader("Content-Type", "video/mp4");
     res.setHeader("Cache-Control", "public, max-age=300");
     return res.sendFile(outputPath);
@@ -804,20 +841,23 @@ app.get("/d/:jobId/framed-countdown.mp4", async (req, res) => {
   }
 });
 
-app.get("/d/:jobId/countdown-download.mp4", async (req, res) => {
+app.get(["/d/:jobId/countdown-download.mp4", "/world-tour/:jobId/countdown-download.mp4"], async (req, res) => {
   const jobId = normalizeJobId(req.params.jobId);
   if (!jobId) {
     return res.status(400).send("Invalid job id.");
   }
 
   try {
+    const routePrefix = downloadRoutePrefixFromRequest(req);
     const { job, assets } = await loadDownloadJobAssets(jobId);
     const motionFrames = assets.filter((asset) => asset.asset_type === "motion_frame");
     if (motionFrames.length === 0) {
       return res.status(404).send("Motion frames were not uploaded for this job.");
     }
 
-    const outputPath = await ensureFramedCountdownVideo(job, motionFrames);
+    const outputPath = routePrefix === "world-tour"
+      ? await ensureWorldTourCountdownVideo(job, motionFrames)
+      : await ensureLegacyFramedCountdownVideo(job, motionFrames);
     return sendAttachmentFile(res, outputPath, "video/mp4", `${jobId}-countdown.mp4`);
   } catch (error) {
     console.error("framed_countdown_video_download_failed", { jobId, error });
@@ -825,7 +865,7 @@ app.get("/d/:jobId/countdown-download.mp4", async (req, res) => {
   }
 });
 
-app.get("/d/:jobId/image", async (req, res) => {
+app.get(["/d/:jobId/image", "/world-tour/:jobId/image"], async (req, res) => {
   const jobId = normalizeJobId(req.params.jobId);
   if (!jobId) {
     return res.status(400).send("Invalid job id.");
@@ -856,30 +896,48 @@ app.get("/d/:jobId/image", async (req, res) => {
   }
 });
 
-app.get("/d/:jobId/image-download", async (req, res) => {
+app.get(["/d/:jobId/image-download", "/world-tour/:jobId/image-download"], async (req, res) => {
   const jobId = normalizeJobId(req.params.jobId);
   if (!jobId) {
     return res.status(400).send("Invalid job id.");
   }
 
   try {
+    const routePrefix = downloadRoutePrefixFromRequest(req);
     const { job, assets } = await loadDownloadJobAssets(jobId);
     const rawCaptures = sortRawCaptureAssets(assets.filter((asset) => asset.asset_type === "raw_capture"));
+    if (routePrefix === "world-tour") {
+      const photoAsset = rawCaptures[0] || findLatestAsset(assets, "composed") || findLatestAsset(assets, "live_image");
+      if (photoAsset?.remote_key) {
+        const outputPath = await ensureWorldTourPhotoImage(job, absoluteUploadPath(photoAsset.remote_key));
+        return sendAttachmentFile(res, outputPath, "image/jpeg", `${jobId}-photo.jpg`);
+      }
+
+      return res.status(202).send("Photo is still processing.");
+    }
+
     if (rawCaptures.length > 0) {
-      const outputPath = await ensureFramedPhotoImage(job, rawCaptures);
-      return sendAttachmentFile(res, outputPath, "image/png", `${jobId}-photo.png`);
+      const outputPath = await ensureLegacyFramedPhotoImage(job, rawCaptures);
+      return sendAttachmentFile(res, outputPath, "image/jpeg", `${jobId}-photo.jpg`);
     }
 
     const composed = findLatestAsset(assets, "composed") || { remote_key: job.remote_asset_key };
-    const composedPath = absoluteUploadPath(composed.remote_key);
-    return sendAttachmentFile(res, composedPath, composed.content_type || "image/png", `${jobId}-photo.png`);
+    if (composed?.remote_key) {
+      const composedPath = absoluteUploadPath(composed.remote_key);
+      if (fs.existsSync(composedPath)) {
+        const outputPath = await ensureCompressedComposedImage(job, composedPath);
+        return sendAttachmentFile(res, outputPath, "image/jpeg", `${jobId}-photo.jpg`);
+      }
+    }
+
+    return res.status(202).send("Photo is still processing.");
   } catch (error) {
     console.error("image_download_failed", { jobId, error });
     return res.status(error.statusCode || 500).send(error.message || "Internal server error.");
   }
 });
 
-app.get("/d/:jobId", async (req, res) => {
+app.get(["/d/:jobId", "/world-tour/:jobId"], async (req, res) => {
   const jobId = normalizeJobId(req.params.jobId);
   if (!jobId) {
     return res.status(400).send("Invalid job id.");
@@ -887,7 +945,7 @@ app.get("/d/:jobId", async (req, res) => {
 
   try {
     const jobResult = await pool.query(
-      `SELECT job_id, status, upload_status, remote_asset_key, download_url, session_folder, session_started_at_utc, theme_id, created_at, published_at
+      `SELECT job_id, status, upload_status, remote_asset_key, download_url, session_folder, session_started_at_utc, theme_id, image_preview_id, created_at, published_at
        FROM booth_jobs
        WHERE job_id = $1
        LIMIT 1`,
@@ -918,7 +976,12 @@ app.get("/d/:jobId", async (req, res) => {
     const liveImage = findLatestAsset(assets, "live_image");
     const motionVideo = findLatestAsset(assets, "motion_video");
     const motionFrames = assets.filter((asset) => asset.asset_type === "motion_frame");
-    const page = renderDownloadPage({
+
+    const routePrefix = downloadRoutePrefixFromRequest(req);
+    const renderPage = routePrefix === "world-tour"
+      ? renderWorldTourDownloadPage
+      : renderLegacyDownloadPage;
+    const page = renderPage({
       job,
       composed,
       thumbnail,
@@ -959,6 +1022,7 @@ async function initialize() {
       job_id TEXT PRIMARY KEY,
       device_id TEXT NOT NULL,
       theme_id TEXT,
+      image_preview_id TEXT,
       status TEXT NOT NULL DEFAULT 'CREATED',
       payment_status TEXT NOT NULL DEFAULT 'UNKNOWN',
       upload_status TEXT NOT NULL DEFAULT 'PENDING',
@@ -989,6 +1053,7 @@ async function initialize() {
     )`);
   await pool.query("ALTER TABLE booth_jobs ADD COLUMN IF NOT EXISTS session_folder TEXT");
   await pool.query("ALTER TABLE booth_jobs ADD COLUMN IF NOT EXISTS session_started_at_utc TIMESTAMPTZ");
+  await pool.query("ALTER TABLE booth_jobs ADD COLUMN IF NOT EXISTS image_preview_id TEXT");
   await pool.query("CREATE INDEX IF NOT EXISTS idx_booth_jobs_status ON booth_jobs(status)");
   await pool.query("CREATE INDEX IF NOT EXISTS idx_booth_jobs_upload_status ON booth_jobs(upload_status)");
   await pool.query("CREATE INDEX IF NOT EXISTS idx_booth_jobs_device_id ON booth_jobs(device_id)");
@@ -1077,7 +1142,7 @@ function writeRawCaptureFile(sessionFolder, captureIndex, captureTakenAtUtc, fil
 
 async function loadDownloadJobAssets(jobId) {
   const jobResult = await pool.query(
-    `SELECT job_id, status, upload_status, remote_asset_key, download_url, session_folder, session_started_at_utc, theme_id, created_at, published_at
+    `SELECT job_id, status, upload_status, remote_asset_key, download_url, session_folder, session_started_at_utc, theme_id, image_preview_id, created_at, published_at
      FROM booth_jobs
      WHERE job_id = $1
      LIMIT 1`,
@@ -1136,15 +1201,63 @@ function sendAttachmentFile(res, absolutePath, contentType, fileName) {
   return res.sendFile(absolutePath);
 }
 
-async function ensureFramedPhotoImage(job, rawCaptures) {
-  const outputPath = path.join(generatedDirectory(job), "photo_4096.png");
+async function ensureCompressedComposedImage(job, sourcePath) {
+  const outputPath = path.join(generatedDirectory(job), "photo_composed_3072_q86.jpg");
   if (fs.existsSync(outputPath)) {
     return outputPath;
   }
 
-  const rawPaths = rawCaptures.slice(0, 4).map((asset) => absoluteUploadPath(asset.remote_key));
-  await renderFramedPng(rawPaths, outputPath);
+  await runFfmpeg([
+    "-y",
+    "-i", sourcePath,
+    "-vf", "scale=3072:3072:flags=lanczos,format=yuvj420p",
+    "-q:v", "4",
+    outputPath
+  ]);
   return outputPath;
+}
+
+async function ensureLegacyFramedPhotoImage(job, rawCaptures) {
+  const outputPath = path.join(generatedDirectory(job), "photo_legacy_piece03_3072_q86.jpg");
+  if (fs.existsSync(outputPath)) {
+    return outputPath;
+  }
+
+  const sourcePath = path.join(generatedDirectory(job), "photo_legacy_piece03_source_4096.png");
+  const rawPaths = rawCaptures.slice(0, 4).map((asset) => absoluteUploadPath(asset.remote_key));
+  if (!fs.existsSync(sourcePath)) {
+    await renderLegacyFramedPng(rawPaths, sourcePath);
+  }
+
+  await compressStillImage(sourcePath, outputPath, "scale=3072:3072:flags=lanczos,format=yuvj420p");
+  return outputPath;
+}
+
+async function ensureWorldTourPhotoImage(job, photoPath) {
+  const labelTemplateId = resolveLabelTemplateId(job.image_preview_id || job.theme_id);
+  const outputPath = path.join(generatedDirectory(job), `photo_world-tour_frame-${labelTemplateId}_3072_q86.jpg`);
+  if (fs.existsSync(outputPath)) {
+    return outputPath;
+  }
+
+  const template = resolveWorldTourTemplate(labelTemplateId);
+  const sourcePath = path.join(generatedDirectory(job), `photo_world-tour_frame-${labelTemplateId}_source.png`);
+  if (!fs.existsSync(sourcePath)) {
+    await renderSingleSlotFramedPng(photoPath, sourcePath, template.path, template.slot);
+  }
+
+  await compressStillImage(sourcePath, outputPath, "format=yuvj420p");
+  return outputPath;
+}
+
+async function compressStillImage(sourcePath, outputPath, videoFilter) {
+  await runFfmpeg([
+    "-y",
+    "-i", sourcePath,
+    "-vf", videoFilter,
+    "-q:v", "4",
+    outputPath
+  ]);
 }
 
 async function ensureFramedLiveviewVideo(job, rawCaptures) {
@@ -1159,8 +1272,8 @@ async function ensureFramedLiveviewVideo(job, rawCaptures) {
   return outputPath;
 }
 
-async function ensureFramedCountdownVideo(job, motionFrames) {
-  const outputPath = path.join(generatedDirectory(job), "framed-countdown_1080.mp4");
+async function ensureLegacyFramedCountdownVideo(job, motionFrames) {
+  const outputPath = path.join(generatedDirectory(job), "framed-countdown_legacy_1080.mp4");
   if (fs.existsSync(outputPath)) {
     return outputPath;
   }
@@ -1178,12 +1291,48 @@ async function ensureFramedCountdownVideo(job, motionFrames) {
   return outputPath;
 }
 
+async function ensureWorldTourCountdownVideo(job, motionFrames) {
+  const labelTemplateId = resolveLabelTemplateId(job.image_preview_id || job.theme_id);
+  const outputPath = path.join(generatedDirectory(job), `framed-countdown_world-tour_frame-${labelTemplateId}_v2.mp4`);
+  if (fs.existsSync(outputPath)) {
+    return outputPath;
+  }
+
+  const sortedFrames = sortMotionFrameAssets(motionFrames).map((asset) => absoluteUploadPath(asset.remote_key));
+  if (sortedFrames.length === 0) {
+    throw httpError(404, "MOTION_FRAMES_NOT_FOUND", "Motion frame files were not found.");
+  }
+
+  const template = resolveWorldTourTemplate(labelTemplateId);
+  await renderSingleSlotFramedVideo(
+    sortedFrames,
+    0.25,
+    outputPath,
+    path.join(generatedDirectory(job), `countdown_world-tour_frame-${labelTemplateId}_frames`),
+    template.path,
+    template.slot
+  );
+  return outputPath;
+}
+
+async function ensureWorldTourMotionVideo(job, videoPath) {
+  const labelTemplateId = resolveLabelTemplateId(job.image_preview_id || job.theme_id);
+  const outputPath = path.join(generatedDirectory(job), `motion-video_world-tour_frame-${labelTemplateId}_v2.mp4`);
+  if (fs.existsSync(outputPath)) {
+    return outputPath;
+  }
+
+  const template = resolveWorldTourTemplate(labelTemplateId);
+  await renderSingleSlotFramedMotionVideo(videoPath, outputPath, template.path, template.slot);
+  return outputPath;
+}
+
 async function renderFramedVideo(frameSets, frameDurationSeconds, outputPath, frameDirectory) {
   fs.mkdirSync(frameDirectory, { recursive: true });
   const framePaths = [];
   for (let index = 0; index < frameSets.length; index += 1) {
     const framePath = path.join(frameDirectory, `frame_${String(index).padStart(3, "0")}.png`);
-    await renderFramedPng(frameSets[index], framePath);
+    await renderLegacyFramedPng(frameSets[index], framePath);
     framePaths.push(framePath);
   }
 
@@ -1211,7 +1360,68 @@ async function renderFramedVideo(frameSets, frameDurationSeconds, outputPath, fr
   ]);
 }
 
-async function renderFramedPng(imagePaths, outputPath) {
+async function renderSingleSlotFramedVideo(imagePaths, frameDurationSeconds, outputPath, frameDirectory, templatePath, slot) {
+  fs.mkdirSync(frameDirectory, { recursive: true });
+  const framePaths = [];
+  for (let index = 0; index < imagePaths.length; index += 1) {
+    const framePath = path.join(frameDirectory, `frame_${String(index).padStart(3, "0")}.png`);
+    await renderSingleSlotFramedPng(imagePaths[index], framePath, templatePath, slot);
+    framePaths.push(framePath);
+  }
+
+  const concatPath = path.join(frameDirectory, "frames.txt");
+  const concatLines = [];
+  for (const framePath of framePaths) {
+    concatLines.push(`file '${escapeFfmpegConcatPath(framePath)}'`);
+    concatLines.push(`duration ${frameDurationSeconds}`);
+  }
+
+  concatLines.push(`file '${escapeFfmpegConcatPath(framePaths[framePaths.length - 1])}'`);
+  fs.writeFileSync(concatPath, concatLines.join("\n"));
+  await runFfmpeg([
+    "-y",
+    "-f", "concat",
+    "-safe", "0",
+    "-i", concatPath,
+    "-vf", "fps=30,scale=1080:-2:flags=lanczos,format=yuv420p",
+    "-c:v", "libx264",
+    "-preset", "medium",
+    "-profile:v", "main",
+    "-level", "4.0",
+    "-movflags", "+faststart",
+    outputPath
+  ]);
+}
+
+async function renderSingleSlotFramedMotionVideo(videoPath, outputPath, templatePath, slot) {
+  if (!fs.existsSync(templatePath)) {
+    throw httpError(500, "FRAME_TEMPLATE_NOT_FOUND", "Frame template was not found.");
+  }
+
+  if (!fs.existsSync(videoPath)) {
+    throw httpError(404, "VIDEO_SOURCE_NOT_FOUND", "Video source file was not found.");
+  }
+
+  await runFfmpeg([
+    "-y",
+    "-loop", "1",
+    "-i", templatePath,
+    "-i", videoPath,
+    "-filter_complex",
+    `[1:v]scale=${slot.width}:${slot.height}:force_original_aspect_ratio=increase,crop=${slot.width}:${slot.height}[photo];[0:v][photo]overlay=${slot.x}:${slot.y}:shortest=1,scale=1080:-2:flags=lanczos,format=yuv420p[out]`,
+    "-map", "[out]",
+    "-an",
+    "-c:v", "libx264",
+    "-preset", "medium",
+    "-profile:v", "main",
+    "-level", "4.0",
+    "-movflags", "+faststart",
+    "-shortest",
+    outputPath
+  ]);
+}
+
+async function renderLegacyFramedPng(imagePaths, outputPath) {
   const templatePath = path.join(config.publicRoot, "assets", "piece_03.png");
   if (!fs.existsSync(templatePath)) {
     throw httpError(500, "FRAME_TEMPLATE_NOT_FOUND", "Frame template was not found.");
@@ -1254,6 +1464,28 @@ async function renderFramedPng(imagePaths, outputPath) {
   ]);
 }
 
+async function renderSingleSlotFramedPng(imagePath, outputPath, templatePath, slot) {
+  if (!fs.existsSync(templatePath)) {
+    throw httpError(500, "FRAME_TEMPLATE_NOT_FOUND", "Frame template was not found.");
+  }
+
+  if (!fs.existsSync(imagePath)) {
+    throw httpError(404, "PHOTO_SOURCE_NOT_FOUND", "Photo source file was not found.");
+  }
+
+  const scaledLabel = "photo";
+  await runFfmpeg([
+    "-y",
+    "-i", templatePath,
+    "-i", imagePath,
+    "-filter_complex",
+    `[1:v]scale=${slot.width}:${slot.height}:force_original_aspect_ratio=increase,crop=${slot.width}:${slot.height}[${scaledLabel}];[0:v][${scaledLabel}]overlay=${slot.x}:${slot.y}[out]`,
+    "-map", "[out]",
+    "-frames:v", "1",
+    outputPath
+  ]);
+}
+
 function escapeFfmpegConcatPath(filePath) {
   return String(filePath).replace(/'/g, "'\\''");
 }
@@ -1283,6 +1515,7 @@ async function ensureJob(client, input) {
         job_id,
         device_id,
         theme_id,
+        image_preview_id,
         status,
         payment_status,
         upload_status,
@@ -1292,11 +1525,12 @@ async function ensureJob(client, input) {
         session_started_at_utc,
         session_folder
       )
-      VALUES ($1, $2, $3, 'CREATED', 'UNKNOWN', 'PENDING', $4, $5, $6, $7, $8)
+      VALUES ($1, $2, $3, $4, 'CREATED', 'UNKNOWN', 'PENDING', $5, $6, $7, $8, $9)
       ON CONFLICT (job_id)
       DO UPDATE SET
         device_id = COALESCE(NULLIF(EXCLUDED.device_id, ''), booth_jobs.device_id),
         theme_id = COALESCE(EXCLUDED.theme_id, booth_jobs.theme_id),
+        image_preview_id = COALESCE(EXCLUDED.image_preview_id, booth_jobs.image_preview_id),
         amount_minor_units = CASE
           WHEN booth_jobs.amount_minor_units = 0 THEN EXCLUDED.amount_minor_units
           ELSE booth_jobs.amount_minor_units
@@ -1310,6 +1544,7 @@ async function ensureJob(client, input) {
       input.jobId,
       input.deviceId,
       input.themeId,
+      input.imagePreviewId,
       input.amountMinorUnits,
       input.currencyCode,
       input.paymentReference,
@@ -1397,6 +1632,40 @@ function normalizeOptional(value) {
 
   const normalized = String(value).trim();
   return normalized === "" ? null : normalized;
+}
+
+function normalizeImagePreviewId(value) {
+  const normalized = normalizeOptional(value);
+  if (!normalized) {
+    return null;
+  }
+
+  const lower = normalized.toLowerCase();
+  if (lower === "2" || lower === "image_preview_2" || lower === "theme_02" || lower.endsWith("_02")) {
+    return "image_preview_2";
+  }
+
+  if (lower === "1" || lower === "image_preview_1" || lower === "theme_01" || lower.endsWith("_01")) {
+    return "image_preview_1";
+  }
+
+  return normalized;
+}
+
+function resolveDownloadRoutePrefix(themeId, imagePreviewId) {
+  return config.defaultDownloadRoutePrefix;
+}
+
+function normalizeDownloadRoutePrefix(value) {
+  return String(value || "").trim().toLowerCase() === "d" ? "d" : "world-tour";
+}
+
+function downloadRoutePrefixFromRequest(req) {
+  return req.path.startsWith("/d/") ? "d" : "world-tour";
+}
+
+function buildDownloadUrl(routePrefix, jobId) {
+  return `${config.publicBaseUrl}/${normalizeDownloadRoutePrefix(routePrefix)}/${encodeURIComponent(jobId)}`;
 }
 
 function normalizeJobId(value) {
@@ -1562,6 +1831,34 @@ function assetUrl(asset) {
   return asset?.remote_key ? `/files/${encodeURIPath(asset.remote_key)}` : "";
 }
 
+function resolveWorldTourTemplate(labelTemplateId) {
+  const id = labelTemplateId === "2" ? "2" : "1";
+  const pathById = {
+    "1": path.join(config.publicRoot, "label", "frame-1.png"),
+    "2": path.join(config.publicRoot, "label", "frame-2.png")
+  };
+  const dimensionsById = {
+    "1": { width: 2136, height: 3132 },
+    "2": { width: 2138, height: 3134 }
+  };
+  const percentSlotById = {
+    "1": { x: 0.029, y: 0.565, width: 0.943, height: 0.36 },
+    "2": { x: 0.051, y: 0.2, width: 0.898, height: 0.345 }
+  };
+  const dimensions = dimensionsById[id];
+  const percentSlot = percentSlotById[id];
+
+  return {
+    path: pathById[id],
+    slot: {
+      x: Math.round(dimensions.width * percentSlot.x),
+      y: Math.round(dimensions.height * percentSlot.y),
+      width: Math.round(dimensions.width * percentSlot.width),
+      height: Math.round(dimensions.height * percentSlot.height)
+    }
+  };
+}
+
 function formatDisplayDate(value) {
   const date = value ? new Date(value) : new Date();
   if (Number.isNaN(date.getTime())) {
@@ -1637,7 +1934,22 @@ function buildCountdownSlotFrameUrls(motionFrames) {
 
 function buildCountdownSlotFrameAssets(motionFrames) {
   const slotFrameUrls = [[], [], [], []];
-  const sortedFrames = [...motionFrames].sort((left, right) => {
+  const sortedFrames = sortMotionFrameAssets(motionFrames);
+
+  for (const frame of sortedFrames) {
+    const frameName = frame.original_file_name || frame.remote_key || "";
+    const captureIndex = motionCaptureSortIndex(frameName);
+    const slotIndex = Number.isFinite(captureIndex) ? captureIndex - 1 : -1;
+    if (slotIndex >= 0 && slotIndex < slotFrameUrls.length) {
+      slotFrameUrls[slotIndex].push(frame);
+    }
+  }
+
+  return slotFrameUrls;
+}
+
+function sortMotionFrameAssets(motionFrames) {
+  return [...motionFrames].sort((left, right) => {
     const leftName = left.original_file_name || left.remote_key || "";
     const rightName = right.original_file_name || right.remote_key || "";
     const leftCaptureIndex = motionCaptureSortIndex(leftName);
@@ -1654,17 +1966,6 @@ function buildCountdownSlotFrameAssets(motionFrames) {
 
     return String(left.remote_key || "").localeCompare(String(right.remote_key || ""));
   });
-
-  for (const frame of sortedFrames) {
-    const frameName = frame.original_file_name || frame.remote_key || "";
-    const captureIndex = motionCaptureSortIndex(frameName);
-    const slotIndex = Number.isFinite(captureIndex) ? captureIndex - 1 : -1;
-    if (slotIndex >= 0 && slotIndex < slotFrameUrls.length) {
-      slotFrameUrls[slotIndex].push(frame);
-    }
-  }
-
-  return slotFrameUrls;
 }
 
 function renderFramedCountdownClip(slotFrameUrls) {
@@ -1697,20 +1998,17 @@ function renderFramedCountdownClip(slotFrameUrls) {
   </script>`;
 }
 
-function renderDownloadPage({ job, composed, thumbnail, liveImage, motionVideo, rawCaptures, motionFrames }) {
+function renderLegacyDownloadPage({ job, composed, thumbnail, liveImage, motionVideo, rawCaptures, motionFrames }) {
   const jobId = job.job_id;
   const safeJobId = escapeHtml(jobId);
   const displayTitle = escapeHtml(formatSessionTitle(job));
   const takenAt = escapeHtml(formatDisplayDate(job.session_started_at_utc || job.created_at));
-  const reference = escapeHtml(shortReference(jobId));
   const imageUrl = assetUrl(composed);
   const thumbnailUrl = assetUrl(thumbnail);
-  const heroPreviewUrl = imageUrl || thumbnailUrl;
   const liveImageUrl = assetUrl(liveImage);
   const imageDownloadUrl = `/d/${encodeURIComponent(jobId)}/image-download`;
   const liveviewVideoDownloadUrl = `/d/${encodeURIComponent(jobId)}/liveview-download.mp4`;
   const framedCountdownVideoDownloadUrl = `/d/${encodeURIComponent(jobId)}/countdown-download.mp4`;
-  const qrUrl = `/d/${encodeURIComponent(jobId)}/qr`;
   const motionVideoUrl = motionVideo ? `/d/${encodeURIComponent(jobId)}/clip.mp4` : "";
   const motionVideoDownloadUrl = motionVideo ? `/d/${encodeURIComponent(jobId)}/clip-download.mp4` : "";
   const motionClipUrl = motionFrames.length > 0 ? `/d/${encodeURIComponent(jobId)}/clip` : "";
@@ -1721,19 +2019,22 @@ function renderDownloadPage({ job, composed, thumbnail, liveImage, motionVideo, 
   const framedTemplateMarkup = rawCaptureUrls.length > 0
     ? renderFramedTemplate(rawCaptureUrls, "Framed web preview")
     : "";
+  const photoMarkup = framedTemplateMarkup || (imageUrl
+    ? `<img class="media" src="${imageUrl}" alt="Framed picture" loading="eager">`
+    : "");
   const countdownClipMarkup = motionFrames.length > 0
     ? renderFramedCountdownClip(countdownSlotFrameUrls)
     : motionVideoUrl
-    ? `<video class="media" controls playsinline loop muted poster="${thumbnailUrl}"><source src="${motionVideoUrl}" type="video/mp4"></video>`
-    : motionClipUrl
-    ? `<iframe class="media media-frame" src="${motionClipUrl}" title="Countdown Clip" loading="lazy"></iframe>`
-    : "";
+      ? `<video class="media" controls playsinline loop muted poster="${thumbnailUrl}"><source src="${motionVideoUrl}" type="video/mp4"></video>`
+      : motionClipUrl
+        ? `<iframe class="media media-frame" src="${motionClipUrl}" title="Countdown Clip" loading="lazy"></iframe>`
+        : "";
 
   const liveViewMarkup = rawCaptureUrls.length > 0
     ? renderRotatingFramedLivePhoto(rawCaptureUrls)
     : liveImageUrl
-    ? `<img class="media" src="${liveImageUrl}" alt="Framed live image" loading="eager">`
-    : `<img class="media" src="${imageUrl}" alt="Framed liveview fallback" loading="lazy">`;
+      ? `<img class="media" src="${liveImageUrl}" alt="Framed live image" loading="eager">`
+      : `<img class="media" src="${imageUrl}" alt="Framed liveview fallback" loading="lazy">`;
 
   return `<!doctype html>
 <html lang="en">
@@ -1783,6 +2084,8 @@ function renderDownloadPage({ job, composed, thumbnail, liveImage, motionVideo, 
     .video-stage { position: relative; margin-top: 8px; }
     .footer-image { display: block; width: 100%; margin: 96px auto 0; }
     .media { display: block; width: 100%; background: #f7f0ea; }
+    .media-empty { display: grid; place-items: center; min-height: 220px; color: #080808; text-transform: uppercase; font-size: 22px; text-align: center; }
+    .framed-video { height: auto; object-fit: contain; }
     img.media { height: auto; }
     .frame-fallback { display: none; }
     @media (max-width: 720px) {
@@ -1819,7 +2122,7 @@ function renderDownloadPage({ job, composed, thumbnail, liveImage, motionVideo, 
         <div class="asset-label">Image</div>
         <a class="download-image-button" id="photo-download-button" href="${imageDownloadUrl}" download>Download</a>
       </div>
-      ${framedTemplateMarkup || `<img class="media" src="${imageUrl}" alt="Framed picture" loading="eager">`}
+      ${photoMarkup || `<p>Photo is still processing.</p>`}
       <div class="asset-row video-row">
         <img class="asset-icon video-icon" src="/assets/website/video.png" alt="">
         <div class="asset-label">VDO</div>
@@ -1839,82 +2142,330 @@ function renderDownloadPage({ job, composed, thumbnail, liveImage, motionVideo, 
       <img class="footer-image" src="/assets/website/footer.png" alt="©2026 Hello.MRKREME.com">
     </section>
   </main>
-  ${canDownloadWebPreview ? `<script>
-    (() => {
-      const downloadButton = document.getElementById('photo-download-button');
-      const templateUrl = '/assets/assets/piece_03.png';
-      const rawImages = ${JSON.stringify(rawCaptureUrls.slice(0, 4))};
-      const slots = [
-        { x: 680, y: 1565, width: 1267, height: 912 },
-        { x: 2143, y: 1565, width: 1267, height: 912 },
-        { x: 680, y: 2728, width: 1267, height: 913 },
-        { x: 2143, y: 2728, width: 1267, height: 913 }
-      ];
+</body>
+</html>`;
+}
 
-      function loadImage(url) {
-        return new Promise((resolve, reject) => {
-          const image = new Image();
-          image.onload = () => resolve(image);
-          image.onerror = reject;
-          image.src = url;
-        });
-      }
+function renderWorldTourDownloadPage({ job, composed, thumbnail, liveImage, motionVideo, rawCaptures, motionFrames }) {
+  const prefix = "world-tour";
+  const jobId = job.job_id;
+  const safeJobId = escapeHtml(jobId);
+  const displayTitle = "MRKREME World Tour Session";
+  const takenAt = escapeHtml(formatDisplayDate(job.session_started_at_utc || job.created_at));
+  const reference = escapeHtml(shortReference(jobId));
+  const imageUrl = assetUrl(composed);
+  const thumbnailUrl = assetUrl(thumbnail);
+  const heroPreviewUrl = imageUrl || thumbnailUrl;
+  const liveImageUrl = assetUrl(liveImage);
+  const labelTemplateId = resolveLabelTemplateId(job.image_preview_id || job.theme_id);
+  const labelTemplateUrl = `/assets/label/frame-${labelTemplateId}.png`;
+  const imageDownloadUrl = `/${prefix}/${encodeURIComponent(jobId)}/image-download`;
+  const framedCountdownVideoDownloadUrl = `/${prefix}/${encodeURIComponent(jobId)}/countdown-download.mp4`;
+  const motionVideoUrl = motionVideo ? `/${prefix}/${encodeURIComponent(jobId)}/clip.mp4?v=frame-${labelTemplateId}-v2` : "";
+  const motionVideoDownloadUrl = motionVideo ? `/${prefix}/${encodeURIComponent(jobId)}/clip-download.mp4?v=frame-${labelTemplateId}-v2` : "";
+  const rawCaptureUrls = rawCaptures.map(assetUrl).filter(Boolean);
+  const hasCountdownPreview = motionFrames.length > 0;
+  const framedCountdownVideoUrl = hasCountdownPreview ? `/${prefix}/${encodeURIComponent(jobId)}/framed-countdown.mp4?v=frame-${labelTemplateId}-v2` : "";
+  const photoUrl = rawCaptureUrls[0] || heroPreviewUrl || liveImageUrl;
+  const photoMarkup = photoUrl
+    ? `<img class="label-photo" src="${photoUrl}" alt="Captured photo" loading="eager">`
+    : `<div class="label-photo label-photo-empty">Processing</div>`;
+  const videoMarkup = framedCountdownVideoUrl
+    ? `<video class="media framed-video" controls playsinline loop muted poster="${photoUrl || thumbnailUrl}"><source src="${framedCountdownVideoUrl}" type="video/mp4"></video>`
+    : motionVideoUrl
+      ? `<video class="media" controls playsinline loop muted poster="${thumbnailUrl}"><source src="${motionVideoUrl}" type="video/mp4"></video>`
+      : "";
+  const videoDownloadUrl = hasCountdownPreview
+    ? framedCountdownVideoDownloadUrl
+    : motionVideoDownloadUrl;
+  const videoDownloadMarkup = videoDownloadUrl
+    ? `<a class="download-image-button" href="${videoDownloadUrl}" download>Download Video</a>`
+    : `<div class="download-placeholder">Video is processing</div>`;
 
-      function drawCover(context, image, slot) {
-        const imageAspect = image.naturalWidth / image.naturalHeight;
-        const slotAspect = slot.width / slot.height;
-        let sourceX = 0;
-        let sourceY = 0;
-        let sourceWidth = image.naturalWidth;
-        let sourceHeight = image.naturalHeight;
-        if (imageAspect > slotAspect) {
-          sourceWidth = image.naturalHeight * slotAspect;
-          sourceX = (image.naturalWidth - sourceWidth) / 2;
-        } else {
-          sourceHeight = image.naturalWidth / slotAspect;
-          sourceY = (image.naturalHeight - sourceHeight) / 2;
-        }
-
-        context.drawImage(image, sourceX, sourceY, sourceWidth, sourceHeight, slot.x, slot.y, slot.width, slot.height);
-      }
-
-      async function createCanvas() {
-        const template = await loadImage(templateUrl);
-        const canvas = document.createElement('canvas');
-        canvas.width = template.naturalWidth;
-        canvas.height = template.naturalHeight;
-        const context = canvas.getContext('2d');
-        return { canvas, context, template };
-      }
-
-      async function drawFrame(context, template, imageUrls) {
-        const captures = await Promise.all(imageUrls.map((url) => url ? loadImage(url) : Promise.resolve(null)));
-        context.clearRect(0, 0, template.naturalWidth, template.naturalHeight);
-        context.drawImage(template, 0, 0);
-        captures.forEach((capture, index) => {
-          if (capture && slots[index]) {
-            drawCover(context, capture, slots[index]);
-          }
-        });
-      }
-
-      async function downloadPreviewImage(event) {
-        event.preventDefault();
-        try {
-          const { canvas, context, template } = await createCanvas();
-          await drawFrame(context, template, rawImages);
-          const link = document.createElement('a');
-          link.download = '${safeJobId}-photo.png';
-          link.href = canvas.toDataURL('image/png');
-          link.click();
-        } catch (error) {
-          window.location.href = downloadButton.href;
-        }
-      }
-
-      // Server-side attachment downloads work more consistently with mobile browsers.
-    })();
-  </script>` : ""}
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${displayTitle}</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #050505;
+      --cream: #f2ead3;
+      --yellow: #ffd713;
+      font-family: Impact, Haettenschweiler, "Arial Black", ui-sans-serif, system-ui, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--ink);
+      background: #b98245 url("/assets/label/background.png") center top / cover repeat-y;
+    }
+    .page {
+      position: relative;
+      width: min(100%, 554px);
+      min-height: 100vh;
+      margin: 0 auto;
+      overflow: hidden;
+      background: url("/assets/label/background.png") center top / cover repeat-y;
+      box-shadow: 0 0 0 8px #050505;
+      padding: 0 26px 44px;
+    }
+    .page::after {
+      content: "";
+      position: absolute;
+      left: -24px;
+      right: -24px;
+      bottom: -26px;
+      height: 156px;
+      background:
+        radial-gradient(ellipse at 6% 0, transparent 0 34px, rgba(0,0,0,.16) 35px 39px, transparent 40px),
+        radial-gradient(ellipse at 94% 0, transparent 0 34px, rgba(0,0,0,.16) 35px 39px, transparent 40px),
+        linear-gradient(176deg, transparent 0 16%, var(--cream) 16.4%),
+        linear-gradient(4deg, transparent 0 12%, #fff5d4 12.4%);
+      z-index: 0;
+    }
+    .brand {
+      position: relative;
+      z-index: 1;
+      display: block;
+      width: calc(100% + 52px);
+      max-width: none;
+      margin: 0 -26px 18px;
+      aspect-ratio: 1080 / 375;
+      object-fit: cover;
+      object-position: center top;
+    }
+    .ticket {
+      position: relative;
+      z-index: 1;
+      width: min(320px, 84%);
+      margin: 8px auto 18px;
+      padding: 0;
+      background: transparent;
+      box-shadow: 0 16px 24px rgba(0,0,0,.18);
+      overflow: hidden;
+    }
+    .label-stage {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 2136 / 3132;
+      background: #fff;
+    }
+    .label-stage-2 { aspect-ratio: 2138 / 3134; }
+    .label-template {
+      position: relative;
+      z-index: 1;
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      pointer-events: none;
+    }
+    .label-photo {
+      position: absolute;
+      z-index: 2;
+      display: block;
+      object-fit: cover;
+      background: #ddd;
+    }
+    .label-photo-empty {
+      display: grid;
+      place-items: center;
+      font-size: 22px;
+      text-transform: uppercase;
+      color: #222;
+    }
+    .label-stage-1 .label-photo {
+      left: 2.9%;
+      top: 56.5%;
+      width: 94.3%;
+      height: 36%;
+    }
+    .label-stage-2 .label-photo {
+      left: 5.1%;
+      top: 20%;
+      width: 89.8%;
+      height: 34.5%;
+    }
+    .ticket-head {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 42%;
+      gap: 8px;
+      align-items: end;
+      border-bottom: 2px solid #222;
+      padding-bottom: 5px;
+    }
+    .ticket-logo {
+      font-size: 20px;
+      line-height: .76;
+      text-transform: uppercase;
+    }
+    .ticket-logo span { display: block; }
+    .barcode {
+      height: 38px;
+      background: repeating-linear-gradient(90deg, #111 0 2px, transparent 2px 4px, #111 4px 5px, transparent 5px 8px, #111 8px 11px, transparent 11px 14px);
+      border-bottom: 1px solid #222;
+    }
+    .ticket-grid {
+      position: relative;
+      display: grid;
+      grid-template-columns: 1fr 76px;
+      border: 2px solid #222;
+      border-top: 0;
+      font-family: Arial, Helvetica, sans-serif;
+      font-weight: 800;
+      font-size: 11px;
+    }
+    .ticket-cell { min-height: 37px; padding: 5px 7px; border-bottom: 1px solid #222; }
+    .ticket-cell b { display: block; font-size: 12px; }
+    .ticket-side { grid-row: span 2; border-left: 2px solid #222; }
+    .keep-cool { display: grid; place-items: center; min-height: 42px; border-bottom: 1px solid #222; font-family: Impact, "Arial Black", sans-serif; font-size: 19px; line-height: .82; text-align: center; }
+    .stamp {
+      position: absolute;
+      left: 42%;
+      top: 8px;
+      width: 92px;
+      height: 92px;
+      display: grid;
+      place-items: center;
+      border: 3px solid var(--red);
+      border-radius: 50%;
+      color: var(--red);
+      font-family: Impact, "Arial Black", sans-serif;
+      font-size: 16px;
+      line-height: .86;
+      text-align: center;
+      text-transform: uppercase;
+      transform: rotate(-18deg);
+      opacity: .86;
+    }
+    .ticket-route {
+      display: grid;
+      grid-template-columns: 1fr 74px;
+      gap: 8px;
+      padding: 8px 0;
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 11px;
+      font-weight: 900;
+      line-height: 1.18;
+      text-transform: uppercase;
+    }
+    .ticket-route img { width: 74px; aspect-ratio: 1; }
+    .ticket-photo {
+      display: block;
+      width: 100%;
+      aspect-ratio: 1.26 / 1;
+      object-fit: cover;
+      border: 3px solid #222;
+      background: #ddd;
+    }
+    .ticket-photo-empty { display: grid; place-items: center; font-size: 22px; text-transform: uppercase; }
+    .ticket-foot {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      margin-top: 5px;
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 7px;
+      font-weight: 900;
+      text-transform: uppercase;
+    }
+    .download-image-button {
+      position: relative;
+      z-index: 2;
+      display: grid;
+      place-items: center;
+      width: min(350px, 76vw);
+      min-height: 56px;
+      margin: 0 auto;
+      border-radius: 14px;
+      background: var(--yellow);
+      color: #080808;
+      box-shadow: 0 6px 0 #d2aa00, 0 12px 24px rgba(0,0,0,.24);
+      text-decoration: none;
+      text-transform: uppercase;
+      font-size: clamp(22px, 5.8vw, 28px);
+      line-height: 1;
+    }
+    .section-heading {
+      position: relative;
+      z-index: 2;
+      width: min(350px, 76vw);
+      margin: 24px auto 10px;
+      font-size: 32px;
+      line-height: 1;
+      text-transform: uppercase;
+      color: #080808;
+    }
+    .video-panel {
+      position: relative;
+      z-index: 2;
+      width: min(350px, 76vw);
+      margin: 0 auto 14px;
+      background: #fff5d4;
+      border: 3px solid #080808;
+      box-shadow: 0 10px 18px rgba(0,0,0,.18);
+    }
+    .download-placeholder {
+      position: relative;
+      z-index: 2;
+      display: grid;
+      place-items: center;
+      width: min(350px, 76vw);
+      min-height: 56px;
+      margin: 0 auto;
+      border: 3px solid #080808;
+      color: #080808;
+      background: rgba(255,255,255,.55);
+      text-transform: uppercase;
+      font-size: 22px;
+      line-height: 1;
+      text-align: center;
+    }
+    .back-home { margin-top: 10px; }
+    .frame-template { position: relative; width: 100%; aspect-ratio: 1 / 1; margin: 0 auto; background: url("/assets/assets/piece_03.png") center / contain no-repeat; }
+    .frame-slot { position: absolute; overflow: hidden; background: #241f1f; }
+    .frame-slot img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .frame-slot-1 { left: 16.6016%; top: 38.208%; width: 30.9326%; height: 22.2656%; }
+    .frame-slot-2 { left: 52.3193%; top: 38.208%; width: 30.9326%; height: 22.2656%; }
+    .frame-slot-3 { left: 16.6016%; top: 66.6016%; width: 30.9326%; height: 22.29%; }
+    .frame-slot-4 { left: 52.3193%; top: 66.6016%; width: 30.9326%; height: 22.29%; }
+    .video-stage { position: relative; margin-top: 8px; }
+    .footer-image { display: block; width: 100%; margin: 96px auto 0; }
+    .media { display: block; width: 100%; background: #f7f0ea; }
+    .media-empty { display: grid; place-items: center; min-height: 220px; color: #080808; text-transform: uppercase; font-size: 22px; text-align: center; }
+    img.media { height: auto; }
+    .frame-fallback { display: none; }
+    @media (max-width: 720px) {
+      .page { padding: 0 10px 44px; }
+      .brand { width: calc(100% + 20px); margin-left: -10px; margin-right: -10px; }
+    }
+    @media (max-width: 380px) {
+      .ticket { width: 86%; }
+      .stamp { width: 78px; height: 78px; font-size: 14px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <img class="brand" src="/assets/label/headline.png" alt="The Furryways">
+    <h2 class="section-heading">Photo</h2>
+    <section class="ticket" aria-label="${displayTitle}">
+      <div class="label-stage label-stage-${labelTemplateId}">
+        <img class="label-template" src="${labelTemplateUrl}" alt="Furryways frame ${labelTemplateId}">
+        ${photoMarkup}
+      </div>
+    </section>
+    <a class="download-image-button" id="photo-download-button" href="${imageDownloadUrl}" download>Download Image</a>
+    <h2 class="section-heading">Video</h2>
+    <section class="video-panel" aria-label="Video">
+      ${videoMarkup || `<div class="media media-empty">Video is processing</div>`}
+    </section>
+    ${videoDownloadMarkup}
+  </main>
 </body>
 </html>`;
 }
@@ -1926,6 +2477,10 @@ function formatSessionTitle(job) {
 function shortReference(jobId) {
   const normalized = String(jobId || "").replace(/^JOB-?/i, "");
   return normalized.length > 22 ? normalized.slice(-22) : normalized;
+}
+
+function resolveLabelTemplateId(value) {
+  return normalizeImagePreviewId(value) === "image_preview_2" ? "2" : "1";
 }
 
 function renderMotionClipPage(jobId, frameUrls) {

@@ -108,7 +108,7 @@ namespace PhotoBooth.Booth.Sync
         private string BuildDownloadUrl(string jobId)
         {
             var baseUrl = string.IsNullOrWhiteSpace(config.DownloadBaseUrl)
-                ? "https://example.invalid/d"
+                ? "https://example.invalid/world-tour"
                 : config.DownloadBaseUrl.Trim().TrimEnd('/');
             return $"{baseUrl}/{jobId}";
         }

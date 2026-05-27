@@ -15,8 +15,10 @@ namespace PhotoBooth.Booth.Frontend
         public Texture2D frameTemplateTexture;
         public string frameTemplateResourcePath = "MrkremeUi/piece_03";
         public string backendFrameId;
+        public string imagePreviewId;
 
         public string BackendFrameId => string.IsNullOrWhiteSpace(backendFrameId) ? themeId : backendFrameId;
+        public string ImagePreviewId => string.IsNullOrWhiteSpace(imagePreviewId) ? BackendFrameId : imagePreviewId;
         public string FrameTemplateResourcePath => string.IsNullOrWhiteSpace(frameTemplateResourcePath) ? "MrkremeUi/piece_03" : frameTemplateResourcePath;
     }
 }

@@ -1,0 +1,18 @@
+- main [ref=e2]:
+  - heading "The Furryways" [level=1] [ref=e3]:
+    - generic [ref=e4]: The
+    - generic [ref=e5]: Furryways
+  - region "Scan to download the image" [ref=e6]:
+    - paragraph [ref=e7]:
+      - text: Scan to
+      - strong [ref=e8]: Download
+      - text: the image
+    - img "Download QR code" [ref=e9]
+  - region "MRKREME World Tour Session" [ref=e10]:
+    - generic [ref=e11]:
+      - img "Furryways frame 1"
+      - img "Captured photo" [ref=e12]
+  - link "Download Image" [ref=e13] [cursor=pointer]:
+    - /url: /world-tour/template-1-test/image-download
+  - link "Back to Home" [ref=e14] [cursor=pointer]:
+    - /url: /

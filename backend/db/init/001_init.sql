@@ -2,6 +2,7 @@ CREATE TABLE IF NOT EXISTS booth_jobs (
     job_id TEXT PRIMARY KEY,
     device_id TEXT NOT NULL,
     theme_id TEXT,
+    image_preview_id TEXT,
     status TEXT NOT NULL DEFAULT 'CREATED',
     payment_status TEXT NOT NULL DEFAULT 'UNKNOWN',
     upload_status TEXT NOT NULL DEFAULT 'PENDING',

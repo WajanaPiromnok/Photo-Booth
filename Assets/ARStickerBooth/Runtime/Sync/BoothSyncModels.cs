@@ -25,6 +25,7 @@ namespace PhotoBooth.Booth.Sync
         public string JobId;
         public string DeviceId;
         public string ThemeId;
+        public string ImagePreviewId;
         public string ComposedImagePath;
         public string ThumbnailPath;
         public string LiveImagePath;
@@ -42,6 +43,7 @@ namespace PhotoBooth.Booth.Sync
         public string JobId;
         public string DeviceId;
         public string ThemeId;
+        public string ImagePreviewId;
         public string RawCapturePath;
         public int CaptureIndex;
         public int CaptureTotal;
@@ -166,6 +168,7 @@ namespace PhotoBooth.Booth.Sync
     public sealed class BoothPublishRequest
     {
         public string primary_asset_type;
+        public string image_preview_id;
     }
 
     [Serializable]

@@ -16,6 +16,7 @@ Minimal backend scaffold for the Unity booth runtime.
 - `POST /v1/jobs/:jobId/assets`
 - `POST /v1/jobs/:jobId/publish`
 - `GET /v1/jobs/:jobId`
+- `GET /world-tour/:jobId`
 - `GET /d/:jobId`
 - `GET /healthz`
 
@@ -59,13 +60,14 @@ Recommended values:
 
 - `backendBoothApiBaseUrl`: `https://api.example.com`
 - `backendPublishApiBaseUrl`: `https://api.example.com`
-- `backendDownloadBaseUrl`: `https://api.example.com/d`
+- `backendDownloadBaseUrl`: `https://api.example.com/world-tour`
 - `backendAssetUploadPathTemplate`: `/v1/jobs/{jobId}/assets/upload`
 - `backendRawCaptureUploadPathTemplate`: `/v1/jobs/{jobId}/assets/raw-capture`
 - `backendAssetRegistrationPathTemplate`: `/v1/jobs/{jobId}/assets`
 - `backendPublishPathTemplate`: `/v1/jobs/{jobId}/publish`
 - `backendSeparateAssetRegistration`: `true`
 - `backendUploadThumbnail`: `true`
+- `DEFAULT_DOWNLOAD_ROUTE_PREFIX`: `world-tour` for the current Unity project, or `d` for the legacy backend flow
 
 ## Expected upload form fields
 
@@ -106,5 +108,6 @@ Final asset upload (`/v1/jobs/:jobId/assets/upload`):
 
 - Files are stored in a Docker volume mounted at `/var/photo-booth/uploads`
 - Job files are grouped under `jobs/<yyyyMMdd_HHmmss_JOB-ID>/...` using `session_started_at_utc` converted to `Asia/Bangkok`
-- Download links resolve through `/d/:jobId` as a mobile-friendly session page with QR, framed image, liveview/clip, and download buttons. Direct final image access is available at `/d/:jobId/image`.
+- Unity download links resolve through `/world-tour/:jobId` as the current World Tour page. Direct final image access is available at `/world-tour/:jobId/image`.
+- Legacy download links resolve through `/d/:jobId` with the `chiselda/photo-booth-backend:0.2.25` style page. `/d` and `/world-tour` render separate page designs.
 - The scaffold uses local-disk storage first. You can move asset storage to S3/R2 later without changing the Unity contract much.

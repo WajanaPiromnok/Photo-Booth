@@ -6688,8 +6688,8 @@ RectTransform:
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0.5, y: 0.5}
   m_AnchorMax: {x: 0.5, y: 0.5}
-  m_AnchoredPosition: {x: -185.194, y: 6.753}
-  m_SizeDelta: {x: 320, y: 230}
+  m_AnchoredPosition: {x: 0, y: 118.8}
+  m_SizeDelta: {x: 563.8, y: 322.3}
   m_Pivot: {x: 0.5, y: 0.5}
 --- !u!114 &594706232
 MonoBehaviour:
@@ -9711,7 +9711,7 @@ MonoBehaviour:
   autoBootstrapInPhotoBoothScene: 1
   forcePortraitResolution: 1
   countdownSeconds: 3
-  capturesPerSession: 4
+  capturesPerSession: 1
   motionClipFramesPerSecond: 4
   enableArTracking: 1
   maxArFaces: 4
@@ -9748,25 +9748,9 @@ MonoBehaviour:
   captureForegroundTextures:
   - {fileID: 21300000, guid: f5aec0b0682774beea21025b4c49829a, type: 3}
   - {fileID: 21300000, guid: 03b1b690e07874f5b9118847d99834c7, type: 3}
-  - {fileID: 21300000, guid: 84c52160454c9416f9a828985f6b7e63, type: 3}
-  - {fileID: 21300000, guid: df0b659ddfa0b413a831a13acdcc5631, type: 3}
-  - {fileID: 21300000, guid: 3a98e60ce61ec43ff8b0b55bf84cc002, type: 3}
-  - {fileID: 21300000, guid: 3f8a562e319634d6da9db6fdf42633a0, type: 3}
-  - {fileID: 21300000, guid: 5e179048a103c406485da2ac969593af, type: 3}
-  - {fileID: 21300000, guid: 554a52cf0b0884655bf45ed9ab3d90ef, type: 3}
-  - {fileID: 21300000, guid: b56a72716fbc343e2b2febc8f9f2657f, type: 3}
-  - {fileID: 21300000, guid: 481d03100b5b4428680f3fb34c275465, type: 3}
-  - {fileID: 21300000, guid: c5cd2e9fccb2d4c68867041848a597d3, type: 3}
-  - {fileID: 21300000, guid: 023c0752791ed4be5b0da7509c49b491, type: 3}
-  - {fileID: 21300000, guid: 62835481b935e454b965ba2b86a39e57, type: 3}
-  - {fileID: 21300000, guid: c2c4610846cd548fcac002b968d7d8c4, type: 3}
-  - {fileID: 21300000, guid: 8acea1c9f54134716829eda0fa1e9ba4, type: 3}
-  - {fileID: 21300000, guid: 5aa4ab7b0c10d420f995fb5b863efe89, type: 3}
   captureForegroundResourceNames:
   - capture_foreground_01
   - capture_foreground_02
-  - capture_foreground_03
-  - capture_foreground_04
   arStickerPresets:
   - presetId: default
     displayName: Default
@@ -9809,20 +9793,22 @@ MonoBehaviour:
     displayName: Classic Booth
     priceMinorUnits: 12000
     currencyCode: THB
-    previewSprite: {fileID: 0}
+    previewSprite: {fileID: 21300000, guid: 8fddf3aa9f06d4319b26f8337c875923, type: 3}
     frameTemplateSprite: {fileID: 0}
     frameTemplateTexture: {fileID: 0}
     frameTemplateResourcePath: MrkremeUi/piece_03
-    backendFrameId: 
+    backendFrameId: image_preview_1
+    imagePreviewId: image_preview_1
   - themeId: pop
     displayName: Pop Color
     priceMinorUnits: 15000
     currencyCode: THB
-    previewSprite: {fileID: 0}
+    previewSprite: {fileID: 21300000, guid: ddfa05adf368d4417b07249643223311, type: 3}
     frameTemplateSprite: {fileID: 0}
     frameTemplateTexture: {fileID: 0}
     frameTemplateResourcePath: MrkremeUi/piece_03
-    backendFrameId: 
+    backendFrameId: image_preview_2
+    imagePreviewId: image_preview_2
   aiStyles:
   - styleId: natural
     displayName: Natural
@@ -9883,6 +9869,20 @@ MonoBehaviour:
   qrPreview: {fileID: 4226305}
   qrPreviewImage: {fileID: 0}
   previewFrameImage: {fileID: 0}
+  previewFrameSprites:
+  - {fileID: 21300000, guid: 8fddf3aa9f06d4319b26f8337c875923, type: 3}
+  - {fileID: 21300000, guid: ddfa05adf368d4417b07249643223311, type: 3}
+  previewFrameCaptureSlots:
+  - serializedVersion: 2
+    x: 62
+    y: 137
+    width: 2011
+    height: 1239
+  - serializedVersion: 2
+    x: 79
+    y: 931
+    width: 1240
+    height: 708
   captureButton: {fileID: 152868146}
   retakeButton: {fileID: 0}
   continueButton: {fileID: 1590206703}
@@ -18915,7 +18915,7 @@ MonoBehaviour:
   backendDeviceToken: 05e57607415ec8e17884563afbbff6b78af6684a2dfa17a945cc3fc627c4f34f
   backendBoothApiBaseUrl: https://api.wajanapir.com
   backendPublishApiBaseUrl: https://api.wajanapir.com
-  backendDownloadBaseUrl: https://api.wajanapir.com/d
+  backendDownloadBaseUrl: https://api.wajanapir.com/world-tour
   backendAssetUploadPathTemplate: /v1/jobs/{jobId}/assets/upload
   backendRawCaptureUploadPathTemplate: /v1/jobs/{jobId}/assets/raw-capture
   backendAssetRegistrationPathTemplate: /v1/jobs/{jobId}/assets
@@ -21123,7 +21123,7 @@ MonoBehaviour:
   m_OnCullStateChanged:
     m_PersistentCalls:
       m_Calls: []
-  m_text: AMOUNT 1 / 4
+  m_text: AMOUNT 1 / 1
   m_isRightToLeft: 0
   m_fontAsset: {fileID: 11400000, guid: f27e629c4dea54a9599c42d618c46b4c, type: 2}
   m_sharedMaterial: {fileID: 347406279538076383, guid: f27e629c4dea54a9599c42d618c46b4c, type: 2}
