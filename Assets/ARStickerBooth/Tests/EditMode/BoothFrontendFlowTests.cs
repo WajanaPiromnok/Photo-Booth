@@ -111,21 +111,25 @@ namespace PhotoBooth.Booth.Tests.EditMode
             var result = new BoothImageComposer().ComposePhotoGrid(job, rawPaths, new Vector2Int(32, 24));
 
             Assert.That(File.Exists(result.ComposedImagePath), Is.True);
+            Assert.That(File.Exists(result.PrintImagePath), Is.True);
             Assert.That(File.Exists(result.ThumbnailPath), Is.True);
 
             var composed = LoadPng(result.ComposedImagePath);
+            var print = LoadPng(result.PrintImagePath);
             try
             {
-            Assert.That(composed.width, Is.EqualTo(4096));
-            Assert.That(composed.height, Is.EqualTo(4096));
-            Assert.That(composed.GetPixel(1313, 2075).r, Is.GreaterThan(0.8f));
-            Assert.That(composed.GetPixel(2776, 2075).g, Is.GreaterThan(0.4f));
-            Assert.That(composed.GetPixel(1313, 911).b, Is.GreaterThan(0.8f));
-            Assert.That(composed.GetPixel(2776, 911).r, Is.GreaterThan(0.8f));
+                Assert.That(composed.width, Is.EqualTo(4096));
+                Assert.That(composed.height, Is.EqualTo(4096));
+                Assert.That(composed.GetPixel(1313, 2075).r, Is.GreaterThan(0.8f));
+                Assert.That(composed.GetPixel(2776, 2075).g, Is.GreaterThan(0.4f));
+                Assert.That(composed.GetPixel(1313, 911).b, Is.GreaterThan(0.8f));
+                Assert.That(composed.GetPixel(2776, 911).r, Is.GreaterThan(0.8f));
+                Assert.That(print.GetPixel(1313, 2075).g, Is.GreaterThan(composed.GetPixel(1313, 2075).g));
             }
             finally
             {
                 UnityEngine.Object.DestroyImmediate(composed);
+                UnityEngine.Object.DestroyImmediate(print);
             }
         }
 

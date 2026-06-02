@@ -46,6 +46,7 @@ namespace PhotoBooth.Booth.Frontend
         private static readonly Color MrkremeLime = new(0.78f, 0.9f, 0.05f, 1f);
         private static readonly bool UseUnity3dAr = false;
         private const int RequiredCapturesPerSession = 1;
+        private static readonly Vector2 MonsterFrameOverlaySize = new(950.64f, 534.3f);
         private static readonly Rect PreviewFrameSpriteRectFallback = new(473f, 161f, 3150f, 3774f);
         private static readonly Rect[] PreviewFrameCaptureSlots =
         {
@@ -115,6 +116,7 @@ namespace PhotoBooth.Booth.Frontend
             "capture_foreground_01",
             "capture_foreground_02"
         };
+        [SerializeField] private Sprite monsterFrameOverlaySprite;
 
         [SerializeField] private ArStickerPreset[] arStickerPresets = Array.Empty<ArStickerPreset>();
         [SerializeField] private BoothThemeOption[] themes =
@@ -204,7 +206,16 @@ namespace PhotoBooth.Booth.Frontend
         private BoothRawCaptureUploadQueue rawCaptureUploadQueue;
         private bool rawCaptureUploadStarted;
         private bool previewScreenShowsFinalDownload;
+        private bool printRequestStarted;
         private bool isStartingCapturePreview;
+        private bool hasDefaultCameraPreviewRect;
+        private Vector2 defaultCameraPreviewAnchorMin;
+        private Vector2 defaultCameraPreviewAnchorMax;
+        private Vector2 defaultCameraPreviewPivot;
+        private Vector2 defaultCameraPreviewAnchoredPosition;
+        private Vector2 defaultCameraPreviewSizeDelta;
+        private Quaternion defaultCameraPreviewLocalRotation;
+        private Vector3 defaultCameraPreviewLocalScale;
         private bool loggedFirstArFrame;
         private int lastLoggedArFaceCount = -1;
         private bool mediaPipeArUnavailable;
@@ -214,6 +225,8 @@ namespace PhotoBooth.Booth.Frontend
         private bool isBusy;
         private int pendingThemeIndex = -1;
         private int pendingImagePreviewIndex = 1;
+        private bool pendingThemeUsesMonsterFrame;
+        private bool selectedThemeUsesMonsterFrame;
         private int selectedImagePreviewIndex = 1;
         private string passengerName = string.Empty;
 
@@ -394,6 +407,8 @@ namespace PhotoBooth.Booth.Frontend
                 selectedAiStyle = null;
                 pendingThemeIndex = -1;
                 pendingImagePreviewIndex = 1;
+                pendingThemeUsesMonsterFrame = false;
+                selectedThemeUsesMonsterFrame = false;
                 selectedImagePreviewIndex = 1;
                 pendingArPresetIndex = -1;
                 selectedArPresetIndex = -1;
@@ -403,7 +418,8 @@ namespace PhotoBooth.Booth.Frontend
                 UpdateNameEntryDisplay();
                 latestMotionClip = null;
                 EnsureDefaultArStickerPresets();
-                EnsureDefaultMonsterArSelection();
+                ApplyNoArPresetSelection(updateStatus: false, trackSelection: false);
+                ResetSessionSelectionVisuals();
                 StopMotionClipPlayback();
                 StopLivePhotoPreviewPlayback();
                 StopPreviewFrameMotionPlayback();
@@ -411,6 +427,7 @@ namespace PhotoBooth.Booth.Frontend
                 ClearPreview(composedPreview, ref composedPreviewTexture);
                 ClearPreviewFrameSlots();
                 ClearQrPreview();
+                SetMonsterFramePreviewMode(false);
                 await TrackAsync("booth_frontend_session_started");
                 SwitchScreen(BoothUiScreenId.ThemeSelect, "Choose your frame.");
             }
@@ -427,6 +444,21 @@ namespace PhotoBooth.Booth.Frontend
 
         public void ChooseThemeCandidateFromUi(int themeIndex)
         {
+            ChooseThemeCandidateFromUi(themeIndex, pendingThemeUsesMonsterFrame);
+        }
+
+        public void ChooseNoMonsterThemeCandidateFromUi(int themeIndex)
+        {
+            ChooseThemeCandidateFromUi(themeIndex, false);
+        }
+
+        public void ChooseMonsterThemeCandidateFromUi(int themeIndex)
+        {
+            ChooseThemeCandidateFromUi(themeIndex, true);
+        }
+
+        private void ChooseThemeCandidateFromUi(int themeIndex, bool useMonsterFrame)
+        {
             EnsureDefaultThemes();
             if (themeIndex < 0 || themeIndex >= themes.Length)
             {
@@ -435,10 +467,42 @@ namespace PhotoBooth.Booth.Frontend
             }
 
             pendingThemeIndex = themeIndex;
+            pendingThemeUsesMonsterFrame = useMonsterFrame;
             var theme = ResolveTheme(themeIndex);
             pendingImagePreviewIndex = ResolveImagePreviewIndex(theme, themeIndex);
-            SetStatus($"Selected frame: {theme.displayName}. Tap confirm to continue.");
+            ApplyMonsterFrameSelection(useMonsterFrame);
+            SetStatus($"Selected frame: {theme.displayName}{BuildMonsterFrameStatusSuffix(useMonsterFrame)}. Tap confirm to continue.");
             priceText?.SetText(FormatPrice(theme));
+        }
+
+        public void SelectNoMonsterFilterFromUi()
+        {
+            SelectNoMonsterFrameFromUi();
+        }
+
+        public void SelectMonsterFilterFromUi()
+        {
+            SelectMonsterFrameFromUi();
+        }
+
+        public void SelectNoMonsterFrameFromUi()
+        {
+            pendingThemeUsesMonsterFrame = false;
+            ApplyMonsterFrameSelection(false);
+            if (pendingThemeIndex >= 0)
+            {
+                ChooseThemeCandidateFromUi(pendingThemeIndex, false);
+            }
+        }
+
+        public void SelectMonsterFrameFromUi()
+        {
+            pendingThemeUsesMonsterFrame = true;
+            ApplyMonsterFrameSelection(true);
+            if (pendingThemeIndex >= 0)
+            {
+                ChooseThemeCandidateFromUi(pendingThemeIndex, true);
+            }
         }
 
         public void ConfirmThemeSelectionFromUi()
@@ -464,6 +528,8 @@ namespace PhotoBooth.Booth.Frontend
             {
                 selectedTheme = ResolveTheme(themeIndex);
                 selectedImagePreviewIndex = ResolveImagePreviewIndex(selectedTheme, themeIndex);
+                selectedThemeUsesMonsterFrame = pendingThemeUsesMonsterFrame;
+                ApplyMonsterFrameSelection(selectedThemeUsesMonsterFrame);
                 previewFrameLayoutIndex = -1;
                 previewFrameImage = null;
                 currentJob = runtime.SessionService.CreateJob(selectedTheme.priceMinorUnits, selectedTheme.currencyCode);
@@ -473,8 +539,9 @@ namespace PhotoBooth.Booth.Frontend
                 priceText?.SetText(FormatPrice(selectedTheme));
                 await TrackAsync("booth_frontend_theme_selected");
                 runtime.TrackFeatureUsed($"theme_selected:{selectedTheme.themeId}");
-                Debug.Log($"Selected photo booth layout: themeIndex={themeIndex}, imagePreviewIndex={selectedImagePreviewIndex}, backendFrameId={currentJob.ThemeId}");
-                SwitchScreen(BoothUiScreenId.PaymentMock, $"Selected {selectedTheme.displayName}. Choose payment.");
+                runtime.TrackFeatureUsed($"frame_overlay_selected:{ResolveMonsterFrameOverlayId(selectedThemeUsesMonsterFrame)}");
+                Debug.Log($"Selected photo booth layout: themeIndex={themeIndex}, imagePreviewIndex={selectedImagePreviewIndex}, backendFrameId={currentJob.ThemeId}, frameOverlay={ResolveMonsterFrameOverlayId(selectedThemeUsesMonsterFrame)}");
+                SwitchScreen(BoothUiScreenId.PaymentMock, $"Selected {selectedTheme.displayName}{BuildMonsterFrameStatusSuffix(selectedThemeUsesMonsterFrame)}. Choose payment.");
             }
             catch (Exception exception)
             {
@@ -541,14 +608,26 @@ namespace PhotoBooth.Booth.Frontend
 
         public void SelectNoArPresetFromUi()
         {
+            ApplyNoArPresetSelection(updateStatus: true, trackSelection: true);
+        }
+
+        private void ApplyNoArPresetSelection(bool updateStatus, bool trackSelection)
+        {
             pendingArPresetIndex = NoArPresetIndex;
             selectedArPresetIndex = NoArPresetIndex;
             selectedArStickerIndex = -1;
             selectedArPreset = null;
-            SetStatus("Selected AR: None.");
+            if (updateStatus)
+            {
+                SetStatus("Selected AR: None.");
+            }
+
             ClearArPreviewOverlay();
             EnsureCaptureForegroundOverlay();
-            _ = TrackAsync("booth_frontend_ar_preset_selected", metadata: BuildAiMetadata());
+            if (trackSelection)
+            {
+                _ = TrackAsync("booth_frontend_ar_preset_selected", metadata: BuildAiMetadata());
+            }
         }
 
         private bool TryChooseStickerFromSinglePreset(int stickerIndex)
@@ -578,7 +657,7 @@ namespace PhotoBooth.Booth.Frontend
         {
             if (pendingArPresetIndex == NoArPresetIndex)
             {
-                SelectNoArPresetFromUi();
+                ApplyNoArPresetSelection(updateStatus: false, trackSelection: false);
                 return;
             }
 
@@ -672,7 +751,7 @@ namespace PhotoBooth.Booth.Frontend
                 UpdateNameEntryDisplay();
                 ResetCaptureSequence();
                 EnsureDefaultArStickerPresets();
-                EnsureDefaultMonsterArSelection();
+                ApplyNoArPresetSelection(updateStatus: false, trackSelection: false);
 
                 await ShowCaptureAsync(BuildCaptureReadyMessage());
             }
@@ -723,11 +802,12 @@ namespace PhotoBooth.Booth.Frontend
                 UpdateNameEntryDisplay();
                 currentJob = runtime.SessionService.SetPassengerName(currentJob.JobId, passengerName);
                 await TrackAsync("booth_frontend_name_confirmed", metadata: new Dictionary<string, string> { ["passenger_name"] = passengerName });
-                SwitchScreen(BoothUiScreenId.Preview, "Preparing final QR...");
+                SwitchScreen(BoothUiScreenId.Preview, "Preparing print...");
                 ClearQrPreview();
-                ShowQrLoading(ResolveQrPreviewRawImage(), ResolveQrPreviewImage());
                 ShowCountdownClipInPreviewFrame(latestMotionClip);
                 await ComposeCapturedPhotosAsync();
+                await SendCurrentPrintJobAsync(showPrintingScreen: false, completeSessionOnSuccess: false);
+                ShowQrLoading(ResolveQrPreviewRawImage(), ResolveQrPreviewImage());
                 await PublishCurrentJobAndShowPreviewAsync();
             }
             catch (Exception exception)
@@ -758,12 +838,13 @@ namespace PhotoBooth.Booth.Frontend
             try
             {
                 EnsureCurrentJobOrCreateQuickDemo(paymentConfirmed: true);
+                ApplyMonsterFrameSelection(selectedThemeUsesMonsterFrame);
                 if (currentJob.Status == BoothJobStatus.PaymentConfirmed || currentJob.Status == BoothJobStatus.PaymentBypassed)
                 {
                     currentJob = runtime.SessionService.BeginCapture(currentJob.JobId);
                 }
 
-                cameraCaptureService ??= new BoothCameraCaptureService(cameraPreview, cameraCaptureSize.x, cameraCaptureSize.y);
+                cameraCaptureService ??= CreateCameraCaptureService();
                 await cameraCaptureService.StartPreviewAsync(flowCancellation.Token);
                 await StartArPreviewAsync(flowCancellation.Token);
 
@@ -925,13 +1006,7 @@ namespace PhotoBooth.Booth.Frontend
 
             try
             {
-                EnsureCurrentJob();
-                SwitchScreen(BoothUiScreenId.Printing, "Printing is simulated for this MVP.");
-                await TrackAsync("booth_frontend_print_requested");
-                currentJob = await runtime.PrintService.PrintAsync(currentJob.JobId, "Simulated Photo Booth Printer", 1, flowCancellation.Token);
-                printStatusText?.SetText($"Simulated print: {currentJob.PrintStatus}");
-                await TrackAsync("booth_frontend_print_completed");
-                SwitchScreen(BoothUiScreenId.Done, "Session complete.");
+                await SendCurrentPrintJobAsync(showPrintingScreen: true, completeSessionOnSuccess: true);
             }
             catch (Exception exception)
             {
@@ -943,6 +1018,97 @@ namespace PhotoBooth.Booth.Frontend
             {
                 EndBusy();
             }
+        }
+
+        private async Task SendCurrentPrintJobAsync(bool showPrintingScreen, bool completeSessionOnSuccess)
+        {
+            EnsureCurrentJob();
+            if (currentJob.PrintStatus == BoothPrintStatus.Printed)
+            {
+                Debug.Log($"Photo booth print skipped; already printed: job={currentJob.JobId}, printer={currentJob.PrinterName}");
+                if (showPrintingScreen)
+                {
+                    printStatusText?.SetText(BuildPrintStatusMessage(currentJob));
+                }
+
+                return;
+            }
+
+            if (printRequestStarted && currentJob.PrintStatus == BoothPrintStatus.Printing)
+            {
+                Debug.Log($"Photo booth print skipped; print already in progress: job={currentJob.JobId}");
+                return;
+            }
+
+            printRequestStarted = true;
+            if (showPrintingScreen)
+            {
+                SwitchScreen(BoothUiScreenId.Printing, "Sending photo to printer...");
+                printStatusText?.SetText("Printing your photo...");
+            }
+            else
+            {
+                SetStatus("Printing your photo...");
+            }
+
+            Debug.Log($"Photo booth print requested: job={currentJob.JobId}, printer=(local default), image={currentJob.Paths?.PrintImagePath ?? currentJob.Paths?.ComposedImagePath}");
+            await TrackAsync("booth_frontend_print_requested");
+            currentJob = await runtime.PrintService.PrintAsync(currentJob.JobId, null, 1, flowCancellation.Token);
+            Debug.Log($"Photo booth print result: job={currentJob.JobId}, status={currentJob.Status}, printStatus={currentJob.PrintStatus}, printer={currentJob.PrinterName}, error={currentJob.LastPrintError ?? currentJob.LastError ?? string.Empty}");
+            printStatusText?.SetText(BuildPrintStatusMessage(currentJob));
+
+            if (currentJob.PrintStatus == BoothPrintStatus.Printed)
+            {
+                await TrackAsync("booth_frontend_print_completed");
+                SetStatus(string.IsNullOrWhiteSpace(currentJob.DownloadUrl)
+                    ? "Printed successfully. Preparing download link..."
+                    : "Download link ready. Printed successfully.");
+                if (completeSessionOnSuccess)
+                {
+                    SwitchScreen(BoothUiScreenId.Done, "Session complete.");
+                }
+
+                return;
+            }
+
+            printRequestStarted = false;
+            if (currentJob.PrintStatus == BoothPrintStatus.RetryWait)
+            {
+                await TrackAsync("booth_frontend_print_retry_wait", metadata: new Dictionary<string, string> { ["error"] = currentJob.LastPrintError ?? string.Empty });
+                SetStatus("Printer error. Please retry or call staff.");
+                return;
+            }
+
+            await TrackAsync("booth_frontend_print_failed", metadata: new Dictionary<string, string> { ["error"] = currentJob.LastPrintError ?? currentJob.LastError ?? string.Empty });
+            if (showPrintingScreen)
+            {
+                ShowError(BuildPrintStatusMessage(currentJob));
+            }
+            else
+            {
+                SetStatus(BuildPrintStatusMessage(currentJob));
+            }
+        }
+
+        private static string BuildPrintStatusMessage(BoothJob job)
+        {
+            if (job == null)
+            {
+                return "Print job is unavailable.";
+            }
+
+            return job.PrintStatus switch
+            {
+                BoothPrintStatus.Printed => "Printed successfully.",
+                BoothPrintStatus.Printing => "Printing your photo...",
+                BoothPrintStatus.RetryWait => string.IsNullOrWhiteSpace(job.LastPrintError)
+                    ? "Printer error. Please retry or call staff."
+                    : $"Printer error: {job.LastPrintError}",
+                BoothPrintStatus.FailedHard => string.IsNullOrWhiteSpace(job.LastPrintError ?? job.LastError)
+                    ? "Print failed. Please call staff."
+                    : $"Print failed: {job.LastPrintError ?? job.LastError}",
+                _ => "Print is pending."
+            };
         }
 
         public async void DoneFromUi()
@@ -975,6 +1141,8 @@ namespace PhotoBooth.Booth.Frontend
             selectedAiStyle = null;
             pendingThemeIndex = -1;
             pendingImagePreviewIndex = 1;
+            pendingThemeUsesMonsterFrame = false;
+            selectedThemeUsesMonsterFrame = false;
             selectedImagePreviewIndex = 1;
             pendingArPresetIndex = -1;
             selectedArPresetIndex = -1;
@@ -989,6 +1157,8 @@ namespace PhotoBooth.Booth.Frontend
             ClearPreview(composedPreview, ref composedPreviewTexture);
             ClearPreviewFrameSlots();
             ClearQrPreview();
+            SetMonsterFramePreviewMode(false);
+            ResetSessionSelectionVisuals();
             UpdateNameEntryDisplay();
             downloadUrlText?.SetText(string.Empty);
             printStatusText?.SetText(string.Empty);
@@ -998,12 +1168,22 @@ namespace PhotoBooth.Booth.Frontend
         private async Task ShowCaptureAsync(string message)
         {
             SwitchScreen(BoothUiScreenId.Capture, message);
-            cameraCaptureService ??= new BoothCameraCaptureService(cameraPreview, cameraCaptureSize.x, cameraCaptureSize.y);
+            cameraCaptureService ??= CreateCameraCaptureService();
             await cameraCaptureService.StartPreviewAsync(flowCancellation.Token);
             await StartArPreviewAsync(flowCancellation.Token);
             EnsureCaptureForegroundOverlay();
+            ApplyMonsterFrameSelection(selectedThemeUsesMonsterFrame);
             countdownText?.SetText(string.Empty);
             UpdateCaptureCountText();
+        }
+
+        private BoothCameraCaptureService CreateCameraCaptureService()
+        {
+            return new BoothCameraCaptureService(
+                cameraPreview,
+                cameraCaptureSize.x,
+                cameraCaptureSize.y,
+                preferredDeviceNames: runtime?.PreferredCameraDeviceNames);
         }
 
         private async Task<BoothCaptureClip> RecordCountdownMotionClipAsync(int captureNumber)
@@ -1073,7 +1253,7 @@ namespace PhotoBooth.Booth.Frontend
             try
             {
                 screenshot = ScreenCapture.CaptureScreenshotAsTexture();
-                var crop = GetScreenPixelRect(cameraPreview.rectTransform, screenshot.width, screenshot.height);
+                var crop = GetScreenPixelRect(ResolveCaptureCropRectTransform(), screenshot.width, screenshot.height);
                 cropped = new Texture2D(Mathf.RoundToInt(crop.width), Mathf.RoundToInt(crop.height), TextureFormat.RGBA32, false);
                 cropped.SetPixels(screenshot.GetPixels(
                     Mathf.RoundToInt(crop.x),
@@ -1145,14 +1325,28 @@ namespace PhotoBooth.Booth.Frontend
         {
             EnsureCurrentJob();
             var rawPaths = GetCapturedRawImagePaths();
+            var printablePassengerName = ResolvePassengerNameForLabel();
+            if (!string.IsNullOrWhiteSpace(printablePassengerName)
+                && !string.Equals(currentJob.PassengerName, printablePassengerName, StringComparison.Ordinal))
+            {
+                currentJob = runtime.SessionService.SetPassengerName(currentJob.JobId, printablePassengerName);
+            }
+
             currentJob = runtime.SessionService.BeginComposing(currentJob.JobId);
+            if (!string.IsNullOrWhiteSpace(printablePassengerName)
+                && !string.Equals(currentJob.PassengerName, printablePassengerName, StringComparison.Ordinal))
+            {
+                currentJob = runtime.SessionService.SetPassengerName(currentJob.JobId, printablePassengerName);
+            }
+
+            Debug.Log($"Photo booth composition requested: job={currentJob.JobId}, passengerName={currentJob.PassengerName ?? string.Empty}, uiPassengerName={passengerName ?? string.Empty}");
             var composition = composer.ComposePhotoGrid(currentJob, rawPaths, thumbnailSize, selectedTheme, selectedAiStyle);
-            currentJob = runtime.SessionService.MarkComposed(currentJob.JobId, composition.ComposedImagePath, composition.ThumbnailPath);
+            currentJob = runtime.SessionService.MarkComposed(currentJob.JobId, composition.ComposedImagePath, composition.PrintImagePath, composition.ThumbnailPath);
             var liveImagePath = composer.ComposeLiveImage(currentJob, rawPaths, selectedTheme);
-            Debug.Log($"Photo booth live image composed: job={currentJob.JobId}, path={liveImagePath}");
+            Debug.Log($"Photo booth live image composed: job={currentJob.JobId}, passengerName={currentJob.PassengerName ?? string.Empty}, path={liveImagePath}");
 
             await TrackAsync("booth_frontend_composition_completed", metadata: BuildAiMetadata());
-            Debug.Log($"Photo booth final image composed: job={currentJob.JobId}, path={currentJob.Paths.ComposedImagePath}");
+            Debug.Log($"Photo booth final image composed: job={currentJob.JobId}, passengerName={currentJob.PassengerName ?? string.Empty}, path={currentJob.Paths.ComposedImagePath}, printPath={currentJob.Paths.PrintImagePath ?? string.Empty}");
         }
 
         private async Task PublishCurrentJobAndShowPreviewAsync()
@@ -1164,7 +1358,7 @@ namespace PhotoBooth.Booth.Frontend
             await TrackAsync("booth_frontend_sync_started", metadata: BuildAiMetadata());
             if (rawCaptureUploadQueue != null)
             {
-                await rawCaptureUploadQueue.FlushAsync(flowCancellation.Token);
+                await rawCaptureUploadQueue.FlushAsync(flowCancellation.Token, ResolvePassengerNameForLabel());
             }
 
             currentJob = await runtime.SyncService.SyncAsync(currentJob.JobId, flowCancellation.Token);
@@ -1203,7 +1397,27 @@ namespace PhotoBooth.Booth.Frontend
             await TrackAsync("booth_frontend_sync_completed", metadata: BuildAiMetadata());
             await TrackAsync("booth_frontend_download_link_shown", metadata: BuildAiMetadata());
             await LoadQrPreviewAsync(currentJob.DownloadUrl);
-            SetStatus("Download link ready. Print is simulated in this MVP.");
+            SetStatus(BuildPostPublishStatusMessage(currentJob));
+        }
+
+        private static string BuildPostPublishStatusMessage(BoothJob job)
+        {
+            if (job == null)
+            {
+                return "Download link ready.";
+            }
+
+            return job.PrintStatus switch
+            {
+                BoothPrintStatus.Printed => "Download link ready. Printed successfully.",
+                BoothPrintStatus.RetryWait => string.IsNullOrWhiteSpace(job.LastPrintError)
+                    ? "Download link ready. Printer error, please retry."
+                    : $"Download link ready. Printer error: {job.LastPrintError}",
+                BoothPrintStatus.FailedHard => string.IsNullOrWhiteSpace(job.LastPrintError ?? job.LastError)
+                    ? "Download link ready. Print failed."
+                    : $"Download link ready. Print failed: {job.LastPrintError ?? job.LastError}",
+                _ => "Download link ready."
+            };
         }
 
         private string BuildFallbackDownloadUrl(string jobId)
@@ -1259,6 +1473,7 @@ namespace PhotoBooth.Booth.Frontend
             capturedPhotoCount = 0;
             rawCaptureUploadQueue = null;
             rawCaptureUploadStarted = false;
+            printRequestStarted = false;
             previewScreenShowsFinalDownload = false;
             UpdateCaptureCountText();
         }
@@ -1283,8 +1498,9 @@ namespace PhotoBooth.Booth.Frontend
                 return;
             }
 
-            var sprite = ResolveCaptureForegroundSprite(GetCaptureForegroundIndex());
+            var sprite = selectedThemeUsesMonsterFrame ? monsterFrameOverlaySprite : null;
             captureForegroundOverlay.sprite = sprite;
+            captureForegroundOverlay.preserveAspect = false;
             captureForegroundOverlay.color = sprite != null ? Color.white : Color.clear;
         }
 
@@ -1644,6 +1860,11 @@ namespace PhotoBooth.Booth.Frontend
 
             if (screenId != BoothUiScreenId.Capture)
             {
+                if (cameraCaptureService != null && cameraCaptureService.IsPreviewing)
+                {
+                    Debug.Log($"PhotoBooth leaving Capture; stopping camera before entering {screenId}: device={cameraCaptureService.CurrentDeviceName}");
+                }
+
                 StopArPreview();
                 cameraCaptureService?.StopPreview();
             }
@@ -2774,6 +2995,8 @@ namespace PhotoBooth.Booth.Frontend
                 passengerName = "PASSENGER";
                 UpdateNameEntryDisplay();
             }
+
+            currentJob = runtime.SessionService.SetPassengerName(currentJob.JobId, passengerName);
         }
 
         private void EnqueueRawCaptureUpload(string rawPath, int captureIndex, int captureTotal)
@@ -2783,7 +3006,7 @@ namespace PhotoBooth.Booth.Frontend
                 return;
             }
 
-            rawCaptureUploadQueue ??= new BoothRawCaptureUploadQueue(runtime.SyncService);
+            rawCaptureUploadQueue ??= new BoothRawCaptureUploadQueue(runtime.SyncService, autoProcess: false);
             rawCaptureUploadStarted = true;
             rawCaptureUploadQueue.Enqueue(new RawCaptureUploadRequest
             {
@@ -2791,6 +3014,7 @@ namespace PhotoBooth.Booth.Frontend
                 DeviceId = runtime.BackendDeviceId,
                 ThemeId = currentJob.ThemeId,
                 ImagePreviewId = currentJob.ThemeId,
+                PassengerName = ResolvePassengerNameForLabel(),
                 RawCapturePath = rawPath,
                 CaptureIndex = Math.Max(1, captureIndex),
                 CaptureTotal = Math.Max(1, captureTotal),
@@ -2844,7 +3068,7 @@ namespace PhotoBooth.Booth.Frontend
 
         private async Task EnsureCapturePreviewStartedAsync()
         {
-            SelectNoArPresetFromUi();
+            ApplyMonsterFrameSelection(selectedThemeUsesMonsterFrame);
             if (isStartingCapturePreview || currentScreen != BoothUiScreenId.Capture)
             {
                 return;
@@ -2854,9 +3078,10 @@ namespace PhotoBooth.Booth.Frontend
             try
             {
                 Debug.Log("PhotoBooth capture preview start requested.");
-                cameraCaptureService ??= new BoothCameraCaptureService(cameraPreview, cameraCaptureSize.x, cameraCaptureSize.y);
+                cameraCaptureService ??= CreateCameraCaptureService();
                 await cameraCaptureService.StartPreviewAsync(flowCancellation?.Token ?? CancellationToken.None);
-                Debug.Log($"PhotoBooth capture preview running: {cameraCaptureService.IsPreviewing}, texture={cameraCaptureService.CurrentWidth}x{cameraCaptureService.CurrentHeight}");
+                Debug.Log($"PhotoBooth capture preview running: {cameraCaptureService.IsPreviewing}, device={cameraCaptureService.CurrentDeviceName}, texture={cameraCaptureService.CurrentWidth}x{cameraCaptureService.CurrentHeight}");
+                SetStatus($"{BuildCaptureReadyMessage()} Camera: {cameraCaptureService.CurrentDeviceName}");
                 await StartArPreviewAsync(flowCancellation?.Token ?? CancellationToken.None);
             }
             catch (Exception exception)
@@ -2917,6 +3142,98 @@ namespace PhotoBooth.Booth.Frontend
             }
 
             return arStickerPresets[index];
+        }
+
+        private void ApplyMonsterFrameSelection(bool useMonsterFrame)
+        {
+            SetMonsterFramePreviewMode(useMonsterFrame);
+            ApplyCaptureFrameRect(useMonsterFrame);
+            EnsureCaptureForegroundOverlay();
+        }
+
+        private void SetMonsterFramePreviewMode(bool useMonsterFrame)
+        {
+            SetObjectActive("Grid - No Monster", !useMonsterFrame);
+            SetObjectActive("Grid - Monster", useMonsterFrame);
+        }
+
+        private void ResetSessionSelectionVisuals()
+        {
+            ResetThemeSelectionVisuals();
+            ResetArSelectionVisuals();
+            UpdateCaptureForegroundOverlay();
+        }
+
+        private void ResetThemeSelectionVisuals()
+        {
+            var root = FindScreenRoot(BoothUiScreenId.ThemeSelect);
+            if (root == null)
+            {
+                return;
+            }
+
+            foreach (var candidate in root.GetComponentsInChildren<Transform>(true))
+            {
+                if (candidate == null || candidate.parent == null)
+                {
+                    continue;
+                }
+
+                var parentName = candidate.parent.name;
+                var candidateName = candidate.name;
+                var isFrameSelectionMarker = parentName.StartsWith("FramePreview", StringComparison.Ordinal)
+                    && (candidateName.StartsWith("ThemeButton", StringComparison.Ordinal)
+                        || string.Equals(candidateName, "Select", StringComparison.Ordinal));
+                var isMonsterToggleMarker = (string.Equals(parentName, "Monster", StringComparison.Ordinal)
+                        || string.Equals(parentName, "No Monster", StringComparison.Ordinal))
+                    && string.Equals(candidateName, "Select", StringComparison.Ordinal);
+
+                if (isFrameSelectionMarker || isMonsterToggleMarker)
+                {
+                    candidate.gameObject.SetActive(false);
+                }
+            }
+        }
+
+        private void ResetArSelectionVisuals()
+        {
+            var root = FindScreenRoot(BoothUiScreenId.Capture);
+            if (root == null)
+            {
+                return;
+            }
+
+            foreach (var candidate in root.GetComponentsInChildren<Transform>(true))
+            {
+                if (candidate == null || candidate.parent == null)
+                {
+                    continue;
+                }
+
+                var parentName = candidate.parent.name;
+                var isArSelectionMarker = string.Equals(candidate.name, "Select", StringComparison.Ordinal)
+                    && (parentName.StartsWith("ArPreset", StringComparison.Ordinal)
+                        || string.Equals(parentName, "Nose", StringComparison.Ordinal)
+                        || string.Equals(parentName, "Horn", StringComparison.Ordinal)
+                        || string.Equals(parentName, "Mushroom", StringComparison.Ordinal)
+                        || string.Equals(parentName, "Monster", StringComparison.Ordinal)
+                        || string.Equals(parentName, "No Monster", StringComparison.Ordinal));
+
+                if (isArSelectionMarker)
+                {
+                    candidate.gameObject.SetActive(false);
+                }
+            }
+        }
+
+        private static string ResolveMonsterFrameOverlayId(bool useMonsterFrame)
+        {
+            return useMonsterFrame ? "monster_frame" : "none";
+        }
+
+        private static string BuildMonsterFrameStatusSuffix(bool useMonsterFrame)
+        {
+            return useMonsterFrame ? " + Monster frame" : string.Empty;
         }
 
         private void EnsureDefaultThemes()
@@ -3432,13 +3749,123 @@ namespace PhotoBooth.Booth.Frontend
 
             if (captureForegroundOverlay != null)
             {
-                StretchGraphicToParent(captureForegroundOverlay);
+                if (selectedThemeUsesMonsterFrame)
+                {
+                    ApplyMonsterFrameOverlayRect(captureForegroundOverlay);
+                }
+                else
+                {
+                    CopyCameraPreviewRect(captureForegroundOverlay);
+                }
+
                 var overlaySiblingIndex = arPreviewOverlay != null ? arPreviewOverlay.transform.GetSiblingIndex() : cameraSiblingIndex;
                 captureForegroundOverlay.transform.SetSiblingIndex(Mathf.Min(overlaySiblingIndex + 1, cameraPreview.transform.parent.childCount - 1));
             }
         }
 
-        private void CopyCameraPreviewRect(RawImage overlay)
+        private void ApplyMonsterFrameOverlayRect(Graphic overlay)
+        {
+            if (overlay == null || cameraPreview == null)
+            {
+                return;
+            }
+
+            var cameraRect = cameraPreview.rectTransform;
+            var overlayRect = overlay.rectTransform;
+            if (overlayRect.parent != cameraRect.parent)
+            {
+                overlayRect.SetParent(cameraRect.parent, false);
+            }
+
+            overlayRect.anchorMin = Vector2.one * 0.5f;
+            overlayRect.anchorMax = Vector2.one * 0.5f;
+            overlayRect.pivot = Vector2.one * 0.5f;
+            overlayRect.anchoredPosition = Vector2.zero;
+            overlayRect.sizeDelta = MonsterFrameOverlaySize;
+            overlayRect.localRotation = Quaternion.identity;
+            overlayRect.localScale = Vector3.one;
+            overlayRect.localPosition = new Vector3(overlayRect.localPosition.x, overlayRect.localPosition.y, cameraRect.localPosition.z);
+        }
+
+        private RectTransform ResolveCaptureCropRectTransform()
+        {
+            return selectedThemeUsesMonsterFrame && captureForegroundOverlay != null
+                ? captureForegroundOverlay.rectTransform
+                : cameraPreview.rectTransform;
+        }
+
+        private void ApplyCaptureFrameRect(bool useMonsterFrame)
+        {
+            if (cameraPreview == null)
+            {
+                return;
+            }
+
+            CaptureDefaultCameraPreviewRect();
+            if (useMonsterFrame)
+            {
+                ApplyMonsterFrameRect(cameraPreview.rectTransform);
+            }
+            else
+            {
+                RestoreDefaultCameraPreviewRect();
+            }
+
+            AlignArOverlaysToCameraPreview();
+        }
+
+        private void ApplyMonsterFrameRect(RectTransform rect)
+        {
+            if (rect == null)
+            {
+                return;
+            }
+
+            rect.anchorMin = Vector2.one * 0.5f;
+            rect.anchorMax = Vector2.one * 0.5f;
+            rect.pivot = Vector2.one * 0.5f;
+            rect.anchoredPosition = Vector2.zero;
+            rect.sizeDelta = MonsterFrameOverlaySize;
+            rect.localRotation = Quaternion.identity;
+            rect.localScale = Vector3.one;
+        }
+
+        private void CaptureDefaultCameraPreviewRect()
+        {
+            if (hasDefaultCameraPreviewRect || cameraPreview == null)
+            {
+                return;
+            }
+
+            var rect = cameraPreview.rectTransform;
+            defaultCameraPreviewAnchorMin = rect.anchorMin;
+            defaultCameraPreviewAnchorMax = rect.anchorMax;
+            defaultCameraPreviewPivot = rect.pivot;
+            defaultCameraPreviewAnchoredPosition = rect.anchoredPosition;
+            defaultCameraPreviewSizeDelta = rect.sizeDelta;
+            defaultCameraPreviewLocalRotation = rect.localRotation;
+            defaultCameraPreviewLocalScale = rect.localScale;
+            hasDefaultCameraPreviewRect = true;
+        }
+
+        private void RestoreDefaultCameraPreviewRect()
+        {
+            if (!hasDefaultCameraPreviewRect || cameraPreview == null)
+            {
+                return;
+            }
+
+            var rect = cameraPreview.rectTransform;
+            rect.anchorMin = defaultCameraPreviewAnchorMin;
+            rect.anchorMax = defaultCameraPreviewAnchorMax;
+            rect.pivot = defaultCameraPreviewPivot;
+            rect.anchoredPosition = defaultCameraPreviewAnchoredPosition;
+            rect.sizeDelta = defaultCameraPreviewSizeDelta;
+            rect.localRotation = defaultCameraPreviewLocalRotation;
+            rect.localScale = defaultCameraPreviewLocalScale;
+        }
+
+        private void CopyCameraPreviewRect(Graphic overlay)
         {
             if (overlay == null || cameraPreview == null)
             {
@@ -3746,6 +4173,7 @@ namespace PhotoBooth.Booth.Frontend
         private Dictionary<string, string> BuildAiMetadata()
         {
             var metadata = new Dictionary<string, string>();
+            metadata["frame_overlay_id"] = ResolveMonsterFrameOverlayId(selectedThemeUsesMonsterFrame);
             if (selectedAiStyle != null)
             {
                 metadata["ai_style_id"] = selectedAiStyle.styleId;
@@ -4035,8 +4463,8 @@ namespace PhotoBooth.Booth.Frontend
             var themeMonsterOffButton = CreateButton(themeSelect.transform, "ThemeMonsterOffButton", "OFF", new Vector2(0.60f, 0.64f), Vector2.zero, new Vector2(120f, 112f));
             StyleMrkremeButton(themeMonsterButton, new Color(0.94f, 0.91f, 0.82f, 1f), Color.black);
             StyleMrkremeButton(themeMonsterOffButton, Color.black, Color.white);
-            themeMonsterButton.onClick.AddListener(SelectMonsterArPresetFromUi);
-            themeMonsterOffButton.onClick.AddListener(SelectNoArPresetFromUi);
+            themeMonsterButton.onClick.AddListener(SelectMonsterFrameFromUi);
+            themeMonsterOffButton.onClick.AddListener(SelectNoMonsterFrameFromUi);
             var themeSlots = new[]
             {
                 (new Vector2(0.285f, 0.48f), 0),
@@ -4232,7 +4660,7 @@ namespace PhotoBooth.Booth.Frontend
 
             var printing = CreateScreen(background.transform, BoothUiScreenId.Printing, builtScreens);
             CreateBackgroundImage(printing.transform, "PrintingBackground", "piece_06");
-            printStatusText = CreateText(printing.transform, "PrintStatus", "Simulated print in progress...", 32, TextAlignmentOptions.Center, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), Vector2.zero, new Vector2(760f, 100f));
+            printStatusText = CreateText(printing.transform, "PrintStatus", "Printing your photo...", 32, TextAlignmentOptions.Center, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), Vector2.zero, new Vector2(760f, 100f));
             printStatusText.color = new Color(0.08f, 0.08f, 0.08f, 1f);
 
             var done = CreateScreen(background.transform, BoothUiScreenId.Done, builtScreens);
@@ -4300,10 +4728,13 @@ namespace PhotoBooth.Booth.Frontend
             WireButton("StartButton", StartSessionFromUi);
             WireButton("ThemeButton1", () => ChooseThemeCandidateFromUi(0));
             WireButton("ThemeButton2", () => ChooseThemeCandidateFromUi(1));
-            WireButton("ThemeMonsterButton", SelectMonsterArPresetFromUi);
-            WireButton("ThemeMonsterOffButton", SelectNoArPresetFromUi);
+            WireButton("ThemeMonsterButton", SelectMonsterFrameFromUi);
+            WireButton("ThemeMonsterOffButton", SelectNoMonsterFrameFromUi);
+            WireButton("Monster", SelectMonsterFrameFromUi);
+            WireButton("No Monster", SelectNoMonsterFrameFromUi);
             WireClickableGraphic("FramePreview1", () => ChooseThemeCandidateFromUi(0));
             WireClickableGraphic("FramePreview2", () => ChooseThemeCandidateFromUi(1));
+            WireMonsterFramePreviewButtons();
             WireButton("ThemeBackButton", ResetFromUi);
             WireButton("ThemeConfirmButton", ConfirmThemeSelectionFromUi);
             WireButton("ArPresetButton1", SelectMonsterArPresetFromUi);
@@ -4332,6 +4763,63 @@ namespace PhotoBooth.Booth.Frontend
             }
 
             WireButton("Key_Back", BackspaceNameFromUi);
+        }
+
+        private void WireMonsterFramePreviewButtons()
+        {
+            WireThemePreviewGrid("Grid - No Monster", useMonsterFrame: false);
+            WireThemePreviewGrid("Grid - Monster", useMonsterFrame: true);
+        }
+
+        private void WireThemePreviewGrid(string gridName, bool useMonsterFrame)
+        {
+            var root = FindScreenRoot(BoothUiScreenId.ThemeSelect);
+            if (root == null)
+            {
+                return;
+            }
+
+            foreach (var grid in root.GetComponentsInChildren<Transform>(true))
+            {
+                if (grid == null || !string.Equals(grid.name, gridName, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                WireThemePreviewInGrid(grid, "FramePreview1", 0, useMonsterFrame);
+                WireThemePreviewInGrid(grid, "FramePreview2", 1, useMonsterFrame);
+            }
+        }
+
+        private void WireThemePreviewInGrid(Transform grid, string previewName, int themeIndex, bool useMonsterFrame)
+        {
+            foreach (var preview in grid.GetComponentsInChildren<Transform>(true))
+            {
+                if (preview == null || !string.Equals(preview.name, previewName, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                var button = preview.GetComponent<Button>();
+                if (button == null)
+                {
+                    button = preview.gameObject.AddComponent<Button>();
+                    button.transition = Selectable.Transition.None;
+                }
+
+                if (button.targetGraphic == null && preview.TryGetComponent<Graphic>(out var graphic))
+                {
+                    button.targetGraphic = graphic;
+                }
+
+                if (button.targetGraphic != null)
+                {
+                    button.targetGraphic.raycastTarget = true;
+                }
+
+                button.onClick.RemoveAllListeners();
+                button.onClick.AddListener(() => ChooseThemeCandidateFromUi(themeIndex, useMonsterFrame));
+            }
         }
 
         private void WireButton(string buttonName, UnityEngine.Events.UnityAction action)

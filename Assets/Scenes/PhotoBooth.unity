@@ -18905,7 +18905,13 @@ MonoBehaviour:
   autoCheckContentOnStart: 1
   autoDownloadContentUpdate: 0
   autoLoadInstalledContentOnStart: 1
-  defaultPrinterName: Photo Booth Printer
+  usePrintBridge: 1
+  forceSimulatedPrint: 0
+  printBridgeBaseUrl: http://127.0.0.1:18080
+  printBridgeRequestTimeoutSeconds: 10
+  preferredCameraDeviceNames:
+  - OBSBOT Virtual Camera
+  - OBSBOT
   demoThemeId: demo_theme
   demoAmountMinorUnits: 12000
   demoRawCaptureCount: 1

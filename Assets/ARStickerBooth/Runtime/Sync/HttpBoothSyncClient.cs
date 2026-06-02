@@ -46,6 +46,7 @@ namespace PhotoBooth.Booth.Sync
             AddMultipartField(sections, "device_id", ResolveDeviceId(request.DeviceId), true);
             AddMultipartField(sections, "theme_id", request.ThemeId, false);
             AddMultipartField(sections, "image_preview_id", ResolveImagePreviewId(request.ImagePreviewId, request.ThemeId), false);
+            AddMultipartField(sections, "passenger_name", request.PassengerName, false);
             AddMultipartField(sections, "currency", request.CurrencyCode, false);
             AddMultipartField(sections, "amount_minor_units", request.AmountMinorUnits.ToString(), true);
             AddMultipartField(sections, "payment_reference", request.PaymentReference, false);
@@ -54,6 +55,12 @@ namespace PhotoBooth.Booth.Sync
             AddMultipartField(sections, "session_started_at_utc", request.SessionStartedAtUtc, true);
             AddMultipartField(sections, "capture_taken_at_utc", request.CaptureTakenAtUtc, true);
             sections.Add(new MultipartFormFileSection("raw_capture_file", File.ReadAllBytes(request.RawCapturePath), Path.GetFileName(request.RawCapturePath), ResolveContentType(request.RawCapturePath)));
+
+            Debug.Log(
+                "Photo booth raw capture upload requested: " +
+                $"job={request.JobId}, " +
+                $"passengerName={request.PassengerName}, " +
+                $"captureIndex={Math.Max(1, request.CaptureIndex)}/{Math.Max(1, request.CaptureTotal)}");
 
             using var requestMessage = UnityWebRequest.Post(uploadUrl, sections);
             requestMessage.timeout = ResolveTimeoutSeconds();
@@ -153,6 +160,7 @@ namespace PhotoBooth.Booth.Sync
             AddMultipartField(sections, "device_id", ResolveDeviceId(request.DeviceId), true);
             AddMultipartField(sections, "theme_id", request.ThemeId, false);
             AddMultipartField(sections, "image_preview_id", ResolveImagePreviewId(request.ImagePreviewId, request.ThemeId), false);
+            AddMultipartField(sections, "passenger_name", request.PassengerName, false);
             AddMultipartField(sections, "currency", request.CurrencyCode, false);
             AddMultipartField(sections, "amount_minor_units", request.AmountMinorUnits.ToString(), true);
             AddMultipartField(sections, "payment_reference", request.PaymentReference, false);
@@ -196,6 +204,7 @@ namespace PhotoBooth.Booth.Sync
                 $"liveImage={HasLiveImage(request)}, " +
                 $"motionVideo={HasMotionVideo(request)}, " +
                 $"motionFrames={existingMotionFramePaths.Length}, " +
+                $"passengerName={request.PassengerName}, " +
                 $"sessionStartedAtUtc={request.SessionStartedAtUtc}");
 
             using var requestMessage = UnityWebRequest.Post(uploadUrl, sections);
@@ -272,7 +281,11 @@ namespace PhotoBooth.Booth.Sync
                 motionFrameIndex += 1;
             }
 
-            var payload = JsonUtility.ToJson(new BoothAssetRegistrationRequest { assets = assets.ToArray() });
+            var payload = JsonUtility.ToJson(new BoothAssetRegistrationRequest
+            {
+                passenger_name = request.PassengerName,
+                assets = assets.ToArray()
+            });
             using var requestMessage = CreateJsonRequest(registerUrl, UnityWebRequest.kHttpVerbPOST, payload, ResolveDeviceId(request.DeviceId));
             await SendAsync(requestMessage, cancellationToken);
             return ParseRegistrationResponse(request.JobId, requestMessage);
@@ -288,7 +301,8 @@ namespace PhotoBooth.Booth.Sync
             var payload = JsonUtility.ToJson(new BoothPublishRequest
             {
                 primary_asset_type = "composed",
-                image_preview_id = ResolveImagePreviewId(request.ImagePreviewId, request.ThemeId)
+                image_preview_id = ResolveImagePreviewId(request.ImagePreviewId, request.ThemeId),
+                passenger_name = request.PassengerName
             });
             using var requestMessage = CreateJsonRequest(publishUrl, UnityWebRequest.kHttpVerbPOST, payload, ResolveDeviceId(request.DeviceId));
             await SendAsync(requestMessage, cancellationToken);

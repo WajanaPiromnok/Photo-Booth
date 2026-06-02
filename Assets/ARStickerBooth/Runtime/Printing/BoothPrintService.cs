@@ -47,6 +47,8 @@ namespace PhotoBooth.Booth.Printing
                 return sessionService.Fail(jobId, "Cannot print without a composed image.");
             }
 
+            var printImagePath = ResolvePrintImagePath(job);
+
             if (job.Status == BoothJobStatus.Composed)
             {
                 job = sessionService.BeginPrinting(jobId);
@@ -60,7 +62,7 @@ namespace PhotoBooth.Booth.Printing
             {
                 JobId = job.JobId,
                 PrinterName = string.IsNullOrWhiteSpace(printerName) ? job.PrinterName : printerName.Trim(),
-                ImagePath = job.Paths.ComposedImagePath,
+                ImagePath = printImagePath,
                 ThumbnailPath = job.Paths.ThumbnailPath,
                 Copies = Math.Max(1, copies)
             };
@@ -83,6 +85,13 @@ namespace PhotoBooth.Booth.Printing
             return preserveLifecycleStatus
                 ? sessionService.MarkPrintFailedWithoutStatusChange(jobId, result.Message, result.PrinterName)
                 : sessionService.Fail(jobId, result.Message);
+        }
+
+        private static string ResolvePrintImagePath(BoothJob job)
+        {
+            return !string.IsNullOrWhiteSpace(job.Paths?.PrintImagePath) && File.Exists(job.Paths.PrintImagePath)
+                ? job.Paths.PrintImagePath
+                : job.Paths.ComposedImagePath;
         }
     }
 }

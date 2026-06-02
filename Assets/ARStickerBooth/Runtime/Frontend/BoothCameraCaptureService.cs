@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
@@ -13,16 +15,23 @@ namespace PhotoBooth.Booth.Frontend
         private readonly int requestedWidth;
         private readonly int requestedHeight;
         private readonly int requestedFps;
+        private readonly string[] preferredDeviceNames;
 
         private WebCamTexture cameraTexture;
         private Texture2D simulatedCameraTexture;
 
-        public BoothCameraCaptureService(RawImage previewTarget, int requestedWidth = 1280, int requestedHeight = 720, int requestedFps = 30)
+        public BoothCameraCaptureService(
+            RawImage previewTarget,
+            int requestedWidth = 1280,
+            int requestedHeight = 720,
+            int requestedFps = 30,
+            IEnumerable<string> preferredDeviceNames = null)
         {
             this.previewTarget = previewTarget;
             this.requestedWidth = Math.Max(320, requestedWidth);
             this.requestedHeight = Math.Max(240, requestedHeight);
             this.requestedFps = Math.Max(15, requestedFps);
+            this.preferredDeviceNames = NormalizePreferredDeviceNames(preferredDeviceNames);
         }
 
         public bool IsPreviewing => (cameraTexture != null && cameraTexture.isPlaying) || simulatedCameraTexture != null;
@@ -32,6 +41,8 @@ namespace PhotoBooth.Booth.Frontend
         public int CurrentHeight => cameraTexture != null && cameraTexture.height > 16 ? cameraTexture.height : simulatedCameraTexture != null ? simulatedCameraTexture.height : requestedHeight;
 
         public Texture CurrentPreviewTexture => cameraTexture != null ? cameraTexture : simulatedCameraTexture;
+
+        public string CurrentDeviceName { get; private set; }
 
         public async Task StartPreviewAsync(CancellationToken cancellationToken = default)
         {
@@ -64,7 +75,10 @@ namespace PhotoBooth.Booth.Frontend
                 return;
             }
 
-            cameraTexture = new WebCamTexture(WebCamTexture.devices[0].name, requestedWidth, requestedHeight, requestedFps);
+            var selectedDeviceName = SelectPreferredDeviceName(WebCamTexture.devices.Select(device => device.name), preferredDeviceNames);
+            CurrentDeviceName = selectedDeviceName;
+            Debug.Log($"PhotoBooth camera selected: {selectedDeviceName}");
+            cameraTexture = new WebCamTexture(selectedDeviceName, requestedWidth, requestedHeight, requestedFps);
             if (previewTarget != null)
             {
                 previewTarget.texture = cameraTexture;
@@ -88,6 +102,8 @@ namespace PhotoBooth.Booth.Frontend
 
                 await Task.Yield();
             }
+
+            Debug.Log($"PhotoBooth camera preview ready: device={CurrentDeviceName}, texture={CurrentWidth}x{CurrentHeight}");
         }
 
         public string CapturePng(string outputDirectory, string fileName = "capture.png")
@@ -150,6 +166,8 @@ namespace PhotoBooth.Booth.Frontend
 
         public void StopPreview()
         {
+            var stoppedDeviceName = CurrentDeviceName;
+            var wasPreviewing = IsPreviewing;
             if (previewTarget != null)
             {
                 previewTarget.texture = null;
@@ -160,6 +178,12 @@ namespace PhotoBooth.Booth.Frontend
             {
                 UnityEngine.Object.Destroy(simulatedCameraTexture);
                 simulatedCameraTexture = null;
+            }
+
+            CurrentDeviceName = null;
+            if (wasPreviewing)
+            {
+                Debug.Log($"PhotoBooth camera stopped: device={stoppedDeviceName ?? "(unknown)"}");
             }
         }
 
@@ -181,6 +205,7 @@ namespace PhotoBooth.Booth.Frontend
 
         private void StartSimulatedPreview()
         {
+            CurrentDeviceName = "Simulated Camera";
             simulatedCameraTexture = CreateSimulatedCameraTexture(requestedWidth, requestedHeight);
             if (previewTarget != null)
             {
@@ -221,6 +246,54 @@ namespace PhotoBooth.Booth.Frontend
             texture.SetPixels32(pixels);
             texture.Apply(false, false);
             return texture;
+        }
+
+        public static string SelectPreferredDeviceName(IEnumerable<string> deviceNames, IEnumerable<string> preferredNames = null)
+        {
+            var devices = deviceNames?
+                .Where(deviceName => !string.IsNullOrWhiteSpace(deviceName))
+                .Select(deviceName => deviceName.Trim())
+                .ToArray() ?? Array.Empty<string>();
+            if (devices.Length == 0)
+            {
+                return null;
+            }
+
+            var priorities = NormalizePreferredDeviceNames(preferredNames);
+            foreach (var preferredName in priorities)
+            {
+                var exactMatch = devices.FirstOrDefault(deviceName =>
+                    string.Equals(deviceName, preferredName, StringComparison.OrdinalIgnoreCase));
+                if (!string.IsNullOrWhiteSpace(exactMatch))
+                {
+                    return exactMatch;
+                }
+            }
+
+            foreach (var preferredName in priorities)
+            {
+                var partialMatch = devices.FirstOrDefault(deviceName =>
+                    deviceName.IndexOf(preferredName, StringComparison.OrdinalIgnoreCase) >= 0);
+                if (!string.IsNullOrWhiteSpace(partialMatch))
+                {
+                    return partialMatch;
+                }
+            }
+
+            return devices[0];
+        }
+
+        private static string[] NormalizePreferredDeviceNames(IEnumerable<string> preferredNames)
+        {
+            var names = preferredNames?
+                .Where(name => !string.IsNullOrWhiteSpace(name))
+                .Select(name => name.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            return names == null || names.Length == 0
+                ? new[] { "OBSBOT Virtual Camera", "OBSBOT" }
+                : names;
         }
 
         public void Dispose()

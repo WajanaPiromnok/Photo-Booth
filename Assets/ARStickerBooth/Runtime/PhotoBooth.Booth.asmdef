@@ -9,7 +9,13 @@
     "Unity.Services.RemoteConfig",
     "Unity.Services.CloudSave",
     "Unity.TextMeshPro",
+    "Unity.ugui",
     "UnityEngine.UI",
+    "UnityEngine.AudioModule",
+    "UnityEngine.ImageConversionModule",
+    "UnityEngine.ScreenCaptureModule",
+    "UnityEngine.UnityWebRequestModule",
+    "UnityEngine.UIModule",
     "Mediapipe.Runtime"
   ],
   "includePlatforms": [],

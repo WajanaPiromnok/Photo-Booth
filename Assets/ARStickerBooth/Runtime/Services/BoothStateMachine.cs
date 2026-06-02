@@ -107,6 +107,7 @@ namespace PhotoBooth.Booth.Services
             job.MotionClipUrl = null;
             job.Paths.RawImagePath = null;
             job.Paths.ComposedImagePath = null;
+            job.Paths.PrintImagePath = null;
             job.Paths.ThumbnailPath = null;
             job.LastError = null;
             return job;
@@ -130,6 +131,13 @@ namespace PhotoBooth.Booth.Services
             Transition(job, BoothJobStatus.Composed);
             job.Paths.ComposedImagePath = composedImagePath;
             job.Paths.ThumbnailPath = thumbnailPath;
+            return job;
+        }
+
+        public BoothJob MarkComposed(BoothJob job, string composedImagePath, string printImagePath, string thumbnailPath)
+        {
+            MarkComposed(job, composedImagePath, thumbnailPath);
+            job.Paths.PrintImagePath = printImagePath;
             return job;
         }
 

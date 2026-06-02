@@ -48,6 +48,7 @@ namespace PhotoBooth.Booth.Domain
         public string SnapshotPath;
         public string RawImagePath;
         public string ComposedImagePath;
+        public string PrintImagePath;
         public string ThumbnailPath;
     }
 }

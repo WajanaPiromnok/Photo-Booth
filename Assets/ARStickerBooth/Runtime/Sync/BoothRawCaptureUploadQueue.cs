@@ -18,11 +18,13 @@ namespace PhotoBooth.Booth.Sync
         private readonly List<QueueItem> pending = new();
         private readonly SemaphoreSlim processingLock = new(1, 1);
         private readonly int maxAttempts;
+        private readonly bool autoProcess;
 
-        public BoothRawCaptureUploadQueue(BoothSyncService syncService, int maxAttempts = 3)
+        public BoothRawCaptureUploadQueue(BoothSyncService syncService, int maxAttempts = 3, bool autoProcess = true)
         {
             this.syncService = syncService ?? throw new ArgumentNullException(nameof(syncService));
             this.maxAttempts = Math.Max(1, maxAttempts);
+            this.autoProcess = autoProcess;
         }
 
         public int PendingCount
@@ -48,12 +50,36 @@ namespace PhotoBooth.Booth.Sync
                 pending.Add(new QueueItem { Request = request });
             }
 
-            _ = ProcessAsync(CancellationToken.None);
+            if (autoProcess)
+            {
+                _ = ProcessAsync(CancellationToken.None);
+            }
         }
 
-        public Task FlushAsync(CancellationToken cancellationToken = default)
+        public Task FlushAsync(CancellationToken cancellationToken = default, string passengerName = null)
         {
+            ApplyPassengerName(passengerName);
             return ProcessAsync(cancellationToken);
+        }
+
+        private void ApplyPassengerName(string passengerName)
+        {
+            if (string.IsNullOrWhiteSpace(passengerName))
+            {
+                return;
+            }
+
+            var normalizedName = passengerName.Trim().ToUpperInvariant();
+            lock (pending)
+            {
+                foreach (var item in pending)
+                {
+                    if (item?.Request != null)
+                    {
+                        item.Request.PassengerName = normalizedName;
+                    }
+                }
+            }
         }
 
         private async Task ProcessAsync(CancellationToken cancellationToken)

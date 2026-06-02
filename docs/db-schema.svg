@@ -1,0 +1,148 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1460" height="980" viewBox="0 0 1460 980">
+  <defs>
+    <style>
+      .bg { fill: #f7f5ef; }
+      .title { font: 700 30px Arial, sans-serif; fill: #172026; }
+      .subtitle { font: 400 15px Arial, sans-serif; fill: #52616b; }
+      .section { font: 700 20px Arial, sans-serif; fill: #172026; }
+      .table { fill: #ffffff; stroke: #24323a; stroke-width: 2; rx: 8; }
+      .header.pg { fill: #176b87; }
+      .header.sqlite { fill: #6a4c93; }
+      .headerText { font: 700 18px Arial, sans-serif; fill: #ffffff; }
+      .field { font: 400 13px Arial, sans-serif; fill: #172026; }
+      .fieldStrong { font: 700 13px Arial, sans-serif; fill: #172026; }
+      .note { font: 400 12px Arial, sans-serif; fill: #52616b; }
+      .rel { fill: none; stroke: #c2410c; stroke-width: 3; marker-end: url(#arrow); }
+      .softRel { fill: none; stroke: #7c6f64; stroke-width: 2; stroke-dasharray: 6 5; marker-end: url(#arrowSoft); }
+      .legendBox { fill: #ffffff; stroke: #c7c1b6; stroke-width: 1.5; rx: 8; }
+      .chipPg { fill: #176b87; }
+      .chipSqlite { fill: #6a4c93; }
+      .chipRel { fill: #c2410c; }
+      .chipSoft { fill: #7c6f64; }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#c2410c"/>
+    </marker>
+    <marker id="arrowSoft" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#7c6f64"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1460" height="980"/>
+  <text class="title" x="48" y="54">Photo Booth Database Schema</text>
+  <text class="subtitle" x="48" y="80">Current schema found in backend PostgreSQL bootstrap and Unity SQLite local repository.</text>
+
+  <rect class="legendBox" x="1000" y="34" width="398" height="72"/>
+  <rect class="chipPg" x="1020" y="54" width="18" height="18" rx="3"/>
+  <text class="note" x="1046" y="68">Backend PostgreSQL</text>
+  <rect class="chipSqlite" x="1200" y="54" width="18" height="18" rx="3"/>
+  <text class="note" x="1226" y="68">Unity SQLite</text>
+  <rect class="chipRel" x="1020" y="82" width="18" height="6" rx="3"/>
+  <text class="note" x="1046" y="89">FK / ownership</text>
+  <rect class="chipSoft" x="1200" y="82" width="18" height="6" rx="3"/>
+  <text class="note" x="1226" y="89">Logical link only</text>
+
+  <text class="section" x="48" y="140">Backend PostgreSQL</text>
+
+  <g id="pg-booth-jobs">
+    <rect class="table" x="48" y="162" width="400" height="600"/>
+    <rect class="header pg" x="48" y="162" width="400" height="44" rx="8"/>
+    <text class="headerText" x="68" y="190">booth_jobs</text>
+    <text class="fieldStrong" x="68" y="230">PK job_id: TEXT</text>
+    <text class="field" x="68" y="254">device_id: TEXT NOT NULL</text>
+    <text class="field" x="68" y="278">theme_id: TEXT</text>
+    <text class="field" x="68" y="302">image_preview_id: TEXT</text>
+    <text class="field" x="68" y="326">status: TEXT DEFAULT 'CREATED'</text>
+    <text class="field" x="68" y="350">payment_status: TEXT DEFAULT 'UNKNOWN'</text>
+    <text class="field" x="68" y="374">upload_status: TEXT DEFAULT 'PENDING'</text>
+    <text class="field" x="68" y="398">amount_minor_units: BIGINT DEFAULT 0</text>
+    <text class="field" x="68" y="422">currency_code: TEXT DEFAULT 'THB'</text>
+    <text class="field" x="68" y="446">payment_reference: TEXT</text>
+    <text class="field" x="68" y="470">remote_asset_key: TEXT</text>
+    <text class="field" x="68" y="494">session_folder: TEXT UNIQUE WHEN NOT NULL</text>
+    <text class="field" x="68" y="518">session_started_at_utc: TIMESTAMPTZ</text>
+    <text class="field" x="68" y="542">download_url: TEXT</text>
+    <text class="field" x="68" y="566">published_at: TIMESTAMPTZ</text>
+    <text class="field" x="68" y="590">created_at: TIMESTAMPTZ DEFAULT NOW()</text>
+    <text class="field" x="68" y="614">updated_at: TIMESTAMPTZ DEFAULT NOW()</text>
+    <text class="note" x="68" y="650">Indexes: status, upload_status, device_id, session_folder</text>
+    <text class="note" x="68" y="674">Created by: backend/db/init/001_init.sql</text>
+    <text class="note" x="68" y="696">Also ensured at API startup.</text>
+  </g>
+
+  <g id="pg-booth-assets">
+    <rect class="table" x="548" y="162" width="400" height="440"/>
+    <rect class="header pg" x="548" y="162" width="400" height="44" rx="8"/>
+    <text class="headerText" x="568" y="190">booth_assets</text>
+    <text class="fieldStrong" x="568" y="230">PK id: BIGSERIAL</text>
+    <text class="fieldStrong" x="568" y="254">FK job_id: TEXT -> booth_jobs.job_id</text>
+    <text class="field" x="568" y="278">asset_type: TEXT NOT NULL</text>
+    <text class="field" x="568" y="302">remote_key: TEXT NOT NULL</text>
+    <text class="field" x="568" y="326">content_type: TEXT NOT NULL</text>
+    <text class="field" x="568" y="350">checksum: TEXT</text>
+    <text class="field" x="568" y="374">file_size_bytes: BIGINT</text>
+    <text class="field" x="568" y="398">original_file_name: TEXT</text>
+    <text class="field" x="568" y="422">created_at: TIMESTAMPTZ DEFAULT NOW()</text>
+    <text class="field" x="568" y="446">updated_at: TIMESTAMPTZ DEFAULT NOW()</text>
+    <text class="note" x="568" y="482">Unique: job_id + asset_type + remote_key</text>
+    <text class="note" x="568" y="506">Indexes: job_id, asset_type</text>
+    <text class="note" x="568" y="530">Asset types include composed, thumbnail, live_image,</text>
+    <text class="note" x="568" y="552">motion_video, motion_frame, raw_capture.</text>
+  </g>
+
+  <g id="pg-booth-events">
+    <rect class="table" x="548" y="642" width="400" height="272"/>
+    <rect class="header pg" x="548" y="642" width="400" height="44" rx="8"/>
+    <text class="headerText" x="568" y="670">booth_events</text>
+    <text class="fieldStrong" x="568" y="710">PK id: BIGSERIAL</text>
+    <text class="field" x="568" y="734">event_name: TEXT NOT NULL</text>
+    <text class="field" x="568" y="758">job_id: TEXT</text>
+    <text class="field" x="568" y="782">device_id: TEXT NOT NULL</text>
+    <text class="field" x="568" y="806">theme_id: TEXT</text>
+    <text class="field" x="568" y="830">screen_id: TEXT</text>
+    <text class="field" x="568" y="854">duration_seconds: INTEGER</text>
+    <text class="field" x="568" y="878">metadata: JSONB DEFAULT '{}'</text>
+    <text class="field" x="568" y="902">created_at: TIMESTAMPTZ DEFAULT NOW()</text>
+  </g>
+
+  <text class="section" x="1030" y="140">Unity Local SQLite</text>
+
+  <g id="sqlite-booth-jobs">
+    <rect class="table" x="1030" y="162" width="382" height="710"/>
+    <rect class="header sqlite" x="1030" y="162" width="382" height="44" rx="8"/>
+    <text class="headerText" x="1050" y="190">booth_jobs (local cache)</text>
+    <text class="fieldStrong" x="1050" y="230">PK job_id: TEXT</text>
+    <text class="field" x="1050" y="254">status: INTEGER</text>
+    <text class="field" x="1050" y="278">payment_status: INTEGER</text>
+    <text class="field" x="1050" y="302">print_status: INTEGER</text>
+    <text class="field" x="1050" y="326">upload_status: INTEGER</text>
+    <text class="field" x="1050" y="350">theme_id: TEXT</text>
+    <text class="field" x="1050" y="374">payment_reference: TEXT</text>
+    <text class="field" x="1050" y="398">amount_minor_units: INTEGER</text>
+    <text class="field" x="1050" y="422">currency_code: TEXT</text>
+    <text class="field" x="1050" y="446">raw_capture_count: INTEGER</text>
+    <text class="field" x="1050" y="470">print_attempts: INTEGER</text>
+    <text class="field" x="1050" y="494">upload_attempts: INTEGER</text>
+    <text class="field" x="1050" y="518">download_url: TEXT</text>
+    <text class="field" x="1050" y="542">printer_name: TEXT</text>
+    <text class="field" x="1050" y="566">remote_asset_key: TEXT</text>
+    <text class="field" x="1050" y="590">published_at_utc: TEXT</text>
+    <text class="field" x="1050" y="614">retry_count: INTEGER</text>
+    <text class="field" x="1050" y="638">last_error: TEXT</text>
+    <text class="field" x="1050" y="662">last_print_error: TEXT</text>
+    <text class="field" x="1050" y="686">last_upload_error: TEXT</text>
+    <text class="field" x="1050" y="710">created_at_utc: TEXT</text>
+    <text class="field" x="1050" y="734">updated_at_utc: TEXT</text>
+    <text class="fieldStrong" x="1050" y="758">job_json: TEXT NOT NULL</text>
+    <text class="note" x="1050" y="794">Indexes: updated_at_utc DESC, status, theme_id</text>
+    <text class="note" x="1050" y="818">File: booth-jobs.db under BoothData</text>
+    <text class="note" x="1050" y="842">Stores searchable fields + full serialized BoothJob.</text>
+  </g>
+
+  <path class="rel" d="M 448 360 C 500 360, 500 360, 548 360"/>
+  <text class="note" x="462" y="344">1 job has many assets</text>
+  <path class="softRel" d="M 448 700 C 500 700, 500 778, 548 778"/>
+  <text class="note" x="458" y="724">events.job_id has no declared FK</text>
+  <path class="softRel" d="M 948 420 C 990 420, 990 420, 1030 420"/>
+  <text class="note" x="960" y="402">same logical job_id across client/backend</text>
+</svg>

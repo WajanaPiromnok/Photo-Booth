@@ -60,6 +60,7 @@ namespace PhotoBooth.Booth.Sync
                 DeviceId = ResolveDeviceId(),
                 ThemeId = job.ThemeId,
                 ImagePreviewId = job.ThemeId,
+                PassengerName = job.PassengerName,
                 ComposedImagePath = job.Paths.ComposedImagePath,
                 ThumbnailPath = job.Paths.ThumbnailPath,
                 LiveImagePath = ResolveLiveImagePath(job),

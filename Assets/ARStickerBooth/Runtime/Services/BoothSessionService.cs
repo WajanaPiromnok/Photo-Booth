@@ -145,6 +145,13 @@ namespace PhotoBooth.Booth.Services
             return Save(job, saved => telemetry?.OnCompositionCompleted(saved));
         }
 
+        public BoothJob MarkComposed(string jobId, string composedImagePath, string printImagePath, string thumbnailPath)
+        {
+            var job = repository.Get(jobId);
+            stateMachine.MarkComposed(job, composedImagePath, printImagePath, thumbnailPath);
+            return Save(job, saved => telemetry?.OnCompositionCompleted(saved));
+        }
+
         public BoothJob BeginPrinting(string jobId)
         {
             var job = repository.Get(jobId);

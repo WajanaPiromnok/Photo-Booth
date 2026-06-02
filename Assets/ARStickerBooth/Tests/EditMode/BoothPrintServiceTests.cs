@@ -43,22 +43,27 @@ namespace PhotoBooth.Booth.Tests.EditMode
             job = sessions.BeginComposing(job.JobId);
 
             var composedPath = Path.Combine(job.Paths.ComposedDirectory, "final.png");
+            var printPath = Path.Combine(job.Paths.ComposedDirectory, "print.png");
             File.WriteAllText(composedPath, "fake-image");
-            job = sessions.MarkComposed(job.JobId, composedPath, null);
+            File.WriteAllText(printPath, "fake-print-image");
+            job = sessions.MarkComposed(job.JobId, composedPath, printPath, null);
 
-            var printService = new BoothPrintService(sessions, new FakePrintClient(success: true, retryable: false));
+            var printClient = new FakePrintClient(success: true, retryable: false);
+            var printService = new BoothPrintService(sessions, printClient);
             var printedJob = await printService.PrintAsync(job.JobId, "Printer A");
 
             Assert.That(printedJob.Status, Is.EqualTo(PhotoBooth.Booth.Domain.BoothJobStatus.Printed));
             Assert.That(printedJob.PrintStatus, Is.EqualTo(PhotoBooth.Booth.Domain.BoothPrintStatus.Printed));
             Assert.That(printedJob.PrinterName, Is.EqualTo("Printer A"));
             Assert.That(printedJob.PrintAttempts, Is.EqualTo(1));
+            Assert.That(printClient.LastRequest.ImagePath, Is.EqualTo(printPath));
         }
 
         private sealed class FakePrintClient : IPrintHelperClient
         {
             private readonly bool success;
             private readonly bool retryable;
+            public PrintJobRequest LastRequest { get; private set; }
 
             public FakePrintClient(bool success, bool retryable)
             {
@@ -68,6 +73,7 @@ namespace PhotoBooth.Booth.Tests.EditMode
 
             public Task<PrintJobResult> PrintAsync(PrintJobRequest request, CancellationToken cancellationToken = default)
             {
+                LastRequest = request;
                 return Task.FromResult(new PrintJobResult
                 {
                     Success = success,

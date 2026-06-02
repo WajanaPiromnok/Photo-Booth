@@ -26,6 +26,7 @@ namespace PhotoBooth.Booth.Sync
         public string DeviceId;
         public string ThemeId;
         public string ImagePreviewId;
+        public string PassengerName;
         public string ComposedImagePath;
         public string ThumbnailPath;
         public string LiveImagePath;
@@ -44,6 +45,7 @@ namespace PhotoBooth.Booth.Sync
         public string DeviceId;
         public string ThemeId;
         public string ImagePreviewId;
+        public string PassengerName;
         public string RawCapturePath;
         public int CaptureIndex;
         public int CaptureTotal;
@@ -135,6 +137,7 @@ namespace PhotoBooth.Booth.Sync
     [Serializable]
     public sealed class BoothAssetRegistrationRequest
     {
+        public string passenger_name;
         public BoothAssetRegistrationItem[] assets;
     }
 
@@ -169,6 +172,7 @@ namespace PhotoBooth.Booth.Sync
     {
         public string primary_asset_type;
         public string image_preview_id;
+        public string passenger_name;
     }
 
     [Serializable]

@@ -2,15 +2,26 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using PhotoBooth.Booth.Domain;
+using TMPro;
 using UnityEngine;
+using UnityEngine.UI;
+#if UNITY_EDITOR
+using UnityEditor;
+#endif
 
 namespace PhotoBooth.Booth.Frontend
 {
     public sealed class BoothImageComposer
     {
         private const string DefaultFrameTemplateResourcePath = "MrkremeUi/piece_03";
+        private const string PassengerNameTmpFontAssetPath = "Assets/UI/Font/BatteryPark SDF.asset";
+        private const string PassengerNameFontAssetPath = "Assets/UI/Font/BatteryPark.ttf";
+        private const string PassengerNameFontPath = "UI/Font/BatteryPark.ttf";
         private const int FinalJpegQuality = 86;
         private const int ThumbnailJpegQuality = 82;
+        private const float PrintCaptureBrightenAmount = 0.7f;
+        private const int PassengerNameFontSize = 72;
+        private static readonly Color PassengerNameColor = new Color32(0x28, 0x5A, 0x8D, 0xFF);
         private static readonly RectInt[] DefaultFrameSlots =
         {
             new(680, 1619, 1267, 912),
@@ -26,8 +37,8 @@ namespace PhotoBooth.Booth.Frontend
         {
             new(121, 1425, 1896, 1084)
         };
-        private static readonly RectInt ImagePreview1FromNameSlot = new(300, 2000, 900, 90);
-        private static readonly RectInt ImagePreview2FromNameSlot = new(300, 1970, 900, 90);
+        private static readonly RectInt ImagePreview1FromNameSlot = new(140, 2500, 620, 92);
+        private static readonly RectInt ImagePreview2FromNameSlot = new(180, 1145, 720, 100);
 
         public BoothCompositionResult Compose(BoothJob job, string rawImagePath, Vector2Int thumbnailSize, BoothAiStyleOption aiStyle = null, Action<Texture2D> preStyleProcessor = null)
         {
@@ -82,9 +93,12 @@ namespace PhotoBooth.Booth.Frontend
             Directory.CreateDirectory(job.Paths.ThumbsDirectory);
 
             var composedPath = Path.Combine(job.Paths.ComposedDirectory, "composed.jpg");
+            var printPath = Path.Combine(job.Paths.ComposedDirectory, "print.jpg");
             var thumbnailPath = Path.Combine(job.Paths.ThumbsDirectory, "thumbnail.jpg");
             var composedBytes = ComposePhotoTemplateBytes(rawImagePaths, theme, aiStyle, job.PassengerName);
+            var printBytes = ComposePhotoTemplateBytes(rawImagePaths, theme, aiStyle, job.PassengerName, PrintCaptureBrightenAmount);
             File.WriteAllBytes(composedPath, composedBytes);
+            File.WriteAllBytes(printPath, printBytes);
 
             var thumbnail = CreateThumbnail(composedBytes, thumbnailSize);
             File.WriteAllBytes(thumbnailPath, thumbnail);
@@ -92,6 +106,7 @@ namespace PhotoBooth.Booth.Frontend
             return new BoothCompositionResult
             {
                 ComposedImagePath = composedPath,
+                PrintImagePath = printPath,
                 ThumbnailPath = thumbnailPath
             };
         }
@@ -119,7 +134,12 @@ namespace PhotoBooth.Booth.Frontend
             return liveImagePath;
         }
 
-        private static byte[] ComposePhotoTemplateBytes(IReadOnlyList<string> rawImagePaths, BoothThemeOption theme, BoothAiStyleOption aiStyle, string passengerName)
+        private static byte[] ComposePhotoTemplateBytes(
+            IReadOnlyList<string> rawImagePaths,
+            BoothThemeOption theme,
+            BoothAiStyleOption aiStyle,
+            string passengerName,
+            float captureBrightenAmount = 0f)
         {
             var template = ResolveFrameTemplate(theme, out var shouldDestroyTemplate);
             if (template == null)
@@ -141,7 +161,7 @@ namespace PhotoBooth.Booth.Frontend
                 for (var i = 0; i < slotCount; i++)
                 {
                     var slot = frameSlots[i];
-                    DrawAspectFill(captures[i], canvas, slot.x, slot.y, slot.width, slot.height);
+                    DrawAspectFill(captures[i], canvas, slot.x, slot.y, slot.width, slot.height, captureBrightenAmount);
                 }
 
                 DrawPassengerName(canvas, ResolveFromNameSlot(theme), passengerName);
@@ -346,7 +366,7 @@ namespace PhotoBooth.Booth.Frontend
             }
         }
 
-        private static void DrawAspectFill(Texture2D source, Texture2D target, int targetX, int targetY, int targetWidth, int targetHeight)
+        private static void DrawAspectFill(Texture2D source, Texture2D target, int targetX, int targetY, int targetWidth, int targetHeight, float brightenAmount = 0f)
         {
             var sourceAspect = source.width / (float)source.height;
             var targetAspect = targetWidth / (float)targetHeight;
@@ -372,9 +392,32 @@ namespace PhotoBooth.Booth.Frontend
                 for (var x = 0; x < targetWidth; x++)
                 {
                     var u = targetWidth <= 1 ? 0f : x / (float)(targetWidth - 1);
-                    target.SetPixel(targetX + x, targetY + y, source.GetPixelBilinear(sampleX + (u * sampleWidth), sampleY + (v * sampleHeight)));
+                    var pixel = source.GetPixelBilinear(sampleX + (u * sampleWidth), sampleY + (v * sampleHeight));
+                    target.SetPixel(targetX + x, targetY + y, BrightenPhotoPixel(pixel, brightenAmount));
                 }
             }
+        }
+
+        private static Color BrightenPhotoPixel(Color pixel, float amount)
+        {
+            amount = Mathf.Clamp01(amount);
+            if (amount <= 0f)
+            {
+                return pixel;
+            }
+
+            return new Color(
+                AdjustPrintPhotoChannel(pixel.r, amount),
+                AdjustPrintPhotoChannel(pixel.g, amount),
+                AdjustPrintPhotoChannel(pixel.b, amount),
+                pixel.a);
+        }
+
+        private static float AdjustPrintPhotoChannel(float value, float amount)
+        {
+            var lifted = Mathf.Pow(Mathf.Clamp01(value), 1f / (1f + (amount * 0.9f)));
+            var contrast = 1f + (amount * 0.28f);
+            return Mathf.Clamp01(((lifted - 0.5f) * contrast) + 0.5f);
         }
 
         private static void DrawPassengerName(Texture2D target, RectInt slot, string passengerName)
@@ -384,15 +427,543 @@ namespace PhotoBooth.Booth.Frontend
                 return;
             }
 
-            var value = passengerName.Trim().ToUpperInvariant();
+            var value = NormalizePassengerName(passengerName);
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return;
+            }
+
+            if (DrawPassengerNameWithUiFont(target, slot, value))
+            {
+                return;
+            }
+
+            if (DrawPassengerNameWithFont(target, slot, value))
+            {
+                return;
+            }
+
             var scale = Mathf.Max(3, Mathf.Min(slot.height / 9, slot.width / Math.Max(1, value.Length * 6)));
             var textWidth = value.Length * 6 * scale;
-            var startX = slot.x + Mathf.Max(0, (slot.width - textWidth) / 2);
+            var startX = slot.x;
             var startY = slot.y + Mathf.Max(0, (slot.height - (7 * scale)) / 2);
             for (var i = 0; i < value.Length; i++)
             {
-                DrawGlyph(target, value[i], startX + (i * 6 * scale), startY, scale, Color.black);
+                var glyphX = startX + (i * 6 * scale);
+                DrawGlyph(target, value[i], glyphX, startY, scale, PassengerNameColor);
+                DrawGlyph(target, value[i], glyphX + Mathf.Max(1, scale / 4), startY, scale, PassengerNameColor);
             }
+        }
+
+        private static string NormalizePassengerName(string passengerName)
+        {
+            if (string.IsNullOrWhiteSpace(passengerName))
+            {
+                return string.Empty;
+            }
+
+            var value = passengerName.Trim().ToUpperInvariant();
+            return value == "-" ? string.Empty : value;
+        }
+
+        private static bool DrawPassengerNameWithTmpFont(Texture2D target, RectInt slot, string value)
+        {
+            var fontAsset = LoadPassengerNameTmpFont();
+            if (fontAsset == null)
+            {
+                return false;
+            }
+
+            try
+            {
+                var renderedText = RenderTmpTextToTexture(fontAsset, value, slot.width, slot.height);
+                if (renderedText == null)
+                {
+                    return false;
+                }
+
+                try
+                {
+                    if (!HasVisibleTextPixels(renderedText))
+                    {
+                        Debug.LogWarning("BatteryPark TMP font rendered no visible pixels; falling back to dynamic font label text.");
+                        return false;
+                    }
+
+                    CompositeTextTexture(target, renderedText, slot.x, slot.y, PassengerNameColor);
+                }
+                finally
+                {
+                    UnityEngine.Object.Destroy(renderedText);
+                }
+
+                return true;
+            }
+            catch (Exception exception)
+            {
+                Debug.LogWarning($"BatteryPark TMP font rendering failed; falling back to dynamic font label text. {exception.Message}");
+                return false;
+            }
+        }
+
+        private static TMP_FontAsset LoadPassengerNameTmpFont()
+        {
+#if UNITY_EDITOR
+            return AssetDatabase.LoadAssetAtPath<TMP_FontAsset>(PassengerNameTmpFontAssetPath);
+#else
+            return null;
+#endif
+        }
+
+        private static Texture2D RenderTmpTextToTexture(TMP_FontAsset fontAsset, string value, int width, int height)
+        {
+            width = Mathf.Max(16, width);
+            height = Mathf.Max(16, height);
+            var previous = RenderTexture.active;
+            var renderTexture = RenderTexture.GetTemporary(width, height, 24, RenderTextureFormat.ARGB32);
+            Camera camera = null;
+            GameObject textHost = null;
+            Texture2D texture = null;
+            try
+            {
+                renderTexture.Create();
+                var layer = 30;
+                var cameraHost = new GameObject("PhotoBoothPassengerNameCamera");
+                camera = cameraHost.AddComponent<Camera>();
+                cameraHost.transform.position = new Vector3(width * 0.5f, height * 0.5f, -10f);
+                camera.clearFlags = CameraClearFlags.SolidColor;
+                camera.backgroundColor = Color.clear;
+                camera.orthographic = true;
+                camera.orthographicSize = height * 0.5f;
+                camera.aspect = width / (float)height;
+                camera.cullingMask = 1 << layer;
+                camera.targetTexture = renderTexture;
+
+                textHost = new GameObject("PhotoBoothPassengerNameText", typeof(RectTransform), typeof(TextMeshPro));
+                textHost.layer = layer;
+                var rectTransform = textHost.GetComponent<RectTransform>();
+                rectTransform.position = new Vector3(width * 0.5f, height * 0.5f, 0f);
+                rectTransform.sizeDelta = new Vector2(width, height);
+
+                var label = textHost.GetComponent<TextMeshPro>();
+                label.font = fontAsset;
+                label.text = value;
+                label.color = PassengerNameColor;
+                label.alignment = TextAlignmentOptions.Center;
+                label.enableWordWrapping = false;
+                label.enableAutoSizing = true;
+                label.fontSizeMin = 8f;
+                label.fontSizeMax = height;
+                label.rectTransform.sizeDelta = new Vector2(width, height);
+                label.ForceMeshUpdate();
+                SetLayerRecursively(textHost, layer);
+
+                camera.Render();
+                RenderTexture.active = renderTexture;
+                texture = new Texture2D(width, height, TextureFormat.RGBA32, false);
+                texture.ReadPixels(new Rect(0, 0, width, height), 0, 0);
+                texture.Apply(false, false);
+                return texture;
+            }
+            finally
+            {
+                RenderTexture.active = previous;
+                RenderTexture.ReleaseTemporary(renderTexture);
+                if (camera != null)
+                {
+                    UnityEngine.Object.Destroy(camera.gameObject);
+                }
+
+                if (textHost != null)
+                {
+                    UnityEngine.Object.Destroy(textHost);
+                }
+            }
+        }
+
+        private static void SetLayerRecursively(GameObject root, int layer)
+        {
+            if (root == null)
+            {
+                return;
+            }
+
+            root.layer = layer;
+            for (var i = 0; i < root.transform.childCount; i++)
+            {
+                SetLayerRecursively(root.transform.GetChild(i).gameObject, layer);
+            }
+        }
+
+        private static void CompositeTextTexture(Texture2D target, Texture2D textTexture, int targetX, int targetY, Color color)
+        {
+            for (var y = 0; y < textTexture.height; y++)
+            {
+                var py = targetY + y;
+                if (py < 0 || py >= target.height)
+                {
+                    continue;
+                }
+
+                for (var x = 0; x < textTexture.width; x++)
+                {
+                    var px = targetX + x;
+                    if (px < 0 || px >= target.width)
+                    {
+                        continue;
+                    }
+
+                    var sample = textTexture.GetPixel(x, y);
+                    var alpha = Mathf.Clamp01(sample.a);
+                    if (alpha <= 0.02f)
+                    {
+                        continue;
+                    }
+
+                    target.SetPixel(px, py, Color.Lerp(target.GetPixel(px, py), color, alpha));
+                }
+            }
+        }
+
+        private static bool HasVisibleTextPixels(Texture2D textTexture)
+        {
+            if (textTexture == null)
+            {
+                return false;
+            }
+
+            var visiblePixels = 0;
+            var pixels = textTexture.GetPixels32();
+            for (var i = 0; i < pixels.Length; i++)
+            {
+                if (pixels[i].a > 12)
+                {
+                    visiblePixels += 1;
+                    if (visiblePixels > 8)
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        private static bool DrawPassengerNameWithFont(Texture2D target, RectInt slot, string value)
+        {
+            Font font = null;
+            var shouldDestroyFont = false;
+            try
+            {
+                font = LoadPassengerNameFont(out shouldDestroyFont);
+                if (font == null)
+                {
+                    return false;
+                }
+
+                var fontSize = ResolvePassengerNameFontSize(font, value, slot);
+                if (fontSize <= 0)
+                {
+                    return false;
+                }
+
+                font.RequestCharactersInTexture(value, fontSize, FontStyle.Normal);
+                if (!MeasureFontText(font, value, fontSize, out var textWidth, out var minY, out var maxY))
+                {
+                    return false;
+                }
+
+                var startX = slot.x;
+                var baselineY = slot.y + ((slot.height - (maxY - minY)) * 0.5f) - minY;
+                var drawnPixels = DrawFontText(target, font, value, fontSize, startX, baselineY, PassengerNameColor);
+                if (drawnPixels <= 8)
+                {
+                    Debug.LogWarning("BatteryPark font rendered no visible pixels; falling back to bitmap label text.");
+                    return false;
+                }
+
+                return true;
+            }
+            catch (Exception exception)
+            {
+                Debug.LogWarning($"BatteryPark font rendering failed; falling back to bitmap label text. {exception.Message}");
+                return false;
+            }
+            finally
+            {
+                if (shouldDestroyFont && font != null)
+                {
+                    UnityEngine.Object.Destroy(font);
+                }
+            }
+        }
+
+        private static bool DrawPassengerNameWithUiFont(Texture2D target, RectInt slot, string value)
+        {
+            Font font = null;
+            var shouldDestroyFont = false;
+            try
+            {
+                font = LoadPassengerNameFont(out shouldDestroyFont);
+                if (font == null)
+                {
+                    return false;
+                }
+
+                var renderedText = RenderUiTextToTexture(font, value, slot.width, slot.height);
+                if (renderedText == null)
+                {
+                    return false;
+                }
+
+                try
+                {
+                    if (!HasVisibleTextPixels(renderedText))
+                    {
+                        Debug.LogWarning("BatteryPark UI font rendered no visible pixels; falling back to bitmap label text.");
+                        return false;
+                    }
+
+                    CompositeTextTexture(target, renderedText, slot.x, slot.y, PassengerNameColor);
+                    return true;
+                }
+                finally
+                {
+                    UnityEngine.Object.Destroy(renderedText);
+                }
+            }
+            catch (Exception exception)
+            {
+                Debug.LogWarning($"BatteryPark UI font rendering failed; falling back to bitmap label text. {exception.Message}");
+                return false;
+            }
+            finally
+            {
+                if (shouldDestroyFont && font != null)
+                {
+                    UnityEngine.Object.Destroy(font);
+                }
+            }
+        }
+
+        private static Texture2D RenderUiTextToTexture(Font font, string value, int width, int height)
+        {
+            width = Mathf.Max(16, width);
+            height = Mathf.Max(16, height);
+            var previous = RenderTexture.active;
+            var renderTexture = RenderTexture.GetTemporary(width, height, 24, RenderTextureFormat.ARGB32);
+            Camera camera = null;
+            GameObject canvasHost = null;
+            Texture2D texture = null;
+            try
+            {
+                renderTexture.Create();
+                var layer = 30;
+
+                var cameraHost = new GameObject("PhotoBoothPassengerNameUiCamera");
+                camera = cameraHost.AddComponent<Camera>();
+                camera.clearFlags = CameraClearFlags.SolidColor;
+                camera.backgroundColor = Color.clear;
+                camera.orthographic = true;
+                camera.orthographicSize = height * 0.5f;
+                camera.aspect = width / (float)height;
+                camera.cullingMask = 1 << layer;
+                camera.targetTexture = renderTexture;
+                camera.transform.position = new Vector3(width * 0.5f, height * 0.5f, -10f);
+
+                canvasHost = new GameObject("PhotoBoothPassengerNameUiCanvas", typeof(RectTransform), typeof(Canvas), typeof(CanvasScaler), typeof(GraphicRaycaster));
+                SetLayerRecursively(canvasHost, layer);
+                var canvasRect = canvasHost.GetComponent<RectTransform>();
+                canvasRect.position = new Vector3(width * 0.5f, height * 0.5f, 0f);
+                canvasRect.sizeDelta = new Vector2(width, height);
+
+                var canvas = canvasHost.GetComponent<Canvas>();
+                canvas.renderMode = RenderMode.WorldSpace;
+                canvas.pixelPerfect = true;
+
+                var scaler = canvasHost.GetComponent<CanvasScaler>();
+                scaler.uiScaleMode = CanvasScaler.ScaleMode.ConstantPixelSize;
+                scaler.scaleFactor = 1f;
+
+                var textHost = new GameObject("PhotoBoothPassengerNameUiText", typeof(RectTransform), typeof(Text));
+                textHost.transform.SetParent(canvasHost.transform, false);
+                SetLayerRecursively(textHost, layer);
+
+                var textRect = textHost.GetComponent<RectTransform>();
+                textRect.anchorMin = Vector2.zero;
+                textRect.anchorMax = Vector2.one;
+                textRect.pivot = new Vector2(0f, 0.5f);
+                textRect.offsetMin = Vector2.zero;
+                textRect.offsetMax = Vector2.zero;
+
+                var label = textHost.GetComponent<Text>();
+                label.font = font;
+                label.text = value;
+                label.color = PassengerNameColor;
+                label.alignment = TextAnchor.MiddleLeft;
+                label.fontSize = Mathf.Max(PassengerNameFontSize, height);
+                label.resizeTextForBestFit = false;
+                label.horizontalOverflow = HorizontalWrapMode.Overflow;
+                label.verticalOverflow = VerticalWrapMode.Overflow;
+                label.raycastTarget = false;
+
+                Canvas.ForceUpdateCanvases();
+                camera.Render();
+
+                RenderTexture.active = renderTexture;
+                texture = new Texture2D(width, height, TextureFormat.RGBA32, false);
+                texture.ReadPixels(new Rect(0, 0, width, height), 0, 0);
+                texture.Apply(false, false);
+                return texture;
+            }
+            finally
+            {
+                RenderTexture.active = previous;
+                RenderTexture.ReleaseTemporary(renderTexture);
+                if (camera != null)
+                {
+                    UnityEngine.Object.Destroy(camera.gameObject);
+                }
+
+                if (canvasHost != null)
+                {
+                    UnityEngine.Object.Destroy(canvasHost);
+                }
+            }
+        }
+
+        private static Font LoadPassengerNameFont(out bool shouldDestroy)
+        {
+            shouldDestroy = false;
+#if UNITY_EDITOR
+            var editorFont = AssetDatabase.LoadAssetAtPath<Font>(PassengerNameFontAssetPath);
+            if (editorFont != null)
+            {
+                return editorFont;
+            }
+#endif
+            var fontPath = Path.Combine(Application.dataPath, PassengerNameFontPath);
+            if (!File.Exists(fontPath))
+            {
+                return null;
+            }
+
+            shouldDestroy = true;
+            return new Font(fontPath);
+        }
+
+        private static int ResolvePassengerNameFontSize(Font font, string value, RectInt slot)
+        {
+            var fontSize = Mathf.Max(18, slot.height);
+            for (; fontSize >= 18; fontSize -= 2)
+            {
+                font.RequestCharactersInTexture(value, fontSize, FontStyle.Normal);
+                if (!MeasureFontText(font, value, fontSize, out var textWidth, out var minY, out var maxY))
+                {
+                    continue;
+                }
+
+                if (textWidth <= slot.width && maxY - minY <= slot.height)
+                {
+                    return fontSize;
+                }
+            }
+
+            return 0;
+        }
+
+        private static bool MeasureFontText(Font font, string value, int fontSize, out float textWidth, out float minY, out float maxY)
+        {
+            textWidth = 0f;
+            minY = float.PositiveInfinity;
+            maxY = float.NegativeInfinity;
+
+            foreach (var character in value)
+            {
+                if (!font.GetCharacterInfo(character, out var info, fontSize, FontStyle.Normal))
+                {
+                    return false;
+                }
+
+                textWidth += info.advance;
+                minY = Mathf.Min(minY, info.minY);
+                maxY = Mathf.Max(maxY, info.maxY);
+            }
+
+            if (float.IsInfinity(minY) || float.IsInfinity(maxY))
+            {
+                minY = 0f;
+                maxY = 0f;
+            }
+
+            return true;
+        }
+
+        private static int DrawFontText(Texture2D target, Font font, string value, int fontSize, float startX, float baselineY, Color color)
+        {
+            var atlas = font.material?.mainTexture as Texture2D;
+            if (atlas == null)
+            {
+                return 0;
+            }
+
+            var drawnPixels = 0;
+            var cursorX = startX;
+            foreach (var character in value)
+            {
+                if (!font.GetCharacterInfo(character, out var info, fontSize, FontStyle.Normal))
+                {
+                    continue;
+                }
+
+                drawnPixels += DrawFontCharacter(target, atlas, info, cursorX, baselineY, color);
+                cursorX += info.advance;
+            }
+
+            return drawnPixels;
+        }
+
+        private static int DrawFontCharacter(Texture2D target, Texture2D atlas, CharacterInfo info, float cursorX, float baselineY, Color color)
+        {
+            var width = Mathf.Max(1, info.maxX - info.minX);
+            var height = Mathf.Max(1, info.maxY - info.minY);
+            var minU = Mathf.Min(info.uvBottomLeft.x, info.uvBottomRight.x, info.uvTopLeft.x, info.uvTopRight.x);
+            var maxU = Mathf.Max(info.uvBottomLeft.x, info.uvBottomRight.x, info.uvTopLeft.x, info.uvTopRight.x);
+            var minV = Mathf.Min(info.uvBottomLeft.y, info.uvBottomRight.y, info.uvTopLeft.y, info.uvTopRight.y);
+            var maxV = Mathf.Max(info.uvBottomLeft.y, info.uvBottomRight.y, info.uvTopLeft.y, info.uvTopRight.y);
+            var drawnPixels = 0;
+
+            for (var y = 0; y < height; y++)
+            {
+                var v = Mathf.Lerp(minV, maxV, height <= 1 ? 0f : y / (float)(height - 1));
+                var targetY = Mathf.RoundToInt(baselineY + info.minY + y);
+                if (targetY < 0 || targetY >= target.height)
+                {
+                    continue;
+                }
+
+                for (var x = 0; x < width; x++)
+                {
+                    var u = Mathf.Lerp(minU, maxU, width <= 1 ? 0f : x / (float)(width - 1));
+                    var targetX = Mathf.RoundToInt(cursorX + info.minX + x);
+                    if (targetX < 0 || targetX >= target.width)
+                    {
+                        continue;
+                    }
+
+                    var sample = atlas.GetPixelBilinear(u, v);
+                    var alpha = Mathf.Clamp01(sample.a);
+                    if (alpha <= 0.02f)
+                    {
+                        continue;
+                    }
+
+                    target.SetPixel(targetX, targetY, Color.Lerp(target.GetPixel(targetX, targetY), color, alpha));
+                    drawnPixels += 1;
+                }
+            }
+
+            return drawnPixels;
         }
 
         private static void DrawGlyph(Texture2D target, char character, int startX, int startY, int scale, Color color)
@@ -593,6 +1164,7 @@ namespace PhotoBooth.Booth.Frontend
     public sealed class BoothCompositionResult
     {
         public string ComposedImagePath;
+        public string PrintImagePath;
         public string ThumbnailPath;
     }
 }

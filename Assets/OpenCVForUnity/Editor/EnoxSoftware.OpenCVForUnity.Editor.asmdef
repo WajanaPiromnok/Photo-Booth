@@ -1,6 +1,8 @@
 {
     "name": "EnoxSoftware.OpenCVForUnity.Editor",
     "references": [
+        "Unity.ugui",
+        "UnityEngine.IMGUIModule",
         "GUID:cef0e9dabbfe59a4790acbf31c21f33e"
     ],
     "includePlatforms": [

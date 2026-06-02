@@ -1,6 +1,13 @@
 {
     "name": "EnoxSoftware.OpenCVForUnity",
-    "references": [],
+    "references": [
+        "Unity.ugui",
+        "UnityEngine.AudioModule",
+        "UnityEngine.IMGUIModule",
+        "UnityEngine.UI",
+        "UnityEngine.UIModule",
+        "UnityEngine.VideoModule"
+    ],
     "includePlatforms": [],
     "excludePlatforms": [],
     "allowUnsafeCode": true,

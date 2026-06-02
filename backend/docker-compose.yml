@@ -32,9 +32,13 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-photo_booth}
       DEVICE_BEARER_TOKEN: ${DEVICE_BEARER_TOKEN:-}
       DEVICE_ID_PREFIX: ${DEVICE_ID_PREFIX:-}
+      ADMIN_BEARER_TOKEN: ${ADMIN_BEARER_TOKEN:-dev-admin-token}
+      DEFAULT_PROJECT_ID: ${DEFAULT_PROJECT_ID:-prj_world_tour}
       CORS_ORIGIN: ${CORS_ORIGIN:-*}
       MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-104857600}
       UPLOADS_ROOT: /var/photo-booth/uploads
+    ports:
+      - "8080:8080"
     volumes:
       - uploads_data:/var/photo-booth/uploads
 

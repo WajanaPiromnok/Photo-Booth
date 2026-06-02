@@ -43,7 +43,11 @@ namespace PhotoBooth.Booth.Services
         [SerializeField] private bool autoCheckContentOnStart = true;
         [SerializeField] private bool autoDownloadContentUpdate = false;
         [SerializeField] private bool autoLoadInstalledContentOnStart = true;
-        [SerializeField] private string defaultPrinterName = "Photo Booth Printer";
+        [SerializeField] private bool usePrintBridge = true;
+        [SerializeField] private bool forceSimulatedPrint = false;
+        [SerializeField] private string printBridgeBaseUrl = "http://127.0.0.1:18080";
+        [SerializeField] private int printBridgeRequestTimeoutSeconds = 10;
+        [SerializeField] private string[] preferredCameraDeviceNames = { "OBSBOT Virtual Camera", "OBSBOT" };
         [SerializeField] private string demoThemeId = "demo_theme";
         [SerializeField] private long demoAmountMinorUnits = 12000;
         [SerializeField] private int demoRawCaptureCount = 1;
@@ -81,6 +85,7 @@ namespace PhotoBooth.Booth.Services
         public string BackendBoothApiBaseUrl => backendBoothApiBaseUrl ?? string.Empty;
         public string BackendDownloadBaseUrl => backendDownloadBaseUrl ?? string.Empty;
         public int BackendRequestTimeoutSeconds => Math.Max(1, backendRequestTimeoutSeconds);
+        public string[] PreferredCameraDeviceNames => preferredCameraDeviceNames ?? Array.Empty<string>();
 
         private string lastDemoJobId;
 
@@ -121,7 +126,7 @@ namespace PhotoBooth.Booth.Services
             AnalyticsService = new BoothAnalyticsService(boothId, () => ContentManagementService.GetInstalledVersion());
             SessionService = new BoothSessionService(repository, stateMachine, AnalyticsService);
             SessionService.Initialize();
-            PrintService = new BoothPrintService(SessionService, new SimulatedPrintHelperClient());
+            PrintService = new BoothPrintService(SessionService, CreatePrintClient());
             var backendConfig = CreateBackendScaffoldConfig();
             SyncService = new BoothSyncService(SessionService, CreateSyncClient(backendConfig), backendConfig);
 
@@ -208,7 +213,7 @@ namespace PhotoBooth.Booth.Services
 
             try
             {
-                var job = await PrintService.PrintAsync(resolvedJobId, defaultPrinterName);
+                var job = await PrintService.PrintAsync(resolvedJobId, null);
                 onPrintStatusMessageChanged.Invoke($"Print status: {job.PrintStatus}");
             }
             catch (Exception exception)
@@ -436,6 +441,18 @@ namespace PhotoBooth.Booth.Services
             }
 
             return new ScaffoldBoothSyncClient(config);
+        }
+
+        private IPrintHelperClient CreatePrintClient()
+        {
+            if (usePrintBridge || !forceSimulatedPrint)
+            {
+                Debug.Log($"PhotoBooth print client: Local PrintBridge, baseUrl={printBridgeBaseUrl}, printer=(local default)");
+                return new HttpPrintHelperClient(printBridgeBaseUrl, printBridgeRequestTimeoutSeconds);
+            }
+
+            Debug.LogWarning("PhotoBooth print client: simulated print helper is enabled. No physical printer job will be sent.");
+            return new SimulatedPrintHelperClient();
         }
 
         private PhotoBooth.Booth.Domain.BoothJob CreateDemoJob()
