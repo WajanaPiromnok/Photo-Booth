@@ -13,6 +13,8 @@ using UnityEngine;
 using UnityEngine.Networking;
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
+using Process = System.Diagnostics.Process;
+using ProcessStartInfo = System.Diagnostics.ProcessStartInfo;
 #if UNITY_EDITOR
 using UnityEditor;
 #endif
@@ -57,7 +59,7 @@ namespace PhotoBooth.Booth.Frontend
         };
         private static readonly Rect[] ImagePreview1CaptureSlots =
         {
-            new(62f, 137f, 2011f, 1239f)
+            new(62f, 234f, 2014f, 1128f)
         };
         private static readonly Rect[] ImagePreview2CaptureSlots =
         {
@@ -108,6 +110,10 @@ namespace PhotoBooth.Booth.Frontend
         [SerializeField] private Color faceMarkDebugLineColor = new(0f, 1f, 0.55f, 0.9f);
         [SerializeField] private string ffmpegExecutablePath = "ffmpeg";
         [SerializeField] private int ffmpegTimeoutSeconds = 20;
+        [SerializeField] private bool enableObsbotPowerControl = true;
+        [SerializeField] private string obsbotControlExecutablePath = "tools/obsbot-control/bin/obsbot-control";
+        [SerializeField] private string obsbotControlDeviceName = "OBSBOT";
+        [SerializeField] private int obsbotControlTimeoutMs = 8000;
         [SerializeField] private Vector2Int cameraCaptureSize = new(1280, 720);
         [SerializeField] private Vector2Int thumbnailSize = new(320, 180);
         [SerializeField] private Sprite[] captureForegroundTextures;
@@ -208,6 +214,7 @@ namespace PhotoBooth.Booth.Frontend
         private bool previewScreenShowsFinalDownload;
         private bool printRequestStarted;
         private bool isStartingCapturePreview;
+        private bool loggedMissingObsbotControl;
         private bool hasDefaultCameraPreviewRect;
         private Vector2 defaultCameraPreviewAnchorMin;
         private Vector2 defaultCameraPreviewAnchorMax;
@@ -845,6 +852,7 @@ namespace PhotoBooth.Booth.Frontend
                 }
 
                 cameraCaptureService ??= CreateCameraCaptureService();
+                await SetObsbotPowerStateAsync("wake", flowCancellation.Token);
                 await cameraCaptureService.StartPreviewAsync(flowCancellation.Token);
                 await StartArPreviewAsync(flowCancellation.Token);
 
@@ -1169,6 +1177,7 @@ namespace PhotoBooth.Booth.Frontend
         {
             SwitchScreen(BoothUiScreenId.Capture, message);
             cameraCaptureService ??= CreateCameraCaptureService();
+            await SetObsbotPowerStateAsync("wake", flowCancellation.Token);
             await cameraCaptureService.StartPreviewAsync(flowCancellation.Token);
             await StartArPreviewAsync(flowCancellation.Token);
             EnsureCaptureForegroundOverlay();
@@ -1184,6 +1193,121 @@ namespace PhotoBooth.Booth.Frontend
                 cameraCaptureSize.x,
                 cameraCaptureSize.y,
                 preferredDeviceNames: runtime?.PreferredCameraDeviceNames);
+        }
+
+        private async Task SetObsbotPowerStateAsync(string action, CancellationToken cancellationToken = default)
+        {
+            if (!enableObsbotPowerControl || string.IsNullOrWhiteSpace(action))
+            {
+                return;
+            }
+
+            var executablePath = ResolveObsbotControlExecutablePath();
+            if (string.IsNullOrWhiteSpace(executablePath) || !File.Exists(executablePath))
+            {
+                if (!loggedMissingObsbotControl)
+                {
+                    loggedMissingObsbotControl = true;
+                    Debug.LogWarning($"OBSBOT power control skipped; executable not found: {executablePath ?? "(empty)"}. Run scripts/build-obsbot-control.sh first.");
+                }
+
+                return;
+            }
+
+            var arguments = $"{QuoteProcessArgument(action)} --timeout-ms {Mathf.Max(250, obsbotControlTimeoutMs)}";
+            if (!string.IsNullOrWhiteSpace(obsbotControlDeviceName))
+            {
+                arguments += $" --device-name {QuoteProcessArgument(obsbotControlDeviceName.Trim())}";
+            }
+
+            try
+            {
+                var result = await Task.Run(() => RunObsbotControlProcess(executablePath, arguments), cancellationToken);
+                if (result.ExitCode == 0)
+                {
+                    Debug.Log($"OBSBOT power control {action} succeeded: {result.Output.Trim()}");
+                    return;
+                }
+
+                Debug.LogWarning($"OBSBOT power control {action} failed: exit={result.ExitCode}, output={result.Output.Trim()}, error={result.Error.Trim()}");
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                Debug.LogWarning($"OBSBOT power control {action} failed: {exception.Message}");
+            }
+        }
+
+        private string ResolveObsbotControlExecutablePath()
+        {
+            if (string.IsNullOrWhiteSpace(obsbotControlExecutablePath))
+            {
+                return null;
+            }
+
+            var configuredPath = obsbotControlExecutablePath.Trim();
+            return Path.IsPathRooted(configuredPath)
+                ? configuredPath
+                : Path.GetFullPath(Path.Combine(Application.dataPath, "..", configuredPath));
+        }
+
+        private static string QuoteProcessArgument(string value)
+        {
+            return $"\"{(value ?? string.Empty).Replace("\"", "\\\"")}\"";
+        }
+
+        private static ProcessResult RunObsbotControlProcess(string executablePath, string arguments)
+        {
+            using var process = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = executablePath,
+                    Arguments = arguments,
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                }
+            };
+
+            process.Start();
+            var exited = process.WaitForExit(15000);
+            if (!exited)
+            {
+                try
+                {
+                    process.Kill();
+                }
+                catch
+                {
+                    // Best effort: process may have exited between WaitForExit and Kill.
+                }
+
+                return new ProcessResult(124, string.Empty, "Timed out waiting for obsbot-control.");
+            }
+
+            return new ProcessResult(
+                process.ExitCode,
+                process.StandardOutput.ReadToEnd(),
+                process.StandardError.ReadToEnd());
+        }
+
+        private readonly struct ProcessResult
+        {
+            public readonly int ExitCode;
+            public readonly string Output;
+            public readonly string Error;
+
+            public ProcessResult(int exitCode, string output, string error)
+            {
+                ExitCode = exitCode;
+                Output = output ?? string.Empty;
+                Error = error ?? string.Empty;
+            }
         }
 
         private async Task<BoothCaptureClip> RecordCountdownMotionClipAsync(int captureNumber)
@@ -1849,6 +1973,7 @@ namespace PhotoBooth.Booth.Frontend
         private void SwitchScreen(BoothUiScreenId screenId, string statusMessage)
         {
             TrackScreenExit();
+            var wasCaptureScreen = currentScreen == BoothUiScreenId.Capture;
 
             foreach (var binding in screens)
             {
@@ -1867,6 +1992,10 @@ namespace PhotoBooth.Booth.Frontend
 
                 StopArPreview();
                 cameraCaptureService?.StopPreview();
+                if (wasCaptureScreen)
+                {
+                    _ = SetObsbotPowerStateAsync("sleep");
+                }
             }
 
             if (screenId != BoothUiScreenId.Preview)
@@ -3079,6 +3208,7 @@ namespace PhotoBooth.Booth.Frontend
             {
                 Debug.Log("PhotoBooth capture preview start requested.");
                 cameraCaptureService ??= CreateCameraCaptureService();
+                await SetObsbotPowerStateAsync("wake", flowCancellation?.Token ?? CancellationToken.None);
                 await cameraCaptureService.StartPreviewAsync(flowCancellation?.Token ?? CancellationToken.None);
                 Debug.Log($"PhotoBooth capture preview running: {cameraCaptureService.IsPreviewing}, device={cameraCaptureService.CurrentDeviceName}, texture={cameraCaptureService.CurrentWidth}x{cameraCaptureService.CurrentHeight}");
                 SetStatus($"{BuildCaptureReadyMessage()} Camera: {cameraCaptureService.CurrentDeviceName}");

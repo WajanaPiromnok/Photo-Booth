@@ -19,8 +19,8 @@ namespace PhotoBooth.Booth.Frontend
         private const string PassengerNameFontPath = "UI/Font/BatteryPark.ttf";
         private const int FinalJpegQuality = 86;
         private const int ThumbnailJpegQuality = 82;
-        private const float PrintCaptureBrightenAmount = 0.7f;
-        private const int PassengerNameFontSize = 72;
+        private const float PrintCaptureBrightenAmount = 0.9f;
+        private const int PassengerNameFontSize = 108;
         private static readonly Color PassengerNameColor = new Color32(0x28, 0x5A, 0x8D, 0xFF);
         private static readonly RectInt[] DefaultFrameSlots =
         {
@@ -31,14 +31,14 @@ namespace PhotoBooth.Booth.Frontend
         };
         private static readonly RectInt[] ImagePreview1FrameSlots =
         {
-            new(62, 137, 2011, 1239)
+            new(62, 234, 2014, 1128)
         };
         private static readonly RectInt[] ImagePreview2FrameSlots =
         {
             new(121, 1425, 1896, 1084)
         };
-        private static readonly RectInt ImagePreview1FromNameSlot = new(140, 2500, 620, 92);
-        private static readonly RectInt ImagePreview2FromNameSlot = new(180, 1145, 720, 100);
+        private static readonly RectInt ImagePreview1FromNameSlot = new(155, 2500, 620, 92);
+        private static readonly RectInt ImagePreview2FromNameSlot = new(205, 1145, 720, 100);
 
         public BoothCompositionResult Compose(BoothJob job, string rawImagePath, Vector2Int thumbnailSize, BoothAiStyleOption aiStyle = null, Action<Texture2D> preStyleProcessor = null)
         {
