@@ -13,6 +13,7 @@ namespace PhotoBooth.Booth.Frontend
         Done = 8,
         Error = 9,
         Operator = 10,
-        ArSelect = 11
+        ArSelect = 11,
+        VoucherEntry = 12
     }
 }

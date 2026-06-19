@@ -21,6 +21,8 @@ namespace PhotoBooth.Booth.AR
         private FaceLandmarkerResult reusableResult;
         private long frameIndex;
         private long lastTimestampMillisec = -1;
+        private Texture2D cachedFlippedTexture;
+        private Color32[] cachedPixelBuffer;
         private static bool glogInitialized;
         private static bool glogInitializationAttempted;
 
@@ -104,12 +106,11 @@ namespace PhotoBooth.Booth.AR
                 return Task.FromResult(CreateFrame(sourceTexture, Array.Empty<FaceTrack>()));
             }
 
-            Texture2D flipped = null;
             try
             {
                 // Unity's WebCamTexture.GetPixels32() returns a vertically flipped (bottom-up) image.
                 // MediaPipe requires a top-down image to detect faces reliably.
-                flipped = FlipVertical(texture);
+                var flipped = FlipVertical(texture);
                 using var image = new MediapipeImage(flipped);
                 var currentTimeMs = (long)(Time.realtimeSinceStartupAsDouble * 1000.0);
                 var timestampMillisec = Math.Max(lastTimestampMillisec + 1, currentTimeMs);
@@ -130,37 +131,44 @@ namespace PhotoBooth.Booth.AR
                 Debug.LogWarning($"MediaPipe Face Landmarker tracking failed; hiding AR stickers for this frame. {exception.Message}");
                 return Task.FromResult(CreateFrame(sourceTexture, Array.Empty<FaceTrack>()));
             }
-            finally
-            {
-                if (flipped != null)
-                {
-                    UnityEngine.Object.Destroy(flipped);
-                }
-            }
         }
 
         /// <summary>
-        /// Returns a new Texture2D that is flipped vertically.
+        /// Flips the texture vertically in place into cachedFlippedTexture to avoid allocations.
         /// Unity WebCamTexture pixels are stored bottom-row-first; MediaPipe needs top-row-first.
-        /// The caller is responsible for destroying the returned texture.
         /// </summary>
-        private static Texture2D FlipVertical(Texture2D source)
+        private Texture2D FlipVertical(Texture2D source)
         {
             var width = source.width;
             var height = source.height;
             var src = source.GetPixels32();
-            var dst = new UnityEngine.Color32[src.Length];
+            
+            var totalPixels = src.Length;
+            if (cachedPixelBuffer == null || cachedPixelBuffer.Length != totalPixels)
+            {
+                cachedPixelBuffer = new Color32[totalPixels];
+            }
+            
             for (var y = 0; y < height; y++)
             {
                 var srcRow = y * width;
                 var dstRow = (height - 1 - y) * width;
-                Array.Copy(src, srcRow, dst, dstRow, width);
+                Array.Copy(src, srcRow, cachedPixelBuffer, dstRow, width);
             }
 
-            var flipped = new Texture2D(width, height, source.format, false);
-            flipped.SetPixels32(dst);
-            flipped.Apply(false, false);
-            return flipped;
+            if (cachedFlippedTexture == null || cachedFlippedTexture.width != width || cachedFlippedTexture.height != height || cachedFlippedTexture.format != source.format)
+            {
+                if (cachedFlippedTexture != null)
+                {
+                    UnityEngine.Object.Destroy(cachedFlippedTexture);
+                }
+                cachedFlippedTexture = new Texture2D(width, height, source.format, false);
+                cachedFlippedTexture.name = "MediaPipeFlippedFrame";
+            }
+
+            cachedFlippedTexture.SetPixels32(cachedPixelBuffer);
+            cachedFlippedTexture.Apply(false, false);
+            return cachedFlippedTexture;
         }
 
         public void Stop()
@@ -173,6 +181,13 @@ namespace PhotoBooth.Booth.AR
             Stop();
             faceLandmarker?.Close();
             faceLandmarker = null;
+
+            if (cachedFlippedTexture != null)
+            {
+                UnityEngine.Object.Destroy(cachedFlippedTexture);
+                cachedFlippedTexture = null;
+            }
+            cachedPixelBuffer = null;
         }
 
         private ArTrackingFrame CreateFrame(Texture sourceTexture, FaceTrack[] faces)

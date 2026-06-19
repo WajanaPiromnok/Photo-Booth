@@ -17,6 +17,7 @@ Minimal backend scaffold for the Unity booth runtime.
 - `POST /v1/jobs/:jobId/assets`
 - `POST /v1/jobs/:jobId/publish`
 - `GET /v1/jobs/:jobId`
+- `GET /v1/assets/composed/featured`
 - `GET /world-tour/:jobId`
 - `GET /d/:jobId`
 - `GET /healthz`
@@ -100,10 +101,50 @@ Override them with `PRINT_OPTIONS=key=value,key=value,...` if a future printer d
 
 Set `ADMIN_BEARER_TOKEN` in `.env` before using this outside local development.
 
+## API Docs
+
+- Swagger UI: `http://localhost:8080/api/docs`
+- OpenAPI JSON: `http://localhost:8080/api/docs/openapi.json`
+- Voucher test tool: `http://localhost:8080/tools/voucher-test`
+- Voucher scan page: `http://localhost:8080/voucher-scan`
+- Voucher link page: `http://localhost:8080/voucher-link`
+- Production HTTPS voucher test tool: `https://api.wajanapir.com/tools/voucher-test`
+- Production HTTPS voucher scan page: `https://api.wajanapir.com/voucher-scan`
+- Production HTTPS voucher link page: `https://api.wajanapir.com/voucher-link`
+
+## Voucher Status API
+
+When `/api/kiosk/v1/checkout/voucher/reserve` returns `APPLIED`, the voucher has already consumed one use. The backend increments `vouchers.used_count`; if `used_count >= max_uses`, the code can no longer be used.
+
+Frontend websites can check a code without a bearer token, without creating a booth job, and without consuming usage:
+
+```bash
+curl -X POST http://localhost:8080/api/web/v1/vouchers/status \
+  -H 'Content-Type: application/json' \
+  -d '{"voucher_code":"PB-ADF2633C"}'
+```
+
+Important response fields:
+
+- `has_been_used`: true when the code has consumed at least one use.
+- `quota_exhausted`: true when the code has no remaining uses.
+- `usable_now`: true when the code exists, is active, is in its validity window, and has remaining uses.
+- `status`: one of `AVAILABLE`, `USED`, `EXPIRED`, `NOT_STARTED`, `INACTIVE`, or `NOT_FOUND`.
+
+## Voucher QR PNG
+
+AUTO voucher codes use the `PB-XXXXXXXX` format. The backend can render a PNG QR image for that code without requiring a bearer token:
+
+```html
+<img src="https://api.wajanapir.com/api/web/v1/vouchers/PB-ADF2633C/qr.png" alt="Voucher QR">
+```
+
+The QR payload is the voucher code text itself, for example `PB-ADF2633C`. `POST /api/admin/v1/vouchers/generate` returns `qr_png_url` for AUTO vouchers and `null` for manual/non-`PB-XXXXXXXX` formats.
+
 ## Local startup on OrbStack
 
 1. Copy `.env.example` to `.env`
-2. Set `PUBLIC_HOSTNAME`, `PUBLIC_BASE_URL`, `POSTGRES_PASSWORD`, and `DEVICE_BEARER_TOKEN`
+2. Set `PUBLIC_HOSTNAME`, `PUBLIC_BASE_URL`, `VOUCHER_LINK_BASE_URL`, `VOUCHER_SCAN_BASE_URL`, `VOUCHER_LINK_PATH`, `VOUCHER_SCAN_PATH`, `POSTGRES_PASSWORD`, and `DEVICE_BEARER_TOKEN`
 3. Run:
 
 ```bash
@@ -156,6 +197,12 @@ Recommended values:
 - `defaultPrinterName`: no longer required for normal kiosk printing; PrintBridge uses local `DEFAULT_PRINTER_NAME`
 - `preferredCameraDeviceNames`: `OBSBOT Virtual Camera`, `OBSBOT`
 - `DEFAULT_DOWNLOAD_ROUTE_PREFIX`: `world-tour` for the current Unity project, or `d` for the legacy backend flow
+- `VOUCHER_SCAN_BASE_URL`: the public origin that should open the phone scan page, usually the same as `PUBLIC_BASE_URL`
+- `VOUCHER_LINK_BASE_URL`: the public origin that should open the mobile voucher-link page, usually the same as `PUBLIC_BASE_URL`
+- `VOUCHER_LINK_PATH`: the path that the QR should open for the new loop, default `/voucher-link`
+- `VOUCHER_SCAN_PATH`: the path that the QR should open, default `/voucher-scan`
+- `KIOSK_SESSION_TTL_SECONDS`: kiosk session lifetime for the voucher-link flow, default `900`
+- `VOUCHER_SCAN_SESSION_TTL_SECONDS`: session lifetime for the phone-to-kiosk scan flow, default `300`
 
 ## Expected upload form fields
 
@@ -197,5 +244,6 @@ Final asset upload (`/v1/jobs/:jobId/assets/upload`):
 - Files are stored in a Docker volume mounted at `/var/photo-booth/uploads`
 - Job files are grouped under `jobs/<yyyyMMdd_HHmmss_JOB-ID>/...` using `session_started_at_utc` converted to `Asia/Bangkok`
 - Unity download links resolve through `/world-tour/:jobId` as the current World Tour page. Direct final image access is available at `/world-tour/:jobId/image`.
+- Unity can request a featured composed image at `/v1/assets/composed/featured`. The endpoint redirects to the newest composed asset from the last 10 minutes, or a random composed asset if no recent one exists. Override the window with `FEATURED_COMPOSED_RECENCY_SECONDS`.
 - Legacy download links resolve through `/d/:jobId` with the `chiselda/photo-booth-backend:0.2.25` style page. `/d` and `/world-tour` render separate page designs.
 - The scaffold uses local-disk storage first. You can move asset storage to S3/R2 later without changing the Unity contract much.

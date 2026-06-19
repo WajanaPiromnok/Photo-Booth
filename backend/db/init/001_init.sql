@@ -75,6 +75,22 @@ CREATE TABLE IF NOT EXISTS project_devices (
 
 CREATE INDEX IF NOT EXISTS idx_project_devices_project_id ON project_devices(project_id);
 
+CREATE TABLE IF NOT EXISTS user_devices (
+    id BIGSERIAL PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    device_token_hash TEXT NOT NULL UNIQUE,
+    device_name TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'ACTIVE',
+    first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_devices_project_id ON user_devices(project_id);
+CREATE INDEX IF NOT EXISTS idx_user_devices_status ON user_devices(status);
+
 CREATE TABLE IF NOT EXISTS voucher_campaigns (
     id BIGSERIAL PRIMARY KEY,
     project_id TEXT NOT NULL REFERENCES projects(id),
@@ -140,6 +156,65 @@ CREATE INDEX IF NOT EXISTS idx_voucher_redemptions_project_id ON voucher_redempt
 CREATE INDEX IF NOT EXISTS idx_voucher_redemptions_job_id ON voucher_redemptions(job_id);
 CREATE INDEX IF NOT EXISTS idx_voucher_redemptions_voucher_id ON voucher_redemptions(voucher_id);
 CREATE INDEX IF NOT EXISTS idx_voucher_redemptions_status ON voucher_redemptions(status);
+
+CREATE TABLE IF NOT EXISTS voucher_device_links (
+    id BIGSERIAL PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    device_id BIGINT NOT NULL REFERENCES user_devices(id) ON DELETE CASCADE,
+    voucher_id BIGINT NOT NULL,
+    voucher_code TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'ACTIVE',
+    claim_source TEXT,
+    claimed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    FOREIGN KEY (project_id, voucher_id) REFERENCES vouchers(project_id, id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_voucher_device_links_project_voucher ON voucher_device_links(project_id, voucher_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_voucher_device_links_project_code ON voucher_device_links(project_id, voucher_code);
+CREATE INDEX IF NOT EXISTS idx_voucher_device_links_device_id ON voucher_device_links(device_id);
+CREATE INDEX IF NOT EXISTS idx_voucher_device_links_status ON voucher_device_links(status);
+
+CREATE TABLE IF NOT EXISTS kiosk_sessions (
+    id BIGSERIAL PRIMARY KEY,
+    session_token TEXT NOT NULL UNIQUE,
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    device_id TEXT NOT NULL,
+    job_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'PENDING',
+    mobile_device_id BIGINT REFERENCES user_devices(id) ON DELETE SET NULL,
+    voucher_link_id BIGINT REFERENCES voucher_device_links(id) ON DELETE SET NULL,
+    voucher_code TEXT,
+    voucher_status_json JSONB,
+    qr_payload TEXT,
+    expires_at TIMESTAMPTZ NOT NULL,
+    attached_at TIMESTAMPTZ,
+    redeemed_at TIMESTAMPTZ,
+    cancelled_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_kiosk_sessions_token ON kiosk_sessions(session_token);
+CREATE INDEX IF NOT EXISTS idx_kiosk_sessions_project_device ON kiosk_sessions(project_id, device_id);
+CREATE INDEX IF NOT EXISTS idx_kiosk_sessions_status ON kiosk_sessions(status);
+CREATE INDEX IF NOT EXISTS idx_kiosk_sessions_expires_at ON kiosk_sessions(expires_at);
+
+CREATE TABLE IF NOT EXISTS kiosk_session_events (
+    id BIGSERIAL PRIMARY KEY,
+    kiosk_session_id BIGINT NOT NULL REFERENCES kiosk_sessions(id) ON DELETE CASCADE,
+    event_name TEXT NOT NULL,
+    event_status TEXT,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_kiosk_session_events_session_id ON kiosk_session_events(kiosk_session_id);
+CREATE INDEX IF NOT EXISTS idx_kiosk_session_events_event_name ON kiosk_session_events(event_name);
+CREATE INDEX IF NOT EXISTS idx_kiosk_session_events_created_at ON kiosk_session_events(created_at DESC);
 
 CREATE TABLE IF NOT EXISTS payments (
     id BIGSERIAL PRIMARY KEY,

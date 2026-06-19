@@ -16,7 +16,9 @@
     "UnityEngine.ScreenCaptureModule",
     "UnityEngine.UnityWebRequestModule",
     "UnityEngine.UIModule",
-    "Mediapipe.Runtime"
+    "Unity.InputSystem",
+    "Mediapipe.Runtime",
+    "EnoxSoftware.OpenCVForUnity"
   ],
   "includePlatforms": [],
   "excludePlatforms": [],

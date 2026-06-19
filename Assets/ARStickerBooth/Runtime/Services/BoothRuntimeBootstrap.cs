@@ -47,7 +47,8 @@ namespace PhotoBooth.Booth.Services
         [SerializeField] private bool forceSimulatedPrint = false;
         [SerializeField] private string printBridgeBaseUrl = "http://127.0.0.1:18080";
         [SerializeField] private int printBridgeRequestTimeoutSeconds = 10;
-        [SerializeField] private string[] preferredCameraDeviceNames = { "OBSBOT Virtual Camera", "OBSBOT" };
+        [SerializeField] private string[] preferredCameraDeviceNames = Array.Empty<string>();
+        [SerializeField] private int preferredCameraDeviceDiscoveryTimeoutSeconds = 0;
         [SerializeField] private string demoThemeId = "demo_theme";
         [SerializeField] private long demoAmountMinorUnits = 12000;
         [SerializeField] private int demoRawCaptureCount = 1;
@@ -86,6 +87,7 @@ namespace PhotoBooth.Booth.Services
         public string BackendDownloadBaseUrl => backendDownloadBaseUrl ?? string.Empty;
         public int BackendRequestTimeoutSeconds => Math.Max(1, backendRequestTimeoutSeconds);
         public string[] PreferredCameraDeviceNames => preferredCameraDeviceNames ?? Array.Empty<string>();
+        public int PreferredCameraDeviceDiscoveryTimeoutSeconds => Math.Max(0, preferredCameraDeviceDiscoveryTimeoutSeconds);
 
         private string lastDemoJobId;
 

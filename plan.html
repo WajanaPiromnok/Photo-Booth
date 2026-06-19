@@ -1,0 +1,545 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Photo Booth Voucher Integration Plan</title>
+  <style>
+    :root {
+      --bg: #f5f5f2;
+      --panel: #ffffff;
+      --ink: #17232c;
+      --muted: #5e6c75;
+      --line: #deddd8;
+      --teal: #14627a;
+      --green: #176f4f;
+      --orange: #c45520;
+      --red: #b8323d;
+      --code: #10212a;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.55;
+    }
+
+    header {
+      background: #10212a;
+      color: #fff;
+      padding: 32px 28px;
+    }
+
+    header h1 {
+      margin: 0 0 8px;
+      font-size: clamp(28px, 4vw, 44px);
+      letter-spacing: 0;
+    }
+
+    header p {
+      max-width: 920px;
+      margin: 0;
+      color: #b9cdd2;
+      font-size: 16px;
+    }
+
+    main {
+      width: min(1180px, calc(100% - 32px));
+      margin: 24px auto 56px;
+      display: grid;
+      gap: 18px;
+    }
+
+    section {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 22px;
+    }
+
+    h2 {
+      margin: 0 0 14px;
+      font-size: 22px;
+    }
+
+    h3 {
+      margin: 20px 0 10px;
+      font-size: 17px;
+    }
+
+    p { margin: 0 0 12px; }
+    ul, ol { margin: 0; padding-left: 22px; }
+    li { margin: 7px 0; }
+
+    a { color: var(--teal); }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+      background: #fbfbf8;
+    }
+
+    .card h3 { margin-top: 0; }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 26px;
+      border-radius: 999px;
+      padding: 3px 10px;
+      font-size: 12px;
+      font-weight: 700;
+      background: #e7f5ee;
+      color: var(--green);
+      margin-right: 6px;
+      margin-bottom: 6px;
+    }
+
+    .pill.warn { background: #fff0e8; color: var(--orange); }
+    .pill.danger { background: #fdecee; color: var(--red); }
+    .pill.neutral { background: #e8edf0; color: #40505a; }
+
+    pre {
+      margin: 12px 0 0;
+      padding: 14px;
+      border-radius: 8px;
+      overflow: auto;
+      background: var(--code);
+      color: #dff3f6;
+      font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      color: var(--teal);
+      word-break: break-word;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 12px;
+      font-size: 14px;
+    }
+
+    th, td {
+      border-bottom: 1px solid var(--line);
+      padding: 10px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      color: #33444e;
+      background: #f2f4f1;
+      font-weight: 700;
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 10px;
+      align-items: stretch;
+    }
+
+    .step {
+      border: 1px solid var(--line);
+      border-left: 4px solid var(--teal);
+      border-radius: 8px;
+      padding: 12px;
+      background: #fff;
+      min-height: 104px;
+    }
+
+    .step strong {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 14px;
+    }
+
+    .step span {
+      display: block;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .note {
+      border-left: 4px solid var(--orange);
+      background: #fff8f4;
+      padding: 12px 14px;
+      border-radius: 8px;
+      color: #45372f;
+    }
+
+    @media (max-width: 900px) {
+      .grid, .flow { grid-template-columns: 1fr; }
+      header { padding: 24px 18px; }
+      section { padding: 18px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Photo Booth Voucher Integration Plan</h1>
+    <p>เอกสารสรุปการเชื่อมต่อ voucher ระหว่าง Backend, Unity kiosk, และหน้าเว็บ frontend สำหรับระบบ Photo Booth Payment Voucher</p>
+  </header>
+
+  <main>
+    <section>
+      <h2>สรุป Endpoint ที่ใช้</h2>
+      <div class="grid">
+        <div class="card">
+          <h3>Admin / Generate Voucher</h3>
+          <span class="pill warn">ใช้ ADMIN_BEARER_TOKEN</span>
+          <p>ใช้สร้าง voucher code และกำหนดจำนวนครั้งที่ใช้ได้ วันหมดอายุ และประเภทสิทธิ์</p>
+          <pre>POST /api/admin/v1/vouchers/generate</pre>
+        </div>
+
+        <div class="card">
+          <h3>Website / Check Status</h3>
+          <span class="pill">ไม่ต้องใช้ token</span>
+          <p>ใช้สำหรับหน้าเว็บทั่วไปเช็คว่า voucher ใช้ไปแล้วหรือยัง โดยไม่ตัด quota</p>
+          <pre>POST /api/web/v1/vouchers/status</pre>
+        </div>
+
+        <div class="card">
+          <h3>Website / Voucher QR PNG</h3>
+          <span class="pill">ไม่ต้องใช้ token</span>
+          <p>ใช้แสดง QR code ของ voucher รูปแบบ <code>PB-XXXXXXXX</code> ให้ frontend ใส่ใน <code>&lt;img&gt;</code> ได้ทันที</p>
+          <pre>GET /api/web/v1/vouchers/{voucherCode}/qr.png</pre>
+        </div>
+
+        <div class="card">
+          <h3>Unity Kiosk / Validate</h3>
+          <span class="pill warn">ใช้ DEVICE_BEARER_TOKEN</span>
+          <p>เช็ค voucher ก่อน checkout และคืน <code>checkout_token</code> ยังไม่ตัดจำนวนการใช้งาน</p>
+          <pre>POST /api/kiosk/v1/checkout/voucher/validate</pre>
+        </div>
+
+        <div class="card">
+          <h3>Unity Kiosk / Reserve</h3>
+          <span class="pill warn">ใช้ DEVICE_BEARER_TOKEN</span>
+          <p>ใช้ voucher จริงและตัด quota ด้วย <code>used_count + 1</code></p>
+          <pre>POST /api/kiosk/v1/checkout/voucher/reserve</pre>
+        </div>
+
+        <div class="card">
+          <h3>Unity Kiosk / Apply</h3>
+          <span class="pill warn">ใช้ DEVICE_BEARER_TOKEN</span>
+          <p>ยืนยัน voucher ที่อยู่สถานะ <code>RESERVED</code> หลังจ่ายเงินส่วนที่เหลือสำเร็จ</p>
+          <pre>POST /api/kiosk/v1/checkout/voucher/{redemptionId}/apply</pre>
+        </div>
+
+        <div class="card">
+          <h3>Unity Kiosk / Release</h3>
+          <span class="pill warn">ใช้ DEVICE_BEARER_TOKEN</span>
+          <p>ยกเลิก voucher ที่ยังเป็น <code>RESERVED</code> และคืน quota ให้ voucher</p>
+          <pre>POST /api/kiosk/v1/checkout/voucher/{redemptionId}/release</pre>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Unity Checkout Flow</h2>
+      <div class="flow">
+        <div class="step">
+          <strong>1. รับ voucher code</strong>
+          <span>ผู้ใช้กรอกหรือ scan code ใน Unity kiosk</span>
+        </div>
+        <div class="step">
+          <strong>2. Validate</strong>
+          <span>ส่ง <code>job_id</code>, <code>voucher_code</code>, <code>device_id</code> เพื่อรับ <code>checkout_token</code></span>
+        </div>
+        <div class="step">
+          <strong>3. Reserve</strong>
+          <span>ส่ง <code>checkout_token</code> และ <code>idempotency_key</code> เพื่อใช้ voucher จริง</span>
+        </div>
+        <div class="step">
+          <strong>4A. APPLIED</strong>
+          <span>ถ้าไม่ต้องจ่ายเพิ่ม ให้ถือว่าใช้ voucher สำเร็จและไปถ่ายรูปต่อ</span>
+        </div>
+        <div class="step">
+          <strong>4B. RESERVED</strong>
+          <span>ถ้ายังต้องจ่ายเพิ่ม ให้รอ payment แล้วค่อย <code>apply</code> หรือ <code>release</code></span>
+        </div>
+      </div>
+
+      <h3>Decision Logic ใน Unity</h3>
+      <pre>validate -> reserve
+
+if reserve.data.status == "APPLIED":
+    proceed_to_capture()
+
+if reserve.data.status == "RESERVED":
+    wait_for_payment()
+    if payment_success:
+        apply(redemption_id)
+        proceed_to_capture()
+    else:
+        release(redemption_id)
+        show_cancelled()</pre>
+    </section>
+
+    <section>
+      <h2>Idempotency Key</h2>
+      <p><code>idempotency_key</code> ใช้กันการยิง reserve ซ้ำแล้วตัด voucher ซ้ำ ถ้าใช้ key เดิม backend จะคืน <code>redemption_id</code> เดิม</p>
+
+      <div class="note">
+        สำหรับ checkout เดิมที่ retry เพราะเน็ตหลุด ให้ใช้ <code>idempotency_key</code> เดิม แต่ถ้าเป็น job/checkout ใหม่ ต้องใช้ key ใหม่
+      </div>
+
+      <h3>รูปแบบที่แนะนำใน Unity</h3>
+      <pre>{device_id}-{job_id}-voucher-{attempt_no}</pre>
+
+      <h3>ตัวอย่าง</h3>
+      <pre>booth-world-tour-01-JOB-20260610-0001-voucher-1</pre>
+
+      <table>
+        <thead>
+          <tr>
+            <th>สถานการณ์</th>
+            <th>ควรใช้ key แบบไหน</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>กด reserve ซ้ำเพราะ network timeout</td>
+            <td>ใช้ key เดิม</td>
+          </tr>
+          <tr>
+            <td>เริ่ม checkout ใหม่หรือ job ใหม่</td>
+            <td>สร้าง key ใหม่</td>
+          </tr>
+          <tr>
+            <td>ผู้ใช้ยกเลิกหลังได้ RESERVED</td>
+            <td>เรียก <code>release</code> ก่อน แล้วถ้าเริ่มใหม่ให้ใช้ key ใหม่</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Request / Response ตัวอย่าง</h2>
+
+      <h3>Validate</h3>
+      <pre>POST /api/kiosk/v1/checkout/voucher/validate
+Authorization: Bearer &lt;DEVICE_BEARER_TOKEN&gt;
+Content-Type: application/json
+
+{
+  "job_id": "JOB-20260610-0001",
+  "voucher_code": "PB-XXXXXXX",
+  "device_id": "booth-world-tour-01"
+}</pre>
+
+      <h3>Reserve</h3>
+      <pre>POST /api/kiosk/v1/checkout/voucher/reserve
+Authorization: Bearer &lt;DEVICE_BEARER_TOKEN&gt;
+Content-Type: application/json
+
+{
+  "job_id": "JOB-20260610-0001",
+  "checkout_token": "&lt;checkout_token_from_validate&gt;",
+  "idempotency_key": "booth-world-tour-01-JOB-20260610-0001-voucher-1",
+  "gross_amount_minor": 20000,
+  "currency": "THB",
+  "device_id": "booth-world-tour-01"
+}</pre>
+
+      <h3>Reserve Response: ใช้จบเลย</h3>
+      <pre>{
+  "success": true,
+  "data": {
+    "redemption_id": "1",
+    "status": "APPLIED",
+    "gross_amount_minor": 20000,
+    "discount_amount_minor": 20000,
+    "net_amount_minor": 0,
+    "currency_code": "THB",
+    "payment_required": false
+  },
+  "error": null
+}</pre>
+
+      <h3>Reserve Response: ยังต้องจ่ายเงินเพิ่ม</h3>
+      <pre>{
+  "success": true,
+  "data": {
+    "redemption_id": "2",
+    "status": "RESERVED",
+    "gross_amount_minor": 20000,
+    "discount_amount_minor": 10000,
+    "net_amount_minor": 10000,
+    "currency_code": "THB",
+    "payment_required": true
+  },
+  "error": null
+}</pre>
+
+      <h3>Apply</h3>
+      <pre>POST /api/kiosk/v1/checkout/voucher/2/apply
+Authorization: Bearer &lt;DEVICE_BEARER_TOKEN&gt;
+Content-Type: application/json
+
+{
+  "device_id": "booth-world-tour-01"
+}</pre>
+
+      <h3>Release</h3>
+      <pre>POST /api/kiosk/v1/checkout/voucher/2/release
+Authorization: Bearer &lt;DEVICE_BEARER_TOKEN&gt;
+Content-Type: application/json
+
+{
+  "device_id": "booth-world-tour-01"
+}</pre>
+    </section>
+
+    <section>
+      <h2>Website Status API</h2>
+      <p>หน้าเว็บที่ไม่ใช่ kiosk ใช้ endpoint นี้เพื่อเช็คโค้ดอย่างเดียว ไม่ต้องใช้ token และไม่ตัด quota</p>
+
+      <pre>POST /api/web/v1/vouchers/status
+Content-Type: application/json
+
+{
+  "voucher_code": "PB-XXXXXXX",
+  "project_id": "prj_world_tour"
+}</pre>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Field</th>
+            <th>ความหมาย</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>usable_now</code></td>
+            <td>ใช้เป็นตัวหลักสำหรับตัดสินว่าโค้ดใช้ได้ตอนนี้หรือไม่</td>
+          </tr>
+          <tr>
+            <td><code>has_been_used</code></td>
+            <td>โค้ดนี้เคยถูกใช้ไปแล้วอย่างน้อย 1 ครั้ง</td>
+          </tr>
+          <tr>
+            <td><code>quota_exhausted</code></td>
+            <td>จำนวนครั้งที่ใช้ได้หมดแล้ว</td>
+          </tr>
+          <tr>
+            <td><code>status</code></td>
+            <td><code>AVAILABLE</code>, <code>USED</code>, <code>EXPIRED</code>, <code>NOT_STARTED</code>, <code>INACTIVE</code>, <code>NOT_FOUND</code></td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Website Voucher QR PNG</h2>
+      <p>สำหรับ voucher ที่ backend generate แบบ AUTO รูปแบบ <code>PB-XXXXXXXX</code> จะมี <code>qr_png_url</code> ใน response ให้ frontend ใช้ได้ทันที</p>
+
+      <pre>&lt;img src="https://api.wajanapir.com/api/web/v1/vouchers/PB-ADF2633C/qr.png" alt="Voucher QR"&gt;</pre>
+
+      <table>
+        <thead>
+          <tr>
+            <th>รายการ</th>
+            <th>รายละเอียด</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Endpoint</td>
+            <td><code>GET /api/web/v1/vouchers/{voucherCode}/qr.png</code></td>
+          </tr>
+          <tr>
+            <td>Token</td>
+            <td>ไม่ต้องใช้ bearer token</td>
+          </tr>
+          <tr>
+            <td>รูปแบบ code</td>
+            <td>รับเฉพาะ <code>PB-[0-9A-F]{8}</code> เช่น <code>PB-B0896403</code></td>
+          </tr>
+          <tr>
+            <td>QR payload</td>
+            <td>ข้อความ voucher code ตรง ๆ เช่น <code>PB-B0896403</code></td>
+          </tr>
+          <tr>
+            <td>Response</td>
+            <td><code>Content-Type: image/png</code></td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>สถานะสำคัญ</h2>
+      <p>
+        <span class="pill">AVAILABLE</span>
+        <span class="pill warn">RESERVED</span>
+        <span class="pill">APPLIED</span>
+        <span class="pill danger">RELEASED</span>
+      </p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>สถานะ</th>
+            <th>ใช้ในตาราง</th>
+            <th>ความหมาย</th>
+            <th>Action ต่อไป</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>AVAILABLE</code></td>
+            <td>Voucher status API</td>
+            <td>voucher ยังใช้ได้ตอนนี้</td>
+            <td>Unity เรียก validate/reserve ได้</td>
+          </tr>
+          <tr>
+            <td><code>RESERVED</code></td>
+            <td>voucher redemption</td>
+            <td>voucher ถูกกันสิทธิ์และตัด quota แล้ว แต่ยังรอจ่ายเงินส่วนที่เหลือ</td>
+            <td>จ่ายสำเร็จเรียก apply, ยกเลิกเรียก release</td>
+          </tr>
+          <tr>
+            <td><code>APPLIED</code></td>
+            <td>voucher redemption</td>
+            <td>voucher ใช้สำเร็จแล้ว</td>
+            <td>ไปขั้นถ่ายรูปต่อ</td>
+          </tr>
+          <tr>
+            <td><code>RELEASED</code></td>
+            <td>voucher redemption</td>
+            <td>ยกเลิกการ reserve และคืน quota แล้ว</td>
+            <td>ถ้าจะเริ่มใหม่ให้ validate/reserve ใหม่</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>URLs สำหรับทดสอบ</h2>
+      <ul>
+        <li>Swagger: <a href="https://api.wajanapir.com/api/docs">https://api.wajanapir.com/api/docs</a></li>
+        <li>Voucher Test Tool: <a href="https://api.wajanapir.com/tools/voucher-test">https://api.wajanapir.com/tools/voucher-test</a></li>
+        <li>Local Swagger: <a href="http://localhost:8080/api/docs">http://localhost:8080/api/docs</a></li>
+        <li>Local Voucher Test Tool: <a href="http://localhost:8080/tools/voucher-test">http://localhost:8080/tools/voucher-test</a></li>
+      </ul>
+    </section>
+  </main>
+</body>
+</html>

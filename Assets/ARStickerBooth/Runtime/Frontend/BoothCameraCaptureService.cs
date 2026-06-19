@@ -11,38 +11,121 @@ namespace PhotoBooth.Booth.Frontend
 {
     public sealed class BoothCameraCaptureService : IDisposable
     {
+        private const int GPhoto2PreviewFailureThreshold = 3;
+        private const string ObsbotDeviceName = "OBSBOT";
+        private static readonly string[] CaptureCardNameParts =
+        {
+            "Acasis",
+            "HD33",
+            "HDMI",
+            "UVC",
+            "USB Video",
+            "Video Capture",
+            "Capture"
+        };
+        private static readonly string[] CanonCameraNameParts =
+        {
+            "EOS",
+            "Canon",
+            "EOS Webcam",
+            "Cam Link"
+        };
+
+        private static readonly string[] VirtualCameraNameParts =
+        {
+            "OBS Virtual",
+            "OBS Camera"
+        };
+
+        private static readonly string[] BuiltInCameraNameParts =
+        {
+            "FaceTime",
+            "Built-in",
+            "iSight",
+            "MacBook"
+        };
+
+        private enum PreviewBackendKind
+        {
+            None = 0,
+            GPhoto2Preview = 1,
+            WebCamTexture = 2,
+            Simulated = 3
+        }
+
         private readonly RawImage previewTarget;
         private readonly int requestedWidth;
         private readonly int requestedHeight;
         private readonly int requestedFps;
         private readonly string[] preferredDeviceNames;
+        private readonly int preferredDeviceDiscoveryTimeoutSeconds;
+        private readonly bool useGPhoto2Preview;
+        private readonly int gPhoto2PreviewFramesPerSecond;
+        private readonly bool gPhoto2PreviewFailureFallbackEnabled;
+        private readonly GPhoto2CameraCaptureService gPhoto2CaptureService;
 
         private WebCamTexture cameraTexture;
         private Texture2D simulatedCameraTexture;
+        private Texture2D gPhoto2PreviewTexture;
+        private CancellationTokenSource gPhoto2PreviewLoopCancellation;
+        private Task gPhoto2PreviewLoopTask;
+        private PreviewBackendKind currentPreviewBackend = PreviewBackendKind.None;
+        private bool gPhoto2PreviewPaused;
+        private string currentDeviceSource = "none";
 
         public BoothCameraCaptureService(
             RawImage previewTarget,
             int requestedWidth = 1280,
             int requestedHeight = 720,
             int requestedFps = 30,
-            IEnumerable<string> preferredDeviceNames = null)
+            IEnumerable<string> preferredDeviceNames = null,
+            int preferredDeviceDiscoveryTimeoutSeconds = 3,
+            GPhoto2CameraCaptureService gPhoto2CaptureService = null,
+            bool useGPhoto2Preview = false,
+            int gPhoto2PreviewFramesPerSecond = 3,
+            bool gPhoto2PreviewFailureFallbackEnabled = true)
         {
             this.previewTarget = previewTarget;
             this.requestedWidth = Math.Max(320, requestedWidth);
             this.requestedHeight = Math.Max(240, requestedHeight);
             this.requestedFps = Math.Max(15, requestedFps);
             this.preferredDeviceNames = NormalizePreferredDeviceNames(preferredDeviceNames);
+            this.preferredDeviceDiscoveryTimeoutSeconds = Math.Max(0, preferredDeviceDiscoveryTimeoutSeconds);
+            this.gPhoto2CaptureService = gPhoto2CaptureService;
+            this.useGPhoto2Preview = useGPhoto2Preview;
+            this.gPhoto2PreviewFramesPerSecond = Mathf.Clamp(gPhoto2PreviewFramesPerSecond, 1, 30);
+            this.gPhoto2PreviewFailureFallbackEnabled = gPhoto2PreviewFailureFallbackEnabled;
         }
 
-        public bool IsPreviewing => (cameraTexture != null && cameraTexture.isPlaying) || simulatedCameraTexture != null;
+        public bool IsPreviewing => (cameraTexture != null && cameraTexture.isPlaying) || gPhoto2PreviewTexture != null || simulatedCameraTexture != null;
 
-        public int CurrentWidth => cameraTexture != null && cameraTexture.width > 16 ? cameraTexture.width : simulatedCameraTexture != null ? simulatedCameraTexture.width : requestedWidth;
+        public bool IsUsingGPhoto2Preview => currentPreviewBackend == PreviewBackendKind.GPhoto2Preview;
 
-        public int CurrentHeight => cameraTexture != null && cameraTexture.height > 16 ? cameraTexture.height : simulatedCameraTexture != null ? simulatedCameraTexture.height : requestedHeight;
+        public int CurrentWidth => cameraTexture != null && cameraTexture.width > 16
+            ? cameraTexture.width
+            : gPhoto2PreviewTexture != null && gPhoto2PreviewTexture.width > 16
+                ? gPhoto2PreviewTexture.width
+                : simulatedCameraTexture != null
+                    ? simulatedCameraTexture.width
+                    : requestedWidth;
 
-        public Texture CurrentPreviewTexture => cameraTexture != null ? cameraTexture : simulatedCameraTexture;
+        public int CurrentHeight => cameraTexture != null && cameraTexture.height > 16
+            ? cameraTexture.height
+            : gPhoto2PreviewTexture != null && gPhoto2PreviewTexture.height > 16
+                ? gPhoto2PreviewTexture.height
+                : simulatedCameraTexture != null
+                    ? simulatedCameraTexture.height
+                    : requestedHeight;
+
+        public Texture CurrentPreviewTexture => cameraTexture != null
+            ? cameraTexture
+            : gPhoto2PreviewTexture != null
+                ? gPhoto2PreviewTexture
+                : simulatedCameraTexture;
 
         public string CurrentDeviceName { get; private set; }
+
+        public string CurrentDeviceSource => currentDeviceSource;
 
         public async Task StartPreviewAsync(CancellationToken cancellationToken = default)
         {
@@ -51,59 +134,97 @@ namespace PhotoBooth.Booth.Frontend
                 return;
             }
 
-            if (!Application.HasUserAuthorization(UserAuthorization.WebCam))
+            if (useGPhoto2Preview)
             {
-                var authorization = Application.RequestUserAuthorization(UserAuthorization.WebCam);
-                while (!authorization.isDone)
+                try
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    await Task.Yield();
+                    if (await TryStartGPhoto2PreviewAsync(cancellationToken))
+                    {
+                        return;
+                    }
                 }
-
-                if (!Application.HasUserAuthorization(UserAuthorization.WebCam))
+                catch (OperationCanceledException)
                 {
-                    Debug.LogWarning("Webcam permission was not granted. Using simulated camera preview.");
-                    StartSimulatedPreview();
-                    return;
+                    throw;
+                }
+                catch (Exception exception)
+                {
+                    Debug.LogWarning($"gPhoto2 preview unavailable; falling back to webcam preview. {exception.Message}");
                 }
             }
 
-            if (WebCamTexture.devices == null || WebCamTexture.devices.Length == 0)
+            await StartWebCamOrSimulatedPreviewAsync(cancellationToken);
+        }
+
+        public async Task PausePreviewAsync(CancellationToken cancellationToken = default)
+        {
+            if (!IsUsingGPhoto2Preview || gPhoto2CaptureService == null)
             {
-                Debug.LogWarning("No camera device was found. Using simulated camera preview.");
-                StartSimulatedPreview();
                 return;
             }
 
-            var selectedDeviceName = SelectPreferredDeviceName(WebCamTexture.devices.Select(device => device.name), preferredDeviceNames);
-            CurrentDeviceName = selectedDeviceName;
-            Debug.Log($"PhotoBooth camera selected: {selectedDeviceName}");
-            cameraTexture = new WebCamTexture(selectedDeviceName, requestedWidth, requestedHeight, requestedFps);
-            if (previewTarget != null)
+            gPhoto2PreviewPaused = true;
+            await gPhoto2CaptureService.WaitForIdleAsync(cancellationToken);
+        }
+
+        public void ResumePreview()
+        {
+            gPhoto2PreviewPaused = false;
+        }
+
+        public Texture2D CaptureCurrentFrameTexture()
+        {
+            EnsureReady();
+            var sourceTexture = CurrentPreviewTexture;
+            var texture = CreateReadableCopy(sourceTexture);
+            if (texture == null)
             {
-                previewTarget.texture = cameraTexture;
-                previewTarget.color = Color.white;
-                // Flip U axis to un-mirror the webcam (selfie/front-cam is mirrored by default).
-                previewTarget.uvRect = new Rect(1f, 0f, -1f, 1f);
+                throw new InvalidOperationException("Camera preview is not ready.");
             }
 
-            cameraTexture.Play();
-            var startedAt = Time.realtimeSinceStartup;
-            while (cameraTexture.width <= 16)
+            return texture;
+        }
+
+        public void CaptureCurrentFrameTexture(ref Texture2D destination)
+        {
+            EnsureReady();
+            var sourceTexture = CurrentPreviewTexture;
+            if (sourceTexture == null)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                if (Time.realtimeSinceStartup - startedAt > 5f)
+                throw new InvalidOperationException("Camera preview is not ready.");
+            }
+
+            var sourceWidth = sourceTexture.width;
+            var sourceHeight = sourceTexture.height;
+            if (sourceWidth <= 16 || sourceHeight <= 16)
+            {
+                throw new InvalidOperationException("Camera preview dimensions are invalid.");
+            }
+
+            if (destination == null || destination.width != sourceWidth || destination.height != sourceHeight)
+            {
+                if (destination != null)
                 {
-                    Debug.LogWarning("Camera preview did not become ready within 5 seconds. Using simulated camera preview.");
-                    StopCameraTextureOnly();
-                    StartSimulatedPreview();
-                    return;
+                    UnityEngine.Object.Destroy(destination);
                 }
-
-                await Task.Yield();
+                destination = new Texture2D(sourceWidth, sourceHeight, TextureFormat.RGBA32, false);
+                destination.name = "CachedCameraFrame";
             }
 
-            Debug.Log($"PhotoBooth camera preview ready: device={CurrentDeviceName}, texture={CurrentWidth}x{CurrentHeight}");
+            if (sourceTexture is WebCamTexture webcamTexture)
+            {
+                destination.SetPixels32(webcamTexture.GetPixels32());
+            }
+            else if (sourceTexture is Texture2D texture2D)
+            {
+                destination.SetPixels32(texture2D.GetPixels32());
+            }
+            else
+            {
+                throw new InvalidOperationException("Unsupported camera preview texture type.");
+            }
+
+            destination.Apply(false, false);
         }
 
         public string CapturePng(string outputDirectory, string fileName = "capture.png")
@@ -124,17 +245,6 @@ namespace PhotoBooth.Booth.Frontend
         public string CaptureMotionFramePng(string outputDirectory, int frameIndex, Action<Texture2D> beforeEncode)
         {
             return CaptureCurrentFramePng(outputDirectory, $"motion_{Math.Max(0, frameIndex):000}.png", beforeEncode);
-        }
-
-        public Texture2D CaptureCurrentFrameTexture()
-        {
-            EnsureReady();
-            var sourceWidth = cameraTexture != null && cameraTexture.width > 16 ? cameraTexture.width : simulatedCameraTexture.width;
-            var sourceHeight = cameraTexture != null && cameraTexture.height > 16 ? cameraTexture.height : simulatedCameraTexture.height;
-            var texture = new Texture2D(sourceWidth, sourceHeight, TextureFormat.RGBA32, false);
-            texture.SetPixels32(cameraTexture != null && cameraTexture.width > 16 ? cameraTexture.GetPixels32() : simulatedCameraTexture.GetPixels32());
-            texture.Apply(false, false);
-            return texture;
         }
 
         private string CaptureCurrentFramePng(string outputDirectory, string fileName, Action<Texture2D> beforeEncode)
@@ -168,6 +278,7 @@ namespace PhotoBooth.Booth.Frontend
         {
             var stoppedDeviceName = CurrentDeviceName;
             var wasPreviewing = IsPreviewing;
+            StopGPhoto2Preview();
             if (previewTarget != null)
             {
                 previewTarget.texture = null;
@@ -181,6 +292,8 @@ namespace PhotoBooth.Booth.Frontend
             }
 
             CurrentDeviceName = null;
+            currentDeviceSource = "none";
+            currentPreviewBackend = PreviewBackendKind.None;
             if (wasPreviewing)
             {
                 Debug.Log($"PhotoBooth camera stopped: device={stoppedDeviceName ?? "(unknown)"}");
@@ -205,13 +318,364 @@ namespace PhotoBooth.Booth.Frontend
 
         private void StartSimulatedPreview()
         {
+            StopCameraTextureOnly();
+            StopGPhoto2Preview();
             CurrentDeviceName = "Simulated Camera";
+            currentDeviceSource = "simulated";
+            currentPreviewBackend = PreviewBackendKind.Simulated;
             simulatedCameraTexture = CreateSimulatedCameraTexture(requestedWidth, requestedHeight);
             if (previewTarget != null)
             {
                 previewTarget.texture = simulatedCameraTexture;
                 previewTarget.color = Color.white;
+                previewTarget.uvRect = new Rect(0f, 0f, 1f, 1f);
             }
+        }
+
+        private async Task StartWebCamOrSimulatedPreviewAsync(CancellationToken cancellationToken)
+        {
+            if (currentPreviewBackend == PreviewBackendKind.GPhoto2Preview || gPhoto2PreviewTexture != null)
+            {
+                StopGPhoto2Preview();
+            }
+
+            if (!Application.HasUserAuthorization(UserAuthorization.WebCam))
+            {
+                var authorization = Application.RequestUserAuthorization(UserAuthorization.WebCam);
+                while (!authorization.isDone)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    await Task.Yield();
+                }
+
+                if (!Application.HasUserAuthorization(UserAuthorization.WebCam))
+                {
+                    Debug.LogWarning("Webcam permission was not granted. Using simulated camera preview.");
+                    StartSimulatedPreview();
+                    return;
+                }
+            }
+
+            var selectedDeviceName = await WaitForCameraDeviceNameAsync(cancellationToken);
+            if (string.IsNullOrWhiteSpace(selectedDeviceName))
+            {
+                Debug.LogWarning("No camera device was found. Using simulated camera preview.");
+                StartSimulatedPreview();
+                return;
+            }
+
+            CurrentDeviceName = selectedDeviceName;
+            currentDeviceSource = "camera";
+            currentPreviewBackend = PreviewBackendKind.WebCamTexture;
+            Debug.Log($"PhotoBooth camera selected: device={selectedDeviceName}, source={currentDeviceSource}");
+            cameraTexture = new WebCamTexture(selectedDeviceName, requestedWidth, requestedHeight, requestedFps);
+            if (previewTarget != null)
+            {
+                previewTarget.texture = cameraTexture;
+                previewTarget.color = Color.white;
+                previewTarget.uvRect = IsHd33DeviceName(selectedDeviceName)
+                    ? new Rect(0f, 0f, 1f, 1f)
+                    : new Rect(1f, 0f, -1f, 1f);
+            }
+
+            cameraTexture.Play();
+            var startedAt = Time.realtimeSinceStartup;
+            while (cameraTexture.width <= 16)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (Time.realtimeSinceStartup - startedAt > 5f)
+                {
+                    Debug.LogWarning($"Camera preview did not become ready within 5 seconds: device={CurrentDeviceName}, source={currentDeviceSource}. Using simulated camera preview.");
+                    StopCameraTextureOnly();
+                    StartSimulatedPreview();
+                    return;
+                }
+
+                await Task.Yield();
+            }
+
+            Debug.Log($"PhotoBooth camera preview ready: device={CurrentDeviceName}, source={currentDeviceSource}, texture={CurrentWidth}x{CurrentHeight}");
+        }
+
+        private async Task<bool> TryStartGPhoto2PreviewAsync(CancellationToken cancellationToken)
+        {
+            if (gPhoto2CaptureService == null)
+            {
+                return false;
+            }
+
+            for (var attempt = 1; attempt <= GPhoto2PreviewFailureThreshold; attempt++)
+            {
+                try
+                {
+                    var detectedCameraName = await gPhoto2CaptureService.DetectCameraNameAsync(cancellationToken);
+                    if (string.IsNullOrWhiteSpace(detectedCameraName))
+                    {
+                        Debug.LogWarning($"gPhoto2 preview start attempt {attempt}/{GPhoto2PreviewFailureThreshold} could not detect a camera.");
+                        StopGPhoto2Preview();
+                        if (attempt < GPhoto2PreviewFailureThreshold)
+                        {
+                            await Task.Delay(1000, cancellationToken);
+                        }
+
+                        continue;
+                    }
+
+                    currentPreviewBackend = PreviewBackendKind.GPhoto2Preview;
+                    currentDeviceSource = "gphoto2-preview";
+                    CurrentDeviceName = detectedCameraName;
+                    gPhoto2PreviewPaused = false;
+                    gPhoto2PreviewTexture ??= CreatePreviewTexture();
+
+                    if (await RefreshGPhoto2PreviewFrameAsync(cancellationToken))
+                    {
+                        ApplyPreviewTexture(gPhoto2PreviewTexture, flipHorizontally: false);
+                        Debug.Log($"PhotoBooth camera selected: device={CurrentDeviceName}, source={currentDeviceSource}");
+                        Debug.Log($"PhotoBooth camera preview ready: device={CurrentDeviceName}, source={currentDeviceSource}, texture={CurrentWidth}x{CurrentHeight}");
+
+                        gPhoto2PreviewLoopCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                        gPhoto2PreviewLoopTask = RunGPhoto2PreviewLoopAsync(gPhoto2PreviewLoopCancellation.Token);
+                        return true;
+                    }
+
+                    StopGPhoto2Preview();
+                    if (attempt < GPhoto2PreviewFailureThreshold)
+                    {
+                        await Task.Delay(1000, cancellationToken);
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception exception)
+                {
+                    Debug.LogWarning($"gPhoto2 preview start attempt {attempt}/{GPhoto2PreviewFailureThreshold} failed: {exception.Message}");
+                    StopGPhoto2Preview();
+                    if (attempt < GPhoto2PreviewFailureThreshold)
+                    {
+                        await Task.Delay(1000, cancellationToken);
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        private async Task RunGPhoto2PreviewLoopAsync(CancellationToken cancellationToken)
+        {
+            var delayMs = Mathf.RoundToInt(1000f / Mathf.Clamp(gPhoto2PreviewFramesPerSecond, 1, 30));
+            var consecutiveFailures = 0;
+
+            while (!cancellationToken.IsCancellationRequested && currentPreviewBackend == PreviewBackendKind.GPhoto2Preview)
+            {
+                if (gPhoto2PreviewPaused)
+                {
+                    await Task.Delay(Mathf.Max(delayMs, 33), cancellationToken);
+                    continue;
+                }
+
+                try
+                {
+                    if (await RefreshGPhoto2PreviewFrameAsync(cancellationToken))
+                    {
+                        consecutiveFailures = 0;
+                    }
+                    else
+                    {
+                        consecutiveFailures++;
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+                catch (Exception exception)
+                {
+                    consecutiveFailures++;
+                    Debug.LogWarning($"gPhoto2 preview frame failed: {exception.Message}");
+                }
+
+                if (consecutiveFailures >= GPhoto2PreviewFailureThreshold)
+                {
+                    break;
+                }
+
+                await Task.Delay(Mathf.Max(1, delayMs), cancellationToken);
+            }
+
+            if (!cancellationToken.IsCancellationRequested
+                && currentPreviewBackend == PreviewBackendKind.GPhoto2Preview
+                && gPhoto2PreviewFailureFallbackEnabled
+                && !gPhoto2PreviewPaused)
+            {
+                Debug.LogWarning("gPhoto2 preview failed repeatedly; falling back to webcam preview.");
+                try
+                {
+                    await StartWebCamOrSimulatedPreviewAsync(cancellationToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception exception)
+                {
+                    Debug.LogWarning($"gPhoto2 preview fallback failed: {exception.Message}");
+                    StartSimulatedPreview();
+                }
+            }
+        }
+
+        private async Task<bool> RefreshGPhoto2PreviewFrameAsync(CancellationToken cancellationToken)
+        {
+            if (gPhoto2CaptureService == null || currentPreviewBackend != PreviewBackendKind.GPhoto2Preview || gPhoto2PreviewTexture == null)
+            {
+                return false;
+            }
+
+            var previewBytes = await gPhoto2CaptureService.CapturePreviewBytesAsync(cancellationToken);
+            if (previewBytes == null || previewBytes.Length == 0 || currentPreviewBackend != PreviewBackendKind.GPhoto2Preview)
+            {
+                return false;
+            }
+
+            return ImageConversion.LoadImage(gPhoto2PreviewTexture, previewBytes);
+        }
+
+        private Texture2D CreatePreviewTexture()
+        {
+            var texture = new Texture2D(2, 2, TextureFormat.RGBA32, false);
+            texture.name = "GPhoto2PreviewTexture";
+            return texture;
+        }
+
+        private static Texture2D CreateReadableCopy(Texture sourceTexture)
+        {
+            try
+            {
+                if (sourceTexture == null)
+                {
+                    return null;
+                }
+
+                var sourceWidth = sourceTexture.width;
+                var sourceHeight = sourceTexture.height;
+                if (sourceWidth <= 0 || sourceHeight <= 0)
+                {
+                    return null;
+                }
+
+                var texture = new Texture2D(sourceWidth, sourceHeight, TextureFormat.RGBA32, false);
+                if (sourceTexture is WebCamTexture webcamTexture && webcamTexture.width > 16)
+                {
+                    texture.SetPixels32(webcamTexture.GetPixels32());
+                }
+                else if (sourceTexture is Texture2D texture2D)
+                {
+                    texture.SetPixels32(texture2D.GetPixels32());
+                }
+                else
+                {
+                    UnityEngine.Object.Destroy(texture);
+                    return null;
+                }
+
+                texture.Apply(false, false);
+                return texture;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private void ApplyPreviewTexture(Texture texture, bool flipHorizontally)
+        {
+            if (previewTarget == null)
+            {
+                return;
+            }
+
+            previewTarget.texture = texture;
+            previewTarget.color = Color.white;
+            previewTarget.uvRect = flipHorizontally
+                ? new Rect(1f, 0f, -1f, 1f)
+                : new Rect(0f, 0f, 1f, 1f);
+        }
+
+        private void StopGPhoto2Preview()
+        {
+            gPhoto2PreviewLoopCancellation?.Cancel();
+            gPhoto2PreviewLoopCancellation?.Dispose();
+            gPhoto2PreviewLoopCancellation = null;
+            gPhoto2PreviewLoopTask = null;
+            gPhoto2PreviewPaused = false;
+            currentPreviewBackend = PreviewBackendKind.None;
+            if (previewTarget != null && previewTarget.texture == gPhoto2PreviewTexture)
+            {
+                previewTarget.texture = null;
+            }
+
+            if (gPhoto2PreviewTexture != null)
+            {
+                UnityEngine.Object.Destroy(gPhoto2PreviewTexture);
+                gPhoto2PreviewTexture = null;
+            }
+        }
+
+        private async Task<string> WaitForCameraDeviceNameAsync(CancellationToken cancellationToken)
+        {
+            var startedAt = Time.realtimeSinceStartup;
+            var timeoutSeconds = preferredDeviceDiscoveryTimeoutSeconds;
+            string[] latestDeviceNames = null;
+            var lastLoggedDeviceSignature = string.Empty;
+
+            do
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                latestDeviceNames = GetCurrentDeviceNames();
+                var deviceSignature = latestDeviceNames.Length == 0
+                    ? "(none)"
+                    : string.Join(", ", latestDeviceNames);
+                if (!string.Equals(lastLoggedDeviceSignature, deviceSignature, StringComparison.Ordinal))
+                {
+                    lastLoggedDeviceSignature = deviceSignature;
+                    Debug.Log($"PhotoBooth available camera devices: {deviceSignature}");
+                }
+
+                var preferredDeviceName = SelectPrimaryPreferredDeviceName(latestDeviceNames, preferredDeviceNames);
+                if (!string.IsNullOrWhiteSpace(preferredDeviceName))
+                {
+                    return preferredDeviceName;
+                }
+
+                if (timeoutSeconds <= 0 || preferredDeviceNames.Length == 0)
+                {
+                    break;
+                }
+
+                await Task.Yield();
+            } while (Time.realtimeSinceStartup - startedAt < timeoutSeconds);
+
+            var fallbackDeviceName = SelectPreferredDeviceName(latestDeviceNames, preferredDeviceNames);
+            if (!string.IsNullOrWhiteSpace(fallbackDeviceName) && preferredDeviceNames.Length > 0)
+            {
+                var availableDevices = latestDeviceNames == null || latestDeviceNames.Length == 0
+                    ? "(none)"
+                    : string.Join(", ", latestDeviceNames);
+                Debug.LogWarning($"Preferred camera device was not found within {timeoutSeconds} seconds; falling back to {fallbackDeviceName}. Available devices: {availableDevices}");
+            }
+
+            return fallbackDeviceName;
+        }
+
+        private static string[] GetCurrentDeviceNames()
+        {
+            return WebCamTexture.devices?
+                .Select(device => device.name)
+                .Where(deviceName => !string.IsNullOrWhiteSpace(deviceName))
+                .Select(deviceName => deviceName.Trim())
+                .ToArray() ?? Array.Empty<string>();
         }
 
         private static Texture2D CreateSimulatedCameraTexture(int width, int height)
@@ -250,10 +714,7 @@ namespace PhotoBooth.Booth.Frontend
 
         public static string SelectPreferredDeviceName(IEnumerable<string> deviceNames, IEnumerable<string> preferredNames = null)
         {
-            var devices = deviceNames?
-                .Where(deviceName => !string.IsNullOrWhiteSpace(deviceName))
-                .Select(deviceName => deviceName.Trim())
-                .ToArray() ?? Array.Empty<string>();
+            var devices = NormalizeDeviceNames(deviceNames);
             if (devices.Length == 0)
             {
                 return null;
@@ -280,7 +741,45 @@ namespace PhotoBooth.Booth.Frontend
                 }
             }
 
-            return devices[0];
+            return priorities.Length == 0
+                ? SelectDefaultDeviceName(devices)
+                : devices[0];
+        }
+
+        public static string SelectPrimaryPreferredDeviceName(IEnumerable<string> deviceNames, IEnumerable<string> preferredNames = null)
+        {
+            var devices = NormalizeDeviceNames(deviceNames);
+            if (devices.Length == 0)
+            {
+                return null;
+            }
+
+            var priorities = NormalizePreferredDeviceNames(preferredNames);
+            if (priorities.Length == 0)
+            {
+                return null;
+            }
+
+            var primaryName = priorities[0];
+            var exactMatch = devices.FirstOrDefault(deviceName =>
+                string.Equals(deviceName, primaryName, StringComparison.OrdinalIgnoreCase));
+            if (!string.IsNullOrWhiteSpace(exactMatch))
+            {
+                return exactMatch;
+            }
+
+            return devices.FirstOrDefault(deviceName =>
+                deviceName.IndexOf(primaryName, StringComparison.OrdinalIgnoreCase) >= 0);
+        }
+
+        public static string DescribeDeviceSelection(string deviceName)
+        {
+            if (string.IsNullOrWhiteSpace(deviceName))
+            {
+                return "none";
+            }
+
+            return "camera";
         }
 
         private static string[] NormalizePreferredDeviceNames(IEnumerable<string> preferredNames)
@@ -292,8 +791,73 @@ namespace PhotoBooth.Booth.Frontend
                 .ToArray();
 
             return names == null || names.Length == 0
-                ? new[] { "OBSBOT Virtual Camera", "OBSBOT" }
+                ? Array.Empty<string>()
                 : names;
+        }
+
+        private static string[] NormalizeDeviceNames(IEnumerable<string> deviceNames)
+        {
+            return deviceNames?
+                .Where(deviceName => !string.IsNullOrWhiteSpace(deviceName))
+                .Select(deviceName => deviceName.Trim())
+                .ToArray() ?? Array.Empty<string>();
+        }
+
+        private static string SelectDefaultDeviceName(IReadOnlyList<string> deviceNames)
+        {
+            if (deviceNames == null || deviceNames.Count == 0)
+            {
+                return null;
+            }
+
+            return deviceNames.FirstOrDefault(IsCanonLikeCameraDeviceName)
+                ?? deviceNames.FirstOrDefault(IsCaptureCardLikeCameraDeviceName)
+                ?? deviceNames.FirstOrDefault(deviceName =>
+                    !IsVirtualCameraDeviceName(deviceName)
+                    && !IsObsbotDeviceName(deviceName)
+                    && !IsBuiltInCameraDeviceName(deviceName))
+                ?? deviceNames.FirstOrDefault(IsObsbotDeviceName)
+                ?? deviceNames.FirstOrDefault(deviceName =>
+                    !IsVirtualCameraDeviceName(deviceName)
+                    && !IsBuiltInCameraDeviceName(deviceName))
+                ?? deviceNames.FirstOrDefault(deviceName => !IsVirtualCameraDeviceName(deviceName))
+                ?? deviceNames[0];
+        }
+
+        public static bool IsCanonLikeCameraDeviceName(string deviceName)
+        {
+            return !string.IsNullOrWhiteSpace(deviceName)
+                && CanonCameraNameParts.Any(part => deviceName.IndexOf(part, StringComparison.OrdinalIgnoreCase) >= 0);
+        }
+
+        public static bool IsCaptureCardLikeCameraDeviceName(string deviceName)
+        {
+            return !string.IsNullOrWhiteSpace(deviceName)
+                && CaptureCardNameParts.Any(part => deviceName.IndexOf(part, StringComparison.OrdinalIgnoreCase) >= 0);
+        }
+
+        public static bool IsHd33DeviceName(string deviceName)
+        {
+            return !string.IsNullOrWhiteSpace(deviceName)
+                && deviceName.IndexOf("HD33", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        public static bool IsObsbotDeviceName(string deviceName)
+        {
+            return !string.IsNullOrWhiteSpace(deviceName)
+                && deviceName.IndexOf(ObsbotDeviceName, StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        public static bool IsBuiltInCameraDeviceName(string deviceName)
+        {
+            return !string.IsNullOrWhiteSpace(deviceName)
+                && BuiltInCameraNameParts.Any(part => deviceName.IndexOf(part, StringComparison.OrdinalIgnoreCase) >= 0);
+        }
+
+        public static bool IsVirtualCameraDeviceName(string deviceName)
+        {
+            return !string.IsNullOrWhiteSpace(deviceName)
+                && VirtualCameraNameParts.Any(part => deviceName.IndexOf(part, StringComparison.OrdinalIgnoreCase) >= 0);
         }
 
         public void Dispose()

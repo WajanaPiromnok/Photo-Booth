@@ -9712,10 +9712,10 @@ MonoBehaviour:
   forcePortraitResolution: 1
   countdownSeconds: 3
   capturesPerSession: 1
-  motionClipFramesPerSecond: 4
+  motionClipFramesPerSecond: 15
   enableArTracking: 1
   maxArFaces: 4
-  arPreviewUpdateIntervalMs: 33
+  arPreviewUpdateIntervalMs: 100
   mirrorArOverlayHorizontally: 0
   showFaceMarkDebugLines: 0
   showArDebugTelemetry: 0
@@ -9743,6 +9743,22 @@ MonoBehaviour:
   faceMarkDebugLineColor: {r: 0, g: 1, b: 0.55, a: 0.9}
   ffmpegExecutablePath: ffmpeg
   ffmpegTimeoutSeconds: 20
+  cameraDeviceControllerKind: 0
+  enableObsbotPowerControl: 0
+  obsbotControlExecutablePath: tools/obsbot-control/bin/obsbot-control
+  obsbotControlDeviceName: OBSBOT
+  obsbotControlTimeoutMs: 8000
+  externalCameraWakeCommand: 
+  externalCameraSleepCommand: 
+  externalCameraStatusCommand: 
+  externalCameraCommandTimeoutMs: 8000
+  useGPhoto2RawCapture: 1
+  useGPhoto2Preview: 0
+  gPhoto2PreviewFramesPerSecond: 30
+  gPhoto2PreviewFailureFallbackEnabled: 1
+  gPhoto2ExecutablePath: /opt/homebrew/bin/gphoto2
+  gPhoto2CaptureTimeoutMs: 20000
+  gPhoto2KillPtpcameraBeforeCommand: 1
   cameraCaptureSize: {x: 1280, y: 720}
   thumbnailSize: {x: 320, y: 180}
   captureForegroundTextures:
@@ -18909,9 +18925,8 @@ MonoBehaviour:
   forceSimulatedPrint: 0
   printBridgeBaseUrl: http://127.0.0.1:18080
   printBridgeRequestTimeoutSeconds: 10
-  preferredCameraDeviceNames:
-  - OBSBOT Virtual Camera
-  - OBSBOT
+  preferredCameraDeviceNames: []
+  preferredCameraDeviceDiscoveryTimeoutSeconds: 0
   demoThemeId: demo_theme
   demoAmountMinorUnits: 12000
   demoRawCaptureCount: 1

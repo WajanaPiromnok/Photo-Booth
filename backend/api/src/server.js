@@ -22,6 +22,7 @@ const upload = multer({
 
 const config = {
   port: Number.parseInt(process.env.PORT || "8080", 10),
+  publicBaseUrlConfigured: Boolean((process.env.PUBLIC_BASE_URL || "").trim()),
   publicBaseUrl: (process.env.PUBLIC_BASE_URL || "http://localhost:8080").replace(/\/$/, ""),
   uploadsRoot: path.resolve(process.env.UPLOADS_ROOT || path.join(process.cwd(), "uploads")),
   publicRoot: path.resolve(process.env.PUBLIC_ROOT || path.join(process.cwd(), "public")),
@@ -32,7 +33,14 @@ const config = {
   defaultProjectId: normalizeProjectId(process.env.DEFAULT_PROJECT_ID || "prj_world_tour"),
   allowCorsOrigin: (process.env.CORS_ORIGIN || "*").trim(),
   downloadPageTitle: (process.env.DOWNLOAD_PAGE_TITLE || "MRKREME Photo Session").trim(),
-  defaultDownloadRoutePrefix: normalizeDownloadRoutePrefix(process.env.DEFAULT_DOWNLOAD_ROUTE_PREFIX || "world-tour")
+  defaultDownloadRoutePrefix: normalizeDownloadRoutePrefix(process.env.DEFAULT_DOWNLOAD_ROUTE_PREFIX || "world-tour"),
+  voucherLinkBaseUrl: (process.env.VOUCHER_LINK_BASE_URL || process.env.PUBLIC_BASE_URL || "http://localhost:8080").replace(/\/$/, ""),
+  voucherLinkPath: normalizeRoutePath(process.env.VOUCHER_LINK_PATH || "/voucher-link"),
+  voucherScanBaseUrl: (process.env.VOUCHER_SCAN_BASE_URL || process.env.PUBLIC_BASE_URL || "http://localhost:8080").replace(/\/$/, ""),
+  voucherScanPath: normalizeRoutePath(process.env.VOUCHER_SCAN_PATH || "/voucher-scan"),
+  kioskSessionTtlSeconds: Math.max(60, Number.parseInt(process.env.KIOSK_SESSION_TTL_SECONDS || "900", 10)),
+  voucherScanSessionTtlSeconds: Math.max(60, Number.parseInt(process.env.VOUCHER_SCAN_SESSION_TTL_SECONDS || "300", 10)),
+  featuredComposedRecencySeconds: Math.max(1, Number.parseInt(process.env.FEATURED_COMPOSED_RECENCY_SECONDS || "600", 10))
 };
 
 const pool = new Pool({
@@ -46,6 +54,7 @@ const pool = new Pool({
 fs.mkdirSync(config.uploadsRoot, { recursive: true });
 
 app.disable("x-powered-by");
+app.set("trust proxy", true);
 app.use(helmet({
   crossOriginResourcePolicy: false
 }));
@@ -77,6 +86,449 @@ app.get("/healthz", async (req, res) => {
 app.get("/admin/vouchers", (req, res) => {
   res.setHeader("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'");
   return res.send(renderAdminVoucherConsolePage());
+});
+
+app.get("/api/docs/openapi.json", (req, res) => {
+  return res.json(buildOpenApiSpec(req));
+});
+
+app.get("/api/docs", (req, res) => {
+  res.setHeader("Content-Security-Policy", "default-src 'self' https://cdn.jsdelivr.net; img-src 'self' data: https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; connect-src 'self'");
+  return res.send(renderSwaggerDocsPage());
+});
+
+app.get("/tools/voucher-test", (req, res) => {
+  res.setHeader("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'");
+  return res.send(renderVoucherTestPage());
+});
+
+app.get(config.voucherScanPath, (req, res) => {
+  res.setHeader("Content-Security-Policy", "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'");
+  return res.send(renderVoucherScanPage());
+});
+
+if (config.voucherScanPath !== "/voucher-scan") {
+  app.get("/voucher-scan", (req, res) => {
+    res.setHeader("Content-Security-Policy", "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'");
+    return res.send(renderVoucherScanPage());
+  });
+}
+
+app.get(config.voucherLinkPath, (req, res) => {
+  res.setHeader("Content-Security-Policy", "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'");
+  return res.send(renderVoucherLinkPage());
+});
+
+if (config.voucherLinkPath !== "/voucher-link") {
+  app.get("/voucher-link", (req, res) => {
+    res.setHeader("Content-Security-Policy", "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'");
+    return res.send(renderVoucherLinkPage());
+  });
+}
+
+app.post("/api/kiosk/v1/kiosk-sessions", requireDeviceAuth, async (req, res) => {
+  const projectId = normalizeProjectId(req.body?.project_id) || await resolveProjectIdForDevice(pool, normalizeOptional(req.body?.device_id) || normalizeOptional(req.get("X-Device-Id")));
+  const deviceId = normalizeOptional(req.body?.device_id) || normalizeOptional(req.get("X-Device-Id")) || "booth-local";
+  const jobId = normalizeOptional(req.body?.job_id);
+  if (!jobId) {
+    return res.status(400).json(errorEnvelope("JOB_ID_REQUIRED", "job_id is required."));
+  }
+
+  const sessionToken = createKioskSessionToken();
+  const scanUrl = buildKioskSessionUrl(req, sessionToken);
+
+  try {
+    const client = await pool.connect();
+    try {
+      await ensureProject(client, projectId);
+      const result = await client.query(
+        `INSERT INTO kiosk_sessions (
+            session_token,
+            project_id,
+            device_id,
+            job_id,
+            status,
+            qr_payload,
+            expires_at
+          )
+          VALUES ($1, $2, $3, $4, 'PENDING', $5, NOW() + ($6 * INTERVAL '1 second'))
+          RETURNING id, session_token, project_id, device_id, job_id, status, mobile_device_id, voucher_link_id, voucher_code, voucher_status_json, qr_payload, expires_at, attached_at, redeemed_at, cancelled_at, created_at, updated_at`,
+        [sessionToken, projectId, deviceId, jobId, scanUrl, config.kioskSessionTtlSeconds]
+      );
+      await recordKioskSessionEvent(client, result.rows[0].id, "KIOSK_SESSION_CREATED", "PENDING", { scan_url: scanUrl });
+      return res.status(201).json({
+        success: true,
+        data: toKioskSessionResponse(result.rows[0], req),
+        error: null
+      });
+    } finally {
+      client.release();
+    }
+  } catch (error) {
+    console.error("kiosk_session_create_failed", { projectId, deviceId, jobId, error });
+    return res.status(error.statusCode || 500).json(errorEnvelope(error.code || "KIOSK_SESSION_CREATE_FAILED", error.message));
+  }
+});
+
+app.get("/api/kiosk/v1/kiosk-sessions/:sessionToken", requireDeviceAuth, async (req, res) => {
+  const sessionToken = normalizeVoucherScanSessionToken(req.params.sessionToken);
+  const deviceId = normalizeOptional(req.get("X-Device-Id"));
+  if (!sessionToken) {
+    return res.status(400).json(errorEnvelope("INVALID_SESSION_TOKEN", "sessionToken is invalid."));
+  }
+
+  try {
+    const projectId = await resolveProjectIdForDevice(pool, deviceId);
+    const session = await loadKioskSessionForKiosk(pool, projectId, deviceId || "booth-local", sessionToken);
+    if (!session) {
+      return res.status(404).json(errorEnvelope("KIOSK_SESSION_NOT_FOUND", "Kiosk session was not found."));
+    }
+
+    return res.json({ success: true, data: toKioskSessionResponse(session, req), error: null });
+  } catch (error) {
+    console.error("kiosk_session_get_failed", { sessionToken, deviceId, error });
+    return res.status(error.statusCode || 500).json(errorEnvelope(error.code || "KIOSK_SESSION_GET_FAILED", error.message));
+  }
+});
+
+app.post("/api/kiosk/v1/kiosk-sessions/:sessionToken/ack", requireDeviceAuth, async (req, res) => {
+  const sessionToken = normalizeVoucherScanSessionToken(req.params.sessionToken);
+  const ackStatus = normalizeKioskSessionStatus(req.body?.status);
+  const deviceId = normalizeOptional(req.body?.device_id) || normalizeOptional(req.get("X-Device-Id"));
+  if (!sessionToken) {
+    return res.status(400).json(errorEnvelope("INVALID_SESSION_TOKEN", "sessionToken is invalid."));
+  }
+  if (!ackStatus || ackStatus === "PENDING") {
+    return res.status(400).json(errorEnvelope("INVALID_SESSION_ACK_STATUS", "status must be CONSUMED or CANCELLED."));
+  }
+
+  try {
+    const projectId = await resolveProjectIdForDevice(pool, deviceId);
+    const client = await pool.connect();
+    try {
+      const session = await loadKioskSessionForKiosk(client, projectId, deviceId || "booth-local", sessionToken);
+      if (!session) {
+        return res.status(404).json(errorEnvelope("KIOSK_SESSION_NOT_FOUND", "Kiosk session was not found."));
+      }
+
+      const nowColumn = ackStatus === "CONSUMED" ? "redeemed_at" : "cancelled_at";
+      const result = await client.query(
+        `UPDATE kiosk_sessions
+         SET status = $2,
+             ${nowColumn} = NOW(),
+             updated_at = NOW()
+         WHERE id = $1
+         RETURNING id, session_token, project_id, device_id, job_id, status, mobile_device_id, voucher_link_id, voucher_code, voucher_status_json, qr_payload, expires_at, attached_at, redeemed_at, cancelled_at, created_at, updated_at`,
+        [session.id, ackStatus]
+      );
+      await recordKioskSessionEvent(client, session.id, "KIOSK_SESSION_ACK", ackStatus, { device_id: deviceId || null });
+      return res.json({ success: true, data: toKioskSessionResponse(result.rows[0], req), error: null });
+    } finally {
+      client.release();
+    }
+  } catch (error) {
+    console.error("kiosk_session_ack_failed", { sessionToken, deviceId, error });
+    return res.status(error.statusCode || 500).json(errorEnvelope(error.code || "KIOSK_SESSION_ACK_FAILED", error.message));
+  }
+});
+
+app.get("/api/web/v1/kiosk-sessions/:sessionToken", async (req, res) => {
+  const sessionToken = normalizeVoucherScanSessionToken(req.params.sessionToken);
+  if (!sessionToken) {
+    return res.status(400).json(errorEnvelope("INVALID_SESSION_TOKEN", "sessionToken is invalid."));
+  }
+
+  try {
+    const session = await loadKioskSessionForWeb(pool, sessionToken);
+    if (!session) {
+      return res.status(404).json(errorEnvelope("KIOSK_SESSION_NOT_FOUND", "Kiosk session was not found."));
+    }
+
+    return res.json({ success: true, data: toKioskSessionResponse(session, req), error: null });
+  } catch (error) {
+    console.error("kiosk_session_web_get_failed", { sessionToken, error });
+    return res.status(error.statusCode || 500).json(errorEnvelope(error.code || "KIOSK_SESSION_GET_FAILED", error.message));
+  }
+});
+
+app.get("/api/web/v1/kiosk-sessions/:sessionToken/qr.png", async (req, res) => {
+  const sessionToken = normalizeVoucherScanSessionToken(req.params.sessionToken);
+  if (!sessionToken) {
+    return res.status(400).json(errorEnvelope("INVALID_SESSION_TOKEN", "sessionToken is invalid."));
+  }
+
+  try {
+    const session = await loadKioskSessionForWeb(pool, sessionToken);
+    if (!session) {
+      return res.status(404).json(errorEnvelope("KIOSK_SESSION_NOT_FOUND", "Kiosk session was not found."));
+    }
+
+    const png = await QRCode.toBuffer(session.qr_payload || buildKioskSessionUrl(req, sessionToken), {
+      type: "png",
+      errorCorrectionLevel: "M",
+      margin: 1,
+      scale: 10,
+      color: {
+        dark: "#000000",
+        light: "#ffffff"
+      }
+    });
+    res.setHeader("Content-Type", "image/png");
+    res.setHeader("Cache-Control", "no-store");
+    return res.send(png);
+  } catch (error) {
+    console.error("kiosk_session_qr_failed", { sessionToken, error });
+    return res.status(error.statusCode || 500).json(errorEnvelope(error.code || "KIOSK_SESSION_QR_FAILED", error.message));
+  }
+});
+
+app.get("/api/web/v1/device/me", async (req, res) => {
+  const deviceToken = getDeviceTokenFromRequest(req);
+  if (!deviceToken) {
+    return res.status(401).json(errorEnvelope("DEVICE_TOKEN_REQUIRED", "device_token is required."));
+  }
+
+  try {
+    const device = await loadUserDeviceByToken(pool, deviceToken);
+    if (!device || device.status !== "ACTIVE") {
+      return res.status(404).json(errorEnvelope("DEVICE_NOT_REGISTERED", "Device is not registered."));
+    }
+
+    await touchUserDevice(pool, device.id);
+    return res.json({ success: true, data: { device_token: deviceToken, device: toUserDeviceResponse(device) }, error: null });
+  } catch (error) {
+    console.error("device_me_failed", { error });
+    return res.status(error.statusCode || 500).json(errorEnvelope(error.code || "DEVICE_ME_FAILED", error.message));
+  }
+});
+
+app.post("/api/web/v1/device/claim-voucher", async (req, res) => {
+  const incomingToken = getDeviceTokenFromRequest(req);
+  const deviceName = normalizeDeviceName(req.body?.device_name);
+  const projectId = normalizeProjectId(req.body?.project_id) || config.defaultProjectId;
+  const voucherCodes = Array.isArray(req.body?.voucher_codes)
+    ? req.body.voucher_codes
+    : normalizeOptional(req.body?.voucher_code)
+      ? [req.body.voucher_code]
+      : [];
+
+  try {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await ensureProject(client, projectId);
+      let deviceToken = incomingToken || createDeviceToken();
+      let device = await saveUserDevice(client, { deviceToken, projectId, deviceName, status: "ACTIVE" });
+
+      const claimedVouchers = [];
+      for (const voucherCodeInput of voucherCodes) {
+        const voucherCode = normalizeAutoVoucherCode(voucherCodeInput) || normalizeVoucherCode(voucherCodeInput);
+        if (!voucherCode) {
+          throw httpError(400, "INVALID_VOUCHER_CODE", "voucher_code is invalid.");
+        }
+
+        const voucher = await loadVoucherStatusByCode(client, projectId, voucherCode);
+        const voucherStatus = toVoucherStatusResponse(voucher, projectId);
+        if (!voucherStatus.exists) {
+          throw httpError(404, "VOUCHER_NOT_FOUND", "Voucher was not found.");
+        }
+        if (!voucherStatus.usable_now) {
+          throw httpError(409, voucherStatus.status === "USED" ? "VOUCHER_USED" : "VOUCHER_UNAVAILABLE", `Voucher is not usable: ${voucherStatus.status}.`);
+        }
+
+        const linkResult = await client.query(
+          `INSERT INTO voucher_device_links (
+              project_id,
+              device_id,
+              voucher_id,
+              voucher_code,
+              status,
+              claim_source,
+              claimed_at,
+              last_seen_at
+            )
+            VALUES ($1, $2, $3, $4, 'ACTIVE', $5, NOW(), NOW())
+            ON CONFLICT (project_id, voucher_id)
+            DO UPDATE SET
+              device_id = EXCLUDED.device_id,
+              voucher_code = EXCLUDED.voucher_code,
+              status = 'ACTIVE',
+              claim_source = COALESCE(EXCLUDED.claim_source, voucher_device_links.claim_source),
+              last_seen_at = NOW(),
+              updated_at = NOW()
+            RETURNING id, project_id, device_id, voucher_id, voucher_code, status, claim_source, claimed_at, last_seen_at, metadata, created_at, updated_at`,
+          [projectId, device.id, voucher.voucher_id || voucher.id, voucherCode, normalizeOptional(req.body?.claim_source) || "device_claim"]
+        );
+        claimedVouchers.push({
+          link_id: linkResult.rows[0].id,
+          voucher_code: voucherCode,
+          voucher_status: voucherStatus
+        });
+      }
+
+      device = await touchUserDevice(client, device.id) || device;
+      await client.query("COMMIT");
+      return res.status(incomingToken ? 200 : 201).json({
+        success: true,
+        data: {
+          device_token: deviceToken,
+          device: toUserDeviceResponse(device),
+          claimed_vouchers: claimedVouchers
+        },
+        error: null
+      });
+    } catch (error) {
+      try {
+        await client.query("ROLLBACK");
+      } catch {
+      }
+      throw error;
+    } finally {
+      client.release();
+    }
+  } catch (error) {
+    console.error("device_claim_failed", { error });
+    return res.status(error.statusCode || 500).json(errorEnvelope(error.code || "DEVICE_CLAIM_FAILED", error.message));
+  }
+});
+
+app.get("/api/web/v1/me/vouchers", async (req, res) => {
+  const deviceToken = getDeviceTokenFromRequest(req);
+  const projectId = normalizeProjectId(req.query?.project_id) || config.defaultProjectId;
+  if (!deviceToken) {
+    return res.status(401).json(errorEnvelope("DEVICE_TOKEN_REQUIRED", "device_token is required."));
+  }
+
+  try {
+    const device = await loadUserDeviceByToken(pool, deviceToken);
+    if (!device || device.status !== "ACTIVE") {
+      return res.status(404).json(errorEnvelope("DEVICE_NOT_REGISTERED", "Device is not registered."));
+    }
+
+    const links = await loadVoucherLinksForDevice(pool, projectId, device.id);
+    const vouchers = [];
+    for (const link of links) {
+      const voucher = await loadVoucherStatusByCode(pool, projectId, link.voucher_code);
+      vouchers.push({
+        link_id: link.id,
+        voucher_code: link.voucher_code,
+        voucher_status: toVoucherStatusResponse(voucher, projectId),
+        claimed_at: link.claimed_at,
+        last_seen_at: link.last_seen_at,
+        claim_source: link.claim_source,
+        status: link.status
+      });
+    }
+
+    await touchUserDevice(pool, device.id);
+    return res.json({
+      success: true,
+      data: {
+        device_token: deviceToken,
+        device: toUserDeviceResponse(device),
+        vouchers
+      },
+      error: null
+    });
+  } catch (error) {
+    console.error("me_vouchers_failed", { projectId, error });
+    return res.status(error.statusCode || 500).json(errorEnvelope(error.code || "ME_VOUCHERS_FAILED", error.message));
+  }
+});
+
+app.post("/api/web/v1/kiosk-sessions/:sessionToken/attach-voucher", async (req, res) => {
+  const sessionToken = normalizeVoucherScanSessionToken(req.params.sessionToken);
+  const voucherCode = normalizeAutoVoucherCode(req.body?.voucher_code) || normalizeVoucherCode(req.body?.voucher_code);
+  const deviceToken = getDeviceTokenFromRequest(req);
+  if (!sessionToken) {
+    return res.status(400).json(errorEnvelope("INVALID_SESSION_TOKEN", "sessionToken is invalid."));
+  }
+  if (!voucherCode) {
+    return res.status(400).json(errorEnvelope("INVALID_VOUCHER_CODE", "voucher_code is required."));
+  }
+  if (!deviceToken) {
+    return res.status(401).json(errorEnvelope("DEVICE_TOKEN_REQUIRED", "device_token is required."));
+  }
+
+  try {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const device = await loadUserDeviceByToken(client, deviceToken);
+      if (!device || device.status !== "ACTIVE") {
+        await client.query("ROLLBACK");
+        return res.status(404).json(errorEnvelope("DEVICE_NOT_REGISTERED", "Device is not registered."));
+      }
+
+      const session = await loadKioskSessionForWeb(client, sessionToken);
+      if (!session) {
+        await client.query("ROLLBACK");
+        return res.status(404).json(errorEnvelope("KIOSK_SESSION_NOT_FOUND", "Kiosk session was not found."));
+      }
+
+      if (session.project_id !== device.project_id) {
+        await client.query("ROLLBACK");
+        return res.status(409).json(errorEnvelope("KIOSK_SESSION_PROJECT_MISMATCH", "Kiosk session project does not match this device."));
+      }
+
+      if (session.status === "CONSUMED" || session.status === "REDEEMED") {
+        await client.query("ROLLBACK");
+        return res.status(409).json(errorEnvelope("KIOSK_SESSION_ALREADY_CLOSED", "Kiosk session has already been closed."));
+      }
+
+      const link = await loadVoucherDeviceLinkByVoucherCode(client, session.project_id, voucherCode);
+      if (!link || link.device_id !== device.id) {
+        await client.query("ROLLBACK");
+        return res.status(404).json(errorEnvelope("VOUCHER_NOT_LINKED", "Voucher is not linked to this device."));
+      }
+
+      const voucher = await loadVoucherStatusByCode(client, session.project_id, voucherCode);
+      const voucherStatus = toVoucherStatusResponse(voucher, session.project_id);
+      if (!voucherStatus.exists) {
+        await client.query("ROLLBACK");
+        return res.status(404).json(errorEnvelope("VOUCHER_NOT_FOUND", "Voucher was not found."));
+      }
+      if (!voucherStatus.usable_now) {
+        await client.query("ROLLBACK");
+        return res.status(409).json(errorEnvelope(voucherStatus.status === "USED" ? "VOUCHER_USED" : "VOUCHER_UNAVAILABLE", `Voucher is not usable: ${voucherStatus.status}.`));
+      }
+
+      const result = await client.query(
+        `UPDATE kiosk_sessions
+         SET status = 'ATTACHED',
+             mobile_device_id = $2,
+             voucher_link_id = $3,
+             voucher_code = $4,
+             voucher_status_json = $5,
+             attached_at = NOW(),
+             updated_at = NOW()
+         WHERE id = $1
+         RETURNING id, session_token, project_id, device_id, job_id, status, mobile_device_id, voucher_link_id, voucher_code, voucher_status_json, qr_payload, expires_at, attached_at, redeemed_at, cancelled_at, created_at, updated_at`,
+        [session.id, device.id, link.id, voucherCode, voucherStatus]
+      );
+      await client.query(
+        `UPDATE voucher_device_links
+         SET last_seen_at = NOW(),
+             updated_at = NOW()
+         WHERE id = $1`,
+        [link.id]
+      );
+      await recordKioskSessionEvent(client, session.id, "KIOSK_SESSION_VOUCHER_ATTACHED", "ATTACHED", { device_id: device.id, voucher_code: voucherCode });
+      await client.query("COMMIT");
+      return res.json({ success: true, data: toKioskSessionResponse(result.rows[0], req), error: null });
+    } catch (error) {
+      try {
+        await client.query("ROLLBACK");
+      } catch {
+      }
+      throw error;
+    } finally {
+      client.release();
+    }
+  } catch (error) {
+    console.error("kiosk_attach_voucher_failed", { sessionToken, error });
+    return res.status(error.statusCode || 500).json(errorEnvelope(error.code || "KIOSK_ATTACH_FAILED", error.message));
+  }
 });
 
 app.get("/api/admin/v1/projects", requireAdminAuth, async (req, res) => {
@@ -210,6 +662,7 @@ app.post("/api/admin/v1/vouchers/generate", requireAdminAuth, async (req, res) =
       codes.push({
         voucher_id: result.rows[0].id,
         code: voucherCode,
+        qr_png_url: codeMode === "AUTO" ? buildVoucherQrPngUrl(req, voucherCode) : null,
         ...toVoucherResponse(result.rows[0])
       });
     }
@@ -312,6 +765,225 @@ app.post("/api/kiosk/v1/checkout/voucher/validate", requireDeviceAuth, async (re
     return res.status(error.statusCode || 500).json(errorEnvelope(error.code || "VOUCHER_VALIDATE_FAILED", error.message));
   } finally {
     client.release();
+  }
+});
+
+app.post("/api/web/v1/vouchers/status", async (req, res) => {
+  const voucherCode = normalizeVoucherCode(req.body?.voucher_code);
+  const projectId = normalizeProjectId(req.body?.project_id) || config.defaultProjectId;
+  if (!voucherCode) {
+    return res.status(400).json(errorEnvelope("INVALID_VOUCHER_STATUS_REQUEST", "voucher_code is required."));
+  }
+
+  try {
+    const voucher = await loadVoucherStatusByCode(pool, projectId, voucherCode);
+    return res.json({
+      success: true,
+      data: toVoucherStatusResponse(voucher, projectId),
+      error: null
+    });
+  } catch (error) {
+    console.error("voucher_status_failed", { projectId, error });
+    return res.status(error.statusCode || 500).json(errorEnvelope(error.code || "VOUCHER_STATUS_FAILED", error.message));
+  }
+});
+
+app.get("/api/web/v1/vouchers/:voucherCode/qr.png", async (req, res) => {
+  const voucherCode = normalizeAutoVoucherCode(req.params.voucherCode);
+  if (!voucherCode) {
+    return res.status(400).json(errorEnvelope("INVALID_VOUCHER_QR_CODE", "voucherCode must match PB-XXXXXXXX."));
+  }
+
+  try {
+    const png = await QRCode.toBuffer(voucherCode, {
+      type: "png",
+      errorCorrectionLevel: "M",
+      margin: 1,
+      width: 320
+    });
+
+    res.setHeader("Content-Type", "image/png");
+    res.setHeader("Cache-Control", "public, max-age=300");
+    return res.send(png);
+  } catch (error) {
+    console.error("voucher_qr_generation_failed", { voucherCode, error });
+    return res.status(500).json(errorEnvelope("VOUCHER_QR_GENERATION_FAILED", error.message));
+  }
+});
+
+app.post("/api/kiosk/v1/voucher-scan-sessions", requireDeviceAuth, async (req, res) => {
+  const jobId = normalizeJobId(req.body?.job_id);
+  const deviceId = normalizeOptional(req.get("X-Device-Id")) || normalizeOptional(req.body?.device_id) || "booth-local";
+  if (!jobId) {
+    return res.status(400).json(errorEnvelope("INVALID_VOUCHER_SCAN_SESSION_REQUEST", "job_id is required."));
+  }
+
+  try {
+    const projectId = await resolveProjectIdForDevice(pool, deviceId);
+    const sessionToken = createVoucherScanSessionToken();
+    const expiresAt = new Date(Date.now() + (config.voucherScanSessionTtlSeconds * 1000));
+    const result = await pool.query(
+      `INSERT INTO voucher_scan_sessions (
+          session_token,
+          project_id,
+          device_id,
+          job_id,
+          status,
+          expires_at
+        )
+        VALUES ($1, $2, $3, $4, 'PENDING', $5)
+        RETURNING session_token, project_id, device_id, job_id, status, voucher_code, voucher_status_json, expires_at, created_at, updated_at`,
+      [sessionToken, projectId, deviceId, jobId, expiresAt]
+    );
+
+    return res.status(201).json({
+      success: true,
+      data: toVoucherScanSessionResponse(result.rows[0], req),
+      error: null
+    });
+  } catch (error) {
+    console.error("voucher_scan_session_create_failed", { jobId, deviceId, error });
+    return res.status(error.statusCode || 500).json(errorEnvelope(error.code || "VOUCHER_SCAN_SESSION_CREATE_FAILED", error.message));
+  }
+});
+
+app.get("/api/kiosk/v1/voucher-scan-sessions/:sessionToken", requireDeviceAuth, async (req, res) => {
+  const sessionToken = normalizeVoucherScanSessionToken(req.params.sessionToken);
+  const deviceId = normalizeOptional(req.get("X-Device-Id")) || "booth-local";
+  if (!sessionToken) {
+    return res.status(400).json(errorEnvelope("INVALID_VOUCHER_SCAN_SESSION", "session token is invalid."));
+  }
+
+  try {
+    const projectId = await resolveProjectIdForDevice(pool, deviceId);
+    const session = await loadVoucherScanSessionForKiosk(pool, projectId, deviceId, sessionToken);
+    if (!session) {
+      return res.status(404).json(errorEnvelope("VOUCHER_SCAN_SESSION_NOT_FOUND", "Voucher scan session was not found."));
+    }
+
+    return res.json({
+      success: true,
+      data: toVoucherScanSessionResponse(session, req),
+      error: null
+    });
+  } catch (error) {
+    console.error("voucher_scan_session_poll_failed", { sessionToken, deviceId, error });
+    return res.status(error.statusCode || 500).json(errorEnvelope(error.code || "VOUCHER_SCAN_SESSION_POLL_FAILED", error.message));
+  }
+});
+
+app.post("/api/kiosk/v1/voucher-scan-sessions/:sessionToken/ack", requireDeviceAuth, async (req, res) => {
+  const sessionToken = normalizeVoucherScanSessionToken(req.params.sessionToken);
+  const deviceId = normalizeOptional(req.get("X-Device-Id")) || normalizeOptional(req.body?.device_id) || "booth-local";
+  const ackStatus = normalizeVoucherScanAckStatus(req.body?.status);
+  if (!sessionToken || !ackStatus) {
+    return res.status(400).json(errorEnvelope("INVALID_VOUCHER_SCAN_ACK", "session token and status are required."));
+  }
+
+  try {
+    const projectId = await resolveProjectIdForDevice(pool, deviceId);
+    const result = await pool.query(
+      `UPDATE voucher_scan_sessions
+       SET status = $4,
+           voucher_code = CASE WHEN $4 = 'CONSUMED' THEN NULL ELSE voucher_code END,
+           updated_at = NOW()
+       WHERE session_token = $1
+         AND project_id = $2
+         AND device_id = $3
+       RETURNING session_token, project_id, device_id, job_id, status, voucher_code, voucher_status_json, expires_at, created_at, updated_at`,
+      [sessionToken, projectId, deviceId, ackStatus]
+    );
+    if (result.rowCount === 0) {
+      return res.status(404).json(errorEnvelope("VOUCHER_SCAN_SESSION_NOT_FOUND", "Voucher scan session was not found."));
+    }
+
+    return res.json({
+      success: true,
+      data: toVoucherScanSessionResponse(result.rows[0], req),
+      error: null
+    });
+  } catch (error) {
+    console.error("voucher_scan_session_ack_failed", { sessionToken, deviceId, error });
+    return res.status(error.statusCode || 500).json(errorEnvelope(error.code || "VOUCHER_SCAN_SESSION_ACK_FAILED", error.message));
+  }
+});
+
+app.post("/api/web/v1/voucher-scan-sessions/:sessionToken/submit", async (req, res) => {
+  const sessionToken = normalizeVoucherScanSessionToken(req.params.sessionToken);
+  const voucherCode = normalizeVoucherCode(req.body?.voucher_code);
+  if (!sessionToken || !voucherCode) {
+    return res.status(400).json(errorEnvelope("INVALID_VOUCHER_SCAN_SUBMIT", "session token and voucher_code are required."));
+  }
+
+  try {
+    const session = await loadVoucherScanSessionForSubmit(pool, sessionToken);
+    if (!session) {
+      return res.status(404).json(errorEnvelope("VOUCHER_SCAN_SESSION_NOT_FOUND", "Voucher scan session was not found or has expired."));
+    }
+
+    const requestedProjectId = normalizeProjectId(req.body?.project_id);
+    if (requestedProjectId && requestedProjectId !== session.project_id) {
+      return res.status(400).json(errorEnvelope("VOUCHER_PROJECT_MISMATCH", "Voucher project does not match this kiosk session."));
+    }
+
+    const voucher = await loadVoucherStatusByCode(pool, session.project_id, voucherCode);
+    const voucherStatus = toVoucherStatusResponse(voucher, session.project_id);
+    const nextStatus = voucherStatus.usable_now ? "SUBMITTED_AVAILABLE" : "SUBMITTED_REJECTED";
+    const result = await pool.query(
+      `UPDATE voucher_scan_sessions
+       SET status = $2,
+           voucher_code = $3,
+           voucher_status_json = $4::jsonb,
+           updated_at = NOW()
+       WHERE session_token = $1
+         AND expires_at > NOW()
+         AND status IN ('PENDING', 'SUBMITTED_AVAILABLE', 'SUBMITTED_REJECTED')
+       RETURNING session_token, project_id, device_id, job_id, status, voucher_code, voucher_status_json, expires_at, created_at, updated_at`,
+      [sessionToken, nextStatus, voucherCode, JSON.stringify(voucherStatus)]
+    );
+    if (result.rowCount === 0) {
+      return res.status(409).json(errorEnvelope("VOUCHER_SCAN_SESSION_CLOSED", "Voucher scan session is no longer accepting submissions."));
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        ...toVoucherScanSessionResponse(result.rows[0], req),
+        voucher_status: voucherStatus
+      },
+      error: null
+    });
+  } catch (error) {
+    console.error("voucher_scan_session_submit_failed", { sessionToken, error });
+    return res.status(error.statusCode || 500).json(errorEnvelope(error.code || "VOUCHER_SCAN_SESSION_SUBMIT_FAILED", error.message));
+  }
+});
+
+app.get("/api/web/v1/voucher-scan-sessions/:sessionToken/qr.png", async (req, res) => {
+  const sessionToken = normalizeVoucherScanSessionToken(req.params.sessionToken);
+  if (!sessionToken) {
+    return res.status(400).json(errorEnvelope("INVALID_VOUCHER_SCAN_SESSION", "session token is invalid."));
+  }
+
+  try {
+    const session = await loadVoucherScanSessionByToken(pool, sessionToken);
+    if (!session || new Date(session.expires_at).getTime() <= Date.now()) {
+      return res.status(404).json(errorEnvelope("VOUCHER_SCAN_SESSION_NOT_FOUND", "Voucher scan session was not found or has expired."));
+    }
+
+    const png = await QRCode.toBuffer(buildVoucherScanUrl(req, sessionToken), {
+      type: "png",
+      errorCorrectionLevel: "M",
+      margin: 1,
+      width: 420
+    });
+
+    res.setHeader("Content-Type", "image/png");
+    res.setHeader("Cache-Control", "no-store");
+    return res.send(png);
+  } catch (error) {
+    console.error("voucher_scan_session_qr_failed", { sessionToken, error });
+    return res.status(500).json(errorEnvelope("VOUCHER_SCAN_SESSION_QR_FAILED", error.message));
   }
 });
 
@@ -1135,6 +1807,34 @@ app.get("/v1/jobs/:jobId", async (req, res) => {
   }
 });
 
+app.get("/v1/assets/composed/featured", async (req, res) => {
+  try {
+    const selected = await selectFeaturedComposedAsset();
+    if (!selected) {
+      return res.status(404).json(errorEnvelope("NO_COMPOSED_ASSETS", "No composed assets were found."));
+    }
+
+    const assetUrl = `/files/${encodeURIPath(selected.remote_key)}`;
+    if (String(req.query?.format || "").toLowerCase() === "json") {
+      return res.json({
+        success: true,
+        data: {
+          asset_type: selected.asset_type,
+          selection_mode: selected.selection_mode,
+          url: absolutePublicUrl(req, assetUrl),
+          created_at: selected.created_at
+        },
+        error: null
+      });
+    }
+
+    return res.redirect(302, assetUrl);
+  } catch (error) {
+    console.error("featured_composed_asset_failed", { error });
+    return res.status(error.statusCode || 500).json(errorEnvelope(error.code || "FEATURED_COMPOSED_ASSET_FAILED", error.message));
+  }
+});
+
 app.post("/v1/analytics/events", requireDeviceAuth, async (req, res) => {
   const eventName = normalizeEventName(req.body?.event_name);
   if (!eventName) {
@@ -1736,6 +2436,21 @@ async function initialize() {
     )`);
   await pool.query("CREATE INDEX IF NOT EXISTS idx_project_devices_project_id ON project_devices(project_id)");
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS user_devices (
+      id BIGSERIAL PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id),
+      device_token_hash TEXT NOT NULL UNIQUE,
+      device_name TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'ACTIVE',
+      first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  await pool.query("CREATE INDEX IF NOT EXISTS idx_user_devices_project_id ON user_devices(project_id)");
+  await pool.query("CREATE INDEX IF NOT EXISTS idx_user_devices_status ON user_devices(status)");
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS voucher_campaigns (
       id BIGSERIAL PRIMARY KEY,
       project_id TEXT NOT NULL REFERENCES projects(id),
@@ -1798,6 +2513,80 @@ async function initialize() {
   await pool.query("CREATE INDEX IF NOT EXISTS idx_voucher_redemptions_job_id ON voucher_redemptions(job_id)");
   await pool.query("CREATE INDEX IF NOT EXISTS idx_voucher_redemptions_voucher_id ON voucher_redemptions(voucher_id)");
   await pool.query("CREATE INDEX IF NOT EXISTS idx_voucher_redemptions_status ON voucher_redemptions(status)");
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS voucher_device_links (
+      id BIGSERIAL PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id),
+      device_id BIGINT NOT NULL REFERENCES user_devices(id) ON DELETE CASCADE,
+      voucher_id BIGINT NOT NULL,
+      voucher_code TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'ACTIVE',
+      claim_source TEXT,
+      claimed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      FOREIGN KEY (project_id, voucher_id) REFERENCES vouchers(project_id, id)
+    )`);
+  await pool.query("CREATE UNIQUE INDEX IF NOT EXISTS idx_voucher_device_links_project_voucher ON voucher_device_links(project_id, voucher_id)");
+  await pool.query("CREATE UNIQUE INDEX IF NOT EXISTS idx_voucher_device_links_project_code ON voucher_device_links(project_id, voucher_code)");
+  await pool.query("CREATE INDEX IF NOT EXISTS idx_voucher_device_links_device_id ON voucher_device_links(device_id)");
+  await pool.query("CREATE INDEX IF NOT EXISTS idx_voucher_device_links_status ON voucher_device_links(status)");
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS kiosk_sessions (
+      id BIGSERIAL PRIMARY KEY,
+      session_token TEXT NOT NULL UNIQUE,
+      project_id TEXT NOT NULL REFERENCES projects(id),
+      device_id TEXT NOT NULL,
+      job_id TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'PENDING',
+      mobile_device_id BIGINT REFERENCES user_devices(id) ON DELETE SET NULL,
+      voucher_link_id BIGINT REFERENCES voucher_device_links(id) ON DELETE SET NULL,
+      voucher_code TEXT,
+      voucher_status_json JSONB,
+      qr_payload TEXT,
+      expires_at TIMESTAMPTZ NOT NULL,
+      attached_at TIMESTAMPTZ,
+      redeemed_at TIMESTAMPTZ,
+      cancelled_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  await pool.query("CREATE INDEX IF NOT EXISTS idx_kiosk_sessions_token ON kiosk_sessions(session_token)");
+  await pool.query("CREATE INDEX IF NOT EXISTS idx_kiosk_sessions_project_device ON kiosk_sessions(project_id, device_id)");
+  await pool.query("CREATE INDEX IF NOT EXISTS idx_kiosk_sessions_status ON kiosk_sessions(status)");
+  await pool.query("CREATE INDEX IF NOT EXISTS idx_kiosk_sessions_expires_at ON kiosk_sessions(expires_at)");
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS kiosk_session_events (
+      id BIGSERIAL PRIMARY KEY,
+      kiosk_session_id BIGINT NOT NULL REFERENCES kiosk_sessions(id) ON DELETE CASCADE,
+      event_name TEXT NOT NULL,
+      event_status TEXT,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  await pool.query("CREATE INDEX IF NOT EXISTS idx_kiosk_session_events_session_id ON kiosk_session_events(kiosk_session_id)");
+  await pool.query("CREATE INDEX IF NOT EXISTS idx_kiosk_session_events_event_name ON kiosk_session_events(event_name)");
+  await pool.query("CREATE INDEX IF NOT EXISTS idx_kiosk_session_events_created_at ON kiosk_session_events(created_at DESC)");
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS voucher_scan_sessions (
+      id BIGSERIAL PRIMARY KEY,
+      session_token TEXT NOT NULL UNIQUE,
+      project_id TEXT NOT NULL REFERENCES projects(id),
+      device_id TEXT NOT NULL,
+      job_id TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'PENDING',
+      voucher_code TEXT,
+      voucher_status_json JSONB,
+      expires_at TIMESTAMPTZ NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  await pool.query("CREATE INDEX IF NOT EXISTS idx_voucher_scan_sessions_token ON voucher_scan_sessions(session_token)");
+  await pool.query("CREATE INDEX IF NOT EXISTS idx_voucher_scan_sessions_project_device ON voucher_scan_sessions(project_id, device_id)");
+  await pool.query("CREATE INDEX IF NOT EXISTS idx_voucher_scan_sessions_status ON voucher_scan_sessions(status)");
+  await pool.query("CREATE INDEX IF NOT EXISTS idx_voucher_scan_sessions_expires_at ON voucher_scan_sessions(expires_at)");
   await pool.query(`
     CREATE TABLE IF NOT EXISTS payments (
       id BIGSERIAL PRIMARY KEY,
@@ -1957,6 +2746,52 @@ function absoluteUploadPath(remoteKey) {
   }
 
   return absolutePath;
+}
+
+async function selectFeaturedComposedAsset() {
+  const recentResult = await pool.query(
+    `SELECT asset_type, remote_key, content_type, original_file_name, created_at
+     FROM booth_assets
+     WHERE asset_type = 'composed'
+       AND created_at >= NOW() - ($1::int * INTERVAL '1 second')
+     ORDER BY created_at DESC`,
+    [config.featuredComposedRecencySeconds]
+  );
+  const recentAsset = findFirstExistingAsset(recentResult.rows);
+  if (recentAsset) {
+    return { ...recentAsset, selection_mode: "latest" };
+  }
+
+  const randomResult = await pool.query(
+    `SELECT asset_type, remote_key, content_type, original_file_name, created_at
+     FROM booth_assets
+     WHERE asset_type = 'composed'
+     ORDER BY RANDOM()`
+  );
+  const randomAsset = findFirstExistingAsset(randomResult.rows);
+  if (randomAsset) {
+    return { ...randomAsset, selection_mode: "random" };
+  }
+
+  return null;
+}
+
+function findFirstExistingAsset(assets) {
+  return assets.find((asset) => uploadFileExists(asset?.remote_key)) || null;
+}
+
+function uploadFileExists(remoteKey) {
+  const absolutePath = path.resolve(config.uploadsRoot, remoteKey || "");
+  return absolutePath.startsWith(`${config.uploadsRoot}${path.sep}`) && fs.existsSync(absolutePath);
+}
+
+function absolutePublicUrl(req, routePath) {
+  if (/^https?:\/\//i.test(routePath)) {
+    return routePath;
+  }
+
+  const origin = `${req.protocol}://${req.get("host")}`;
+  return `${origin}${routePath.startsWith("/") ? routePath : `/${routePath}`}`;
 }
 
 function generatedDirectory(job) {
@@ -2583,6 +3418,86 @@ async function loadUsableVoucher(client, projectId, voucherCode) {
   return voucher;
 }
 
+async function loadVoucherStatusByCode(queryable, projectId, voucherCode) {
+  const result = await queryable.query(
+    `SELECT v.id AS voucher_id,
+            v.project_id,
+            p.code AS project_code,
+            v.code_masked,
+            v.benefit_type,
+            v.benefit_value_minor,
+            v.benefit_percent,
+            v.max_uses,
+            v.used_count,
+            v.status,
+            v.valid_from,
+            v.valid_until
+     FROM vouchers v
+     JOIN projects p ON p.id = v.project_id
+     WHERE v.project_id = $1
+       AND v.code_hash = $2
+     LIMIT 1`,
+    [projectId, hashVoucherCode(projectId, voucherCode)]
+  );
+
+  return result.rowCount > 0 ? result.rows[0] : null;
+}
+
+function toVoucherStatusResponse(voucher, projectId) {
+  if (!voucher) {
+    return {
+      exists: false,
+      project_id: projectId,
+      status: "NOT_FOUND",
+      usable_now: false,
+      has_been_used: false,
+      quota_exhausted: false,
+      remaining_uses: 0
+    };
+  }
+
+  const now = Date.now();
+  const usedCount = Number(voucher.used_count || 0);
+  const maxUses = Number(voucher.max_uses || 0);
+  const remainingUses = Math.max(0, maxUses - usedCount);
+  const validFromMs = voucher.valid_from ? new Date(voucher.valid_from).getTime() : null;
+  const validUntilMs = voucher.valid_until ? new Date(voucher.valid_until).getTime() : null;
+  const notStarted = validFromMs !== null && validFromMs > now;
+  const expired = validUntilMs !== null && validUntilMs < now;
+  const inactive = voucher.status !== "ACTIVE";
+  const quotaExhausted = remainingUses < 1;
+  let status = "AVAILABLE";
+
+  if (inactive) {
+    status = "INACTIVE";
+  } else if (notStarted) {
+    status = "NOT_STARTED";
+  } else if (expired) {
+    status = "EXPIRED";
+  } else if (quotaExhausted) {
+    status = "USED";
+  }
+
+  return {
+    exists: true,
+    project_id: voucher.project_id,
+    project_code: voucher.project_code,
+    code_masked: voucher.code_masked,
+    status,
+    usable_now: status === "AVAILABLE",
+    has_been_used: usedCount > 0,
+    quota_exhausted: quotaExhausted,
+    used_count: usedCount,
+    max_uses: maxUses,
+    remaining_uses: remainingUses,
+    benefit_type: voucher.benefit_type,
+    benefit_value_minor: Number(voucher.benefit_value_minor || 0),
+    benefit_percent: Number(voucher.benefit_percent || 0),
+    valid_from: voucher.valid_from,
+    valid_until: voucher.valid_until
+  };
+}
+
 async function lockUsableVoucher(client, projectId, voucherId) {
   const result = await client.query(
     `SELECT *
@@ -2715,6 +3630,66 @@ function normalizeVoucherCode(value) {
   return normalized.toUpperCase().replace(/\s+/g, "").replace(/[^A-Z0-9._-]/g, "-").slice(0, 80);
 }
 
+function normalizeAutoVoucherCode(value) {
+  const normalized = normalizeVoucherCode(value);
+  return /^PB-[0-9A-F]{8}$/.test(normalized || "") ? normalized : null;
+}
+
+function normalizeVoucherScanSessionToken(value) {
+  const normalized = normalizeOptional(value);
+  if (!normalized) {
+    return null;
+  }
+
+  const safe = normalized.replace(/[^A-Za-z0-9_-]/g, "");
+  return safe.length >= 16 && safe.length <= 96 ? safe : null;
+}
+
+function normalizeVoucherScanAckStatus(value) {
+  const normalized = normalizeOptional(value)?.toUpperCase();
+  return normalized === "CONSUMED" || normalized === "CANCELLED" ? normalized : null;
+}
+
+function normalizeRoutePath(value) {
+  const normalized = normalizeOptional(value) || "/voucher-scan";
+  return normalized.startsWith("/") ? normalized : `/${normalized}`;
+}
+
+function createVoucherScanSessionToken() {
+  return crypto.randomBytes(24).toString("base64url");
+}
+
+function createKioskSessionToken() {
+  return crypto.randomBytes(24).toString("base64url");
+}
+
+function buildVoucherScanUrl(req, sessionToken) {
+  const pathPrefix = config.voucherScanPath.startsWith("/") ? config.voucherScanPath : `/${config.voucherScanPath}`;
+  return `${config.voucherScanBaseUrl}${pathPrefix}?session=${encodeURIComponent(sessionToken)}`;
+}
+
+function buildVoucherScanSessionQrPngUrl(req, sessionToken) {
+  return `${resolveOpenApiServerUrl(req)}/api/web/v1/voucher-scan-sessions/${encodeURIComponent(sessionToken)}/qr.png`;
+}
+
+function buildKioskSessionUrl(req, sessionToken) {
+  const pathPrefix = config.voucherLinkPath.startsWith("/") ? config.voucherLinkPath : `/${config.voucherLinkPath}`;
+  return `${config.voucherLinkBaseUrl}${pathPrefix}?session=${encodeURIComponent(sessionToken)}`;
+}
+
+function buildKioskSessionQrPngUrl(req, sessionToken) {
+  return `${resolveOpenApiServerUrl(req)}/api/web/v1/kiosk-sessions/${encodeURIComponent(sessionToken)}/qr.png`;
+}
+
+function buildVoucherQrPngUrl(req, voucherCode) {
+  const normalized = normalizeAutoVoucherCode(voucherCode);
+  if (!normalized) {
+    return null;
+  }
+
+  return `${resolveOpenApiServerUrl(req)}/api/web/v1/vouchers/${encodeURIComponent(normalized)}/qr.png`;
+}
+
 function hashVoucherCode(projectId, voucherCode) {
   return crypto
     .createHash("sha256")
@@ -2729,6 +3704,306 @@ function maskVoucherCode(voucherCode) {
   }
 
   return `${normalized.slice(0, 4)}...${normalized.slice(-4)}`;
+}
+
+function normalizeDeviceToken(value) {
+  const normalized = normalizeOptional(value);
+  if (!normalized) {
+    return null;
+  }
+
+  const safe = normalized.replace(/[^A-Za-z0-9_-]/g, "");
+  return safe.length >= 16 && safe.length <= 128 ? safe : null;
+}
+
+function extractBearerToken(value) {
+  const normalized = normalizeOptional(value);
+  if (!normalized) {
+    return null;
+  }
+
+  const match = normalized.match(/^Bearer\s+(.+)$/i);
+  return match ? normalizeDeviceToken(match[1]) : null;
+}
+
+function getDeviceTokenFromRequest(req) {
+  return extractBearerToken(req.get("Authorization")) || normalizeDeviceToken(req.body?.device_token) || normalizeDeviceToken(req.query?.device_token);
+}
+
+function hashDeviceToken(deviceToken) {
+  const normalized = normalizeDeviceToken(deviceToken);
+  if (!normalized) {
+    return null;
+  }
+
+  return crypto.createHash("sha256").update(normalized).digest("hex");
+}
+
+function createDeviceToken() {
+  return crypto.randomBytes(24).toString("base64url");
+}
+
+function normalizeDeviceName(value) {
+  const normalized = normalizeOptional(value) || "PHONE";
+  return normalized.slice(0, 80);
+}
+
+function normalizeKioskSessionStatus(value) {
+  const normalized = normalizeOptional(value)?.toUpperCase();
+  const allowed = new Set(["PENDING", "ATTACHED", "REDEEMED", "EXPIRED", "CANCELLED", "CONSUMED"]);
+  return allowed.has(normalized) ? normalized : null;
+}
+
+function normalizeUserDeviceStatus(value) {
+  const normalized = normalizeOptional(value)?.toUpperCase();
+  return normalized === "ACTIVE" || normalized === "DISABLED" ? normalized : null;
+}
+
+function normalizeVoucherDeviceLinkStatus(value) {
+  const normalized = normalizeOptional(value)?.toUpperCase();
+  return normalized === "ACTIVE" || normalized === "REVOKED" ? normalized : null;
+}
+
+async function loadVoucherScanSessionByToken(queryable, sessionToken) {
+  const result = await queryable.query(
+    `SELECT session_token, project_id, device_id, job_id, status, voucher_code, voucher_status_json, expires_at, created_at, updated_at
+     FROM voucher_scan_sessions
+     WHERE session_token = $1
+     LIMIT 1`,
+    [sessionToken]
+  );
+  return result.rows[0] || null;
+}
+
+async function loadVoucherScanSessionForSubmit(queryable, sessionToken) {
+  await expireVoucherScanSession(queryable, sessionToken);
+  const result = await queryable.query(
+    `SELECT session_token, project_id, device_id, job_id, status, voucher_code, voucher_status_json, expires_at, created_at, updated_at
+     FROM voucher_scan_sessions
+     WHERE session_token = $1
+       AND expires_at > NOW()
+       AND status IN ('PENDING', 'SUBMITTED_AVAILABLE', 'SUBMITTED_REJECTED')
+     LIMIT 1`,
+    [sessionToken]
+  );
+  return result.rows[0] || null;
+}
+
+async function loadVoucherScanSessionForKiosk(queryable, projectId, deviceId, sessionToken) {
+  await expireVoucherScanSession(queryable, sessionToken);
+  const result = await queryable.query(
+    `SELECT session_token, project_id, device_id, job_id, status, voucher_code, voucher_status_json, expires_at, created_at, updated_at
+     FROM voucher_scan_sessions
+     WHERE session_token = $1
+       AND project_id = $2
+       AND device_id = $3
+     LIMIT 1`,
+    [sessionToken, projectId, deviceId]
+  );
+  return result.rows[0] || null;
+}
+
+async function expireVoucherScanSession(queryable, sessionToken) {
+  await queryable.query(
+    `UPDATE voucher_scan_sessions
+     SET status = 'EXPIRED',
+         updated_at = NOW()
+     WHERE session_token = $1
+       AND expires_at <= NOW()
+      AND status IN ('PENDING', 'SUBMITTED_AVAILABLE', 'SUBMITTED_REJECTED')`,
+    [sessionToken]
+  );
+}
+
+async function loadUserDeviceByToken(queryable, deviceToken) {
+  const tokenHash = hashDeviceToken(deviceToken);
+  if (!tokenHash) {
+    return null;
+  }
+
+  const result = await queryable.query(
+    `SELECT id, project_id, device_token_hash, device_name, status, first_seen_at, last_seen_at, metadata, created_at, updated_at
+     FROM user_devices
+     WHERE device_token_hash = $1
+     LIMIT 1`,
+    [tokenHash]
+  );
+  return result.rows[0] || null;
+}
+
+async function loadUserDeviceById(queryable, deviceId) {
+  const normalizedDeviceId = Number.parseInt(deviceId, 10);
+  if (!Number.isFinite(normalizedDeviceId) || normalizedDeviceId < 1) {
+    return null;
+  }
+
+  const result = await queryable.query(
+    `SELECT id, project_id, device_token_hash, device_name, status, first_seen_at, last_seen_at, metadata, created_at, updated_at
+     FROM user_devices
+     WHERE id = $1
+     LIMIT 1`,
+    [normalizedDeviceId]
+  );
+  return result.rows[0] || null;
+}
+
+async function saveUserDevice(queryable, input) {
+  const deviceToken = normalizeDeviceToken(input.deviceToken);
+  const tokenHash = hashDeviceToken(deviceToken);
+  if (!deviceToken || !tokenHash) {
+    throw httpError(400, "INVALID_DEVICE_TOKEN", "device token is invalid.");
+  }
+
+  const projectId = normalizeProjectId(input.projectId) || config.defaultProjectId;
+  const deviceName = normalizeDeviceName(input.deviceName);
+  const status = normalizeUserDeviceStatus(input.status) || "ACTIVE";
+  const result = await queryable.query(
+    `INSERT INTO user_devices (
+        project_id,
+        device_token_hash,
+        device_name,
+        status,
+        metadata,
+        first_seen_at,
+        last_seen_at
+      )
+      VALUES ($1, $2, $3, $4, COALESCE($5, '{}'::jsonb), NOW(), NOW())
+      ON CONFLICT (device_token_hash)
+      DO UPDATE SET
+        project_id = EXCLUDED.project_id,
+        device_name = EXCLUDED.device_name,
+        status = COALESCE(EXCLUDED.status, user_devices.status),
+        metadata = COALESCE(EXCLUDED.metadata, user_devices.metadata),
+        last_seen_at = NOW(),
+        updated_at = NOW()
+      RETURNING id, project_id, device_token_hash, device_name, status, first_seen_at, last_seen_at, metadata, created_at, updated_at`,
+    [
+      projectId,
+      tokenHash,
+      deviceName,
+      status,
+      input.metadata ? input.metadata : null
+    ]
+  );
+  return result.rows[0] || null;
+}
+
+async function touchUserDevice(queryable, deviceId) {
+  const normalizedDeviceId = Number.parseInt(deviceId, 10);
+  if (!Number.isFinite(normalizedDeviceId) || normalizedDeviceId < 1) {
+    return null;
+  }
+
+  const result = await queryable.query(
+    `UPDATE user_devices
+     SET last_seen_at = NOW(),
+         updated_at = NOW()
+     WHERE id = $1
+     RETURNING id, project_id, device_token_hash, device_name, status, first_seen_at, last_seen_at, metadata, created_at, updated_at`,
+    [normalizedDeviceId]
+  );
+  return result.rows[0] || null;
+}
+
+async function loadVoucherDeviceLinkByVoucherCode(queryable, projectId, voucherCode) {
+  const normalizedVoucherCode = normalizeVoucherCode(voucherCode);
+  if (!normalizedVoucherCode) {
+    return null;
+  }
+
+  const result = await queryable.query(
+    `SELECT l.id, l.project_id, l.device_id, l.voucher_id, l.voucher_code, l.status, l.claim_source, l.claimed_at, l.last_seen_at, l.metadata, l.created_at, l.updated_at,
+            u.device_name, u.device_token_hash
+     FROM voucher_device_links l
+     JOIN user_devices u ON u.id = l.device_id
+     WHERE l.project_id = $1
+       AND l.voucher_code = $2
+     LIMIT 1`,
+    [projectId, normalizedVoucherCode]
+  );
+  return result.rows[0] || null;
+}
+
+async function loadVoucherLinksForDevice(queryable, projectId, deviceId) {
+  const result = await queryable.query(
+    `SELECT l.id, l.project_id, l.device_id, l.voucher_id, l.voucher_code, l.status, l.claim_source, l.claimed_at, l.last_seen_at, l.metadata, l.created_at, l.updated_at,
+            u.device_name
+     FROM voucher_device_links l
+     JOIN user_devices u ON u.id = l.device_id
+     WHERE l.project_id = $1
+       AND l.device_id = $2
+       AND l.status = 'ACTIVE'
+     ORDER BY l.last_seen_at DESC, l.created_at DESC, l.id DESC`,
+    [projectId, deviceId]
+  );
+  return result.rows;
+}
+
+async function loadKioskSessionByToken(queryable, sessionToken) {
+  const result = await queryable.query(
+    `SELECT ks.id, ks.session_token, ks.project_id, ks.device_id, ks.job_id, ks.status, ks.mobile_device_id,
+            ks.voucher_link_id, ks.voucher_code, ks.voucher_status_json, ks.qr_payload, ks.expires_at,
+            ks.attached_at, ks.redeemed_at, ks.cancelled_at, ks.created_at, ks.updated_at,
+            ud.device_name AS mobile_device_name
+     FROM kiosk_sessions ks
+     LEFT JOIN user_devices ud ON ud.id = ks.mobile_device_id
+     WHERE ks.session_token = $1
+     LIMIT 1`,
+    [sessionToken]
+  );
+  return result.rows[0] || null;
+}
+
+async function loadKioskSessionForKiosk(queryable, projectId, deviceId, sessionToken) {
+  await expireKioskSession(queryable, sessionToken);
+  const result = await queryable.query(
+    `SELECT ks.id, ks.session_token, ks.project_id, ks.device_id, ks.job_id, ks.status, ks.mobile_device_id,
+            ks.voucher_link_id, ks.voucher_code, ks.voucher_status_json, ks.qr_payload, ks.expires_at,
+            ks.attached_at, ks.redeemed_at, ks.cancelled_at, ks.created_at, ks.updated_at,
+            ud.device_name AS mobile_device_name
+     FROM kiosk_sessions ks
+     LEFT JOIN user_devices ud ON ud.id = ks.mobile_device_id
+     WHERE ks.session_token = $1
+       AND ks.project_id = $2
+       AND ks.device_id = $3
+     LIMIT 1`,
+    [sessionToken, projectId, deviceId]
+  );
+  return result.rows[0] || null;
+}
+
+async function loadKioskSessionForWeb(queryable, sessionToken) {
+  await expireKioskSession(queryable, sessionToken);
+  return loadKioskSessionByToken(queryable, sessionToken);
+}
+
+async function expireKioskSession(queryable, sessionToken) {
+  await queryable.query(
+    `UPDATE kiosk_sessions
+     SET status = 'EXPIRED',
+         updated_at = NOW()
+     WHERE session_token = $1
+       AND expires_at <= NOW()
+       AND status IN ('PENDING', 'ATTACHED')`,
+    [sessionToken]
+  );
+}
+
+async function recordKioskSessionEvent(queryable, kioskSessionId, eventName, eventStatus, metadata = {}) {
+  if (!kioskSessionId) {
+    return;
+  }
+
+  await queryable.query(
+    `INSERT INTO kiosk_session_events (
+        kiosk_session_id,
+        event_name,
+        event_status,
+        metadata
+      )
+      VALUES ($1, $2, $3, COALESCE($4, '{}'::jsonb))`,
+    [kioskSessionId, eventName, eventStatus || null, metadata && Object.keys(metadata).length ? metadata : null]
+  );
 }
 
 function normalizeVoucherBenefitType(value) {
@@ -2811,6 +4086,1703 @@ function toRedemptionAdminResponse(row) {
     released_at: row.released_at,
     created_at: row.created_at
   };
+}
+
+function toVoucherScanSessionResponse(row, req) {
+  if (!row) {
+    return null;
+  }
+
+  return {
+    session_token: row.session_token,
+    project_id: row.project_id,
+    device_id: row.device_id,
+    job_id: row.job_id,
+    status: row.status,
+    voucher_code: row.voucher_code || null,
+    voucher_status: row.voucher_status_json || null,
+    scan_url: buildVoucherScanUrl(req, row.session_token),
+    qr_png_url: buildVoucherScanSessionQrPngUrl(req, row.session_token),
+    expires_at: row.expires_at,
+    created_at: row.created_at,
+    updated_at: row.updated_at
+  };
+}
+
+function toUserDeviceResponse(row) {
+  if (!row) {
+    return null;
+  }
+
+  return {
+    device_id: row.id,
+    project_id: row.project_id,
+    device_name: row.device_name,
+    status: row.status,
+    first_seen_at: row.first_seen_at,
+    last_seen_at: row.last_seen_at,
+    created_at: row.created_at,
+    updated_at: row.updated_at
+  };
+}
+
+function toKioskSessionResponse(row, req) {
+  if (!row) {
+    return null;
+  }
+
+  const status = row.status || "PENDING";
+  const voucherStatus = row.voucher_status_json || null;
+  return {
+    session_token: row.session_token,
+    project_id: row.project_id,
+    device_id: row.device_id,
+    job_id: row.job_id,
+    status,
+    voucher_attached: Boolean(row.voucher_code) || status === "ATTACHED" || status === "REDEEMED",
+    mobile_device_id: row.mobile_device_id || null,
+    mobile_device_name: row.mobile_device_name || null,
+    voucher_link_id: row.voucher_link_id || null,
+    voucher_code: row.voucher_code || null,
+    voucher_status: voucherStatus,
+    scan_url: buildKioskSessionUrl(req, row.session_token),
+    qr_png_url: buildKioskSessionQrPngUrl(req, row.session_token),
+    expires_at: row.expires_at,
+    attached_at: row.attached_at,
+    redeemed_at: row.redeemed_at,
+    cancelled_at: row.cancelled_at,
+    created_at: row.created_at,
+    updated_at: row.updated_at
+  };
+}
+
+function buildOpenApiSpec(req) {
+  const serverUrl = resolveOpenApiServerUrl(req);
+  return {
+    openapi: "3.0.3",
+    info: {
+      title: "Photo Booth Backend API",
+      version: "0.3.0",
+      description: "Admin voucher generation and kiosk voucher checkout APIs."
+    },
+    servers: [
+      {
+        url: serverUrl,
+        description: "Current backend"
+      }
+    ],
+    tags: [
+      { name: "Admin Vouchers" },
+      { name: "Admin Projects" },
+      { name: "Web Vouchers" },
+      { name: "Kiosk Voucher Scan" },
+      { name: "Kiosk Checkout" }
+    ],
+    components: {
+      securitySchemes: {
+        AdminBearerAuth: {
+          type: "http",
+          scheme: "bearer",
+          bearerFormat: "admin token",
+          description: "Use ADMIN_BEARER_TOKEN."
+        },
+        DeviceBearerAuth: {
+          type: "http",
+          scheme: "bearer",
+          bearerFormat: "device token",
+          description: "Use DEVICE_BEARER_TOKEN for kiosk/device endpoints when configured."
+        }
+      },
+      schemas: {
+        ErrorEnvelope: {
+          type: "object",
+          properties: {
+            success: { type: "boolean", example: false },
+            data: { nullable: true, example: null },
+            error: {
+              type: "object",
+              properties: {
+                code: { type: "string", example: "VOUCHER_CODE_EXISTS" },
+                message: { type: "string", example: "duplicate key value violates unique constraint" }
+              }
+            }
+          }
+        },
+        VoucherGenerateRequest: {
+          type: "object",
+          required: ["project_id", "benefit_type"],
+          properties: {
+            project_id: {
+              type: "string",
+              example: "prj_world_tour",
+              description: "Project this voucher belongs to. Voucher cannot be redeemed across projects."
+            },
+            campaign_name: {
+              type: "string",
+              example: "World Tour VIP June"
+            },
+            purpose: {
+              type: "string",
+              example: "Sponsor guest"
+            },
+            code_mode: {
+              type: "string",
+              enum: ["AUTO", "MANUAL"],
+              default: "AUTO",
+              example: "AUTO"
+            },
+            code_name: {
+              type: "string",
+              example: "WORLDTOUR-VIP-001",
+              description: "Required only when code_mode is MANUAL. MANUAL supports quantity = 1."
+            },
+            benefit_type: {
+              type: "string",
+              enum: ["FREE_SESSION", "FIXED_DISCOUNT", "PERCENT_DISCOUNT", "FREE_ADDON", "STAFF_TEST"],
+              example: "FREE_SESSION"
+            },
+            benefit_value_minor: {
+              type: "integer",
+              minimum: 0,
+              default: 0,
+              example: 10000,
+              description: "Used by FIXED_DISCOUNT. Minor units, e.g. satang/cents."
+            },
+            benefit_percent: {
+              type: "integer",
+              minimum: 0,
+              maximum: 100,
+              default: 0,
+              example: 20,
+              description: "Used by PERCENT_DISCOUNT."
+            },
+            quantity: {
+              type: "integer",
+              minimum: 1,
+              maximum: 500,
+              default: 1,
+              example: 10,
+              description: "How many voucher codes to create."
+            },
+            max_uses_per_code: {
+              type: "integer",
+              minimum: 1,
+              default: 1,
+              example: 3,
+              description: "How many times each generated code can be used."
+            },
+            valid_from: {
+              type: "string",
+              format: "date-time",
+              nullable: true,
+              example: "2026-06-09T00:00:00Z"
+            },
+            valid_until: {
+              type: "string",
+              format: "date-time",
+              nullable: true,
+              example: "2026-06-30T16:59:59Z",
+              description: "Expiry time. Use UTC ISO-8601."
+            }
+          }
+        },
+        VoucherGenerateResponse: {
+          type: "object",
+          properties: {
+            success: { type: "boolean", example: true },
+            data: {
+              type: "object",
+              properties: {
+                project_id: { type: "string", example: "prj_world_tour" },
+                campaign_id: { type: "string", example: "12" },
+                quantity: { type: "integer", example: 1 },
+                vouchers: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    properties: {
+                      voucher_id: { type: "string", example: "34" },
+                      code: {
+                        type: "string",
+                        example: "PB-ADF2633C",
+                        description: "Plain code is returned once at generation time. Backend stores only the hash."
+                      },
+                      qr_png_url: {
+                        type: "string",
+                        format: "uri",
+                        nullable: true,
+                        example: "https://api.wajanapir.com/api/web/v1/vouchers/PB-ADF2633C/qr.png",
+                        description: "PNG QR image URL for AUTO voucher codes matching PB-XXXXXXXX. Null for non-auto/manual formats."
+                      },
+                      project_id: { type: "string", example: "prj_world_tour" },
+                      code_masked: { type: "string", example: "PB-A...633C" },
+                      benefit_type: { type: "string", example: "FREE_SESSION" },
+                      benefit_value_minor: { type: "integer", example: 0 },
+                      benefit_percent: { type: "integer", example: 0 },
+                      max_uses: { type: "integer", example: 3 },
+                      used_count: { type: "integer", example: 0 },
+                      status: { type: "string", example: "ACTIVE" },
+                      valid_from: { type: "string", format: "date-time" },
+                      valid_until: { type: "string", format: "date-time", nullable: true },
+                      created_at: { type: "string", format: "date-time" }
+                    }
+                  }
+                }
+              }
+            },
+            error: { nullable: true, example: null }
+          }
+        },
+        VoucherValidateRequest: {
+          type: "object",
+          required: ["job_id", "voucher_code"],
+          properties: {
+            job_id: { type: "string", example: "JOB-20260609-001" },
+            voucher_code: { type: "string", example: "PB-ADF2633C" },
+            device_id: { type: "string", example: "booth-world-tour-01" }
+          }
+        },
+        VoucherStatusRequest: {
+          type: "object",
+          required: ["voucher_code"],
+          properties: {
+            voucher_code: { type: "string", example: "PB-ADF2633C" },
+            project_id: {
+              type: "string",
+              example: "prj_world_tour",
+              description: "Optional. Defaults to DEFAULT_PROJECT_ID."
+            }
+          }
+        },
+        VoucherStatusResponse: {
+          type: "object",
+          properties: {
+            success: { type: "boolean", example: true },
+            data: {
+              type: "object",
+              properties: {
+                exists: { type: "boolean", example: true },
+                project_id: { type: "string", example: "prj_world_tour" },
+                project_code: { type: "string", example: "world-tour" },
+                code_masked: { type: "string", example: "PB-A...633C" },
+                status: {
+                  type: "string",
+                  enum: ["AVAILABLE", "USED", "EXPIRED", "NOT_STARTED", "INACTIVE", "NOT_FOUND"],
+                  example: "USED"
+                },
+                usable_now: { type: "boolean", example: false },
+                has_been_used: { type: "boolean", example: true },
+                quota_exhausted: { type: "boolean", example: true },
+                used_count: { type: "integer", example: 1 },
+                max_uses: { type: "integer", example: 1 },
+                remaining_uses: { type: "integer", example: 0 },
+                benefit_type: { type: "string", example: "FREE_SESSION" },
+                benefit_value_minor: { type: "integer", example: 0 },
+                benefit_percent: { type: "integer", example: 0 },
+                valid_from: { type: "string", format: "date-time" },
+                valid_until: { type: "string", format: "date-time", nullable: true }
+              }
+            },
+            error: { nullable: true, example: null }
+          }
+        },
+        VoucherReserveRequest: {
+          type: "object",
+          required: ["job_id", "checkout_token", "idempotency_key"],
+          properties: {
+            job_id: { type: "string", example: "JOB-20260609-001" },
+            checkout_token: { type: "string", example: "token-from-validate" },
+            idempotency_key: { type: "string", example: "booth-world-tour-01-JOB-20260609-001-1" },
+            gross_amount_minor: { type: "integer", example: 20000 },
+            currency: { type: "string", example: "THB" },
+            device_id: { type: "string", example: "booth-world-tour-01" }
+          }
+        },
+        VoucherRedemptionActionRequest: {
+          type: "object",
+          properties: {
+            device_id: {
+              type: "string",
+              example: "booth-world-tour-01",
+              description: "Optional when X-Device-Id header is sent."
+            }
+          }
+        },
+        VoucherApplyResponse: {
+          type: "object",
+          properties: {
+            success: { type: "boolean", example: true },
+            data: {
+              type: "object",
+              properties: {
+                redemption_id: { type: "integer", example: 12 },
+                status: { type: "string", example: "APPLIED" }
+              }
+            },
+            error: { nullable: true, example: null }
+          }
+        },
+        VoucherReleaseResponse: {
+          type: "object",
+          properties: {
+            success: { type: "boolean", example: true },
+            data: {
+              type: "object",
+              properties: {
+                redemption_id: { type: "integer", example: 12 },
+                status: { type: "string", example: "RELEASED" }
+              }
+            },
+            error: { nullable: true, example: null }
+          }
+        }
+      }
+    },
+    paths: {
+      "/v1/assets/composed/featured": {
+        get: {
+          tags: ["Assets"],
+          summary: "Get featured composed image",
+          description: "Redirects to the newest composed asset from the recent window, or a random composed asset when no recent image exists. Add ?format=json for debugging metadata.",
+          parameters: [
+            {
+              name: "format",
+              in: "query",
+              required: false,
+              schema: { type: "string", enum: ["json"] },
+              description: "Return JSON metadata instead of redirecting to the image."
+            }
+          ],
+          responses: {
+            302: { description: "Redirects to the selected image under /files/." },
+            200: {
+              description: "Selected image metadata when format=json.",
+              content: {
+                "application/json": {
+                  schema: {
+                    allOf: [
+                      { $ref: "#/components/schemas/SuccessEnvelope" },
+                      {
+                        type: "object",
+                        properties: {
+                          data: {
+                            type: "object",
+                            properties: {
+                              asset_type: { type: "string", example: "composed" },
+                              selection_mode: { type: "string", enum: ["latest", "random"] },
+                              url: { type: "string", format: "uri" },
+                              created_at: { type: "string", format: "date-time" }
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            404: { description: "No composed assets were found.", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+          }
+        }
+      },
+      "/api/admin/v1/vouchers/generate": {
+        post: {
+          tags: ["Admin Vouchers"],
+          summary: "Generate voucher codes",
+          description: "Creates one or more voucher codes. Plain codes are returned only once in this response.",
+          security: [{ AdminBearerAuth: [] }],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/VoucherGenerateRequest" },
+                examples: {
+                  autoFreeSession: {
+                    summary: "Auto-generate 10 free-session vouchers",
+                    value: {
+                      project_id: "prj_world_tour",
+                      campaign_name: "World Tour VIP June",
+                      purpose: "Sponsor guest",
+                      code_mode: "AUTO",
+                      benefit_type: "FREE_SESSION",
+                      quantity: 10,
+                      max_uses_per_code: 3,
+                      valid_until: "2026-06-30T16:59:59Z"
+                    }
+                  },
+                  manualCode: {
+                    summary: "Create one manual code",
+                    value: {
+                      project_id: "prj_world_tour",
+                      campaign_name: "VIP Manual",
+                      purpose: "VIP guest",
+                      code_mode: "MANUAL",
+                      code_name: "WORLDTOUR-VIP-001",
+                      benefit_type: "FREE_SESSION",
+                      quantity: 1,
+                      max_uses_per_code: 5,
+                      valid_until: "2026-06-30T16:59:59Z"
+                    }
+                  },
+                  fixedDiscount: {
+                    summary: "Fixed discount",
+                    value: {
+                      project_id: "prj_world_tour",
+                      campaign_name: "Discount 100 THB",
+                      code_mode: "AUTO",
+                      benefit_type: "FIXED_DISCOUNT",
+                      benefit_value_minor: 10000,
+                      quantity: 20,
+                      max_uses_per_code: 1,
+                      valid_until: "2026-06-30T16:59:59Z"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          responses: {
+            201: {
+              description: "Voucher codes created.",
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/VoucherGenerateResponse" }
+                }
+              }
+            },
+            400: { description: "Invalid request.", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } },
+            401: { description: "Invalid admin token.", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } },
+            409: { description: "Manual code already exists.", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+          }
+        }
+      },
+      "/api/admin/v1/projects": {
+        get: {
+          tags: ["Admin Projects"],
+          summary: "List projects",
+          security: [{ AdminBearerAuth: [] }],
+          responses: { 200: { description: "Project list." } }
+        }
+      },
+      "/api/admin/v1/vouchers": {
+        get: {
+          tags: ["Admin Vouchers"],
+          summary: "List vouchers",
+          security: [{ AdminBearerAuth: [] }],
+          parameters: [
+            { name: "project_id", in: "query", required: false, schema: { type: "string" }, example: "prj_world_tour" }
+          ],
+          responses: { 200: { description: "Voucher list." } }
+        }
+      },
+      "/api/web/v1/vouchers/status": {
+        post: {
+          tags: ["Web Vouchers"],
+          summary: "Check voucher usage status",
+          description: "Frontend-friendly voucher status check. It only requires voucher_code and does not reserve or consume usage.",
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/VoucherStatusRequest" },
+                examples: {
+                  checkCode: {
+                    summary: "Check one voucher code",
+                    value: {
+                      voucher_code: "PB-ADF2633C"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          responses: {
+            200: {
+              description: "Voucher usage status. NOT_FOUND is returned as success data for easy frontend handling.",
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/VoucherStatusResponse" }
+                }
+              }
+            },
+            400: { description: "voucher_code is missing.", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+          }
+        }
+      },
+      "/api/web/v1/vouchers/{voucherCode}/qr.png": {
+        get: {
+          tags: ["Web Vouchers"],
+          summary: "Render voucher code QR PNG",
+          description: "Returns a PNG QR code whose payload is the voucher code text. Only PB-XXXXXXXX voucher codes are accepted.",
+          parameters: [
+            {
+              name: "voucherCode",
+              in: "path",
+              required: true,
+              schema: {
+                type: "string",
+                pattern: "^PB-[0-9A-F]{8}$"
+              },
+              example: "PB-ADF2633C"
+            }
+          ],
+          responses: {
+            200: {
+              description: "Voucher QR PNG image.",
+              content: {
+                "image/png": {
+                  schema: {
+                    type: "string",
+                    format: "binary"
+                  }
+                }
+              }
+            },
+            400: { description: "voucherCode does not match PB-XXXXXXXX.", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+          }
+        }
+      },
+      "/api/kiosk/v1/voucher-scan-sessions": {
+        post: {
+          tags: ["Kiosk Voucher Scan"],
+          summary: "Create a phone voucher scan session",
+          description: "Kiosk creates a short-lived session and receives scan_url plus qr_png_url for users to scan with their phone.",
+          security: [{ DeviceBearerAuth: [] }],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                examples: {
+                  create: {
+                    value: {
+                      job_id: "JOB-20260609-001",
+                      device_id: "booth-world-tour-01"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          responses: { 201: { description: "Scan session created." } }
+        }
+      },
+      "/api/kiosk/v1/voucher-scan-sessions/{sessionToken}": {
+        get: {
+          tags: ["Kiosk Voucher Scan"],
+          summary: "Poll a phone voucher scan session",
+          description: "Returns PENDING, SUBMITTED_AVAILABLE, SUBMITTED_REJECTED, EXPIRED, CONSUMED, or CANCELLED.",
+          security: [{ DeviceBearerAuth: [] }],
+          parameters: [
+            { name: "sessionToken", in: "path", required: true, schema: { type: "string" } }
+          ],
+          responses: { 200: { description: "Current scan session state." } }
+        }
+      },
+      "/api/kiosk/v1/voucher-scan-sessions/{sessionToken}/ack": {
+        post: {
+          tags: ["Kiosk Voucher Scan"],
+          summary: "Acknowledge a phone voucher scan session",
+          description: "Kiosk marks a session as CONSUMED or CANCELLED after handling the submitted voucher.",
+          security: [{ DeviceBearerAuth: [] }],
+          parameters: [
+            { name: "sessionToken", in: "path", required: true, schema: { type: "string" } }
+          ],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                examples: {
+                  consumed: { value: { status: "CONSUMED", device_id: "booth-world-tour-01" } },
+                  cancelled: { value: { status: "CANCELLED", device_id: "booth-world-tour-01" } }
+                }
+              }
+            }
+          },
+          responses: { 200: { description: "Scan session acknowledged." } }
+        }
+      },
+      "/api/web/v1/voucher-scan-sessions/{sessionToken}/submit": {
+        post: {
+          tags: ["Web Vouchers"],
+          summary: "Submit a voucher code from the phone scan page",
+          description: "Frontend submits the user's voucher code to the kiosk scan session. This checks status only; Unity still redeems the voucher.",
+          parameters: [
+            { name: "sessionToken", in: "path", required: true, schema: { type: "string" } }
+          ],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                examples: {
+                  submit: { value: { voucher_code: "PB-ADF2633C" } }
+                }
+              }
+            }
+          },
+          responses: { 200: { description: "Voucher status stored on the scan session." } }
+        }
+      },
+      "/api/web/v1/voucher-scan-sessions/{sessionToken}/qr.png": {
+        get: {
+          tags: ["Web Vouchers"],
+          summary: "Render phone scan session QR PNG",
+          description: "Returns a PNG QR whose payload is the frontend scan URL.",
+          parameters: [
+            { name: "sessionToken", in: "path", required: true, schema: { type: "string" } }
+          ],
+          responses: { 200: { description: "Scan session QR PNG image." } }
+        }
+      },
+      "/api/kiosk/v1/kiosk-sessions": {
+        post: {
+          tags: ["Kiosk Voucher Link"],
+          summary: "Create a kiosk session for mobile voucher linking",
+          security: [{ DeviceBearerAuth: [] }],
+          responses: { 201: { description: "Kiosk session created." } }
+        }
+      },
+      "/api/kiosk/v1/kiosk-sessions/{sessionToken}": {
+        get: {
+          tags: ["Kiosk Voucher Link"],
+          summary: "Poll a kiosk session",
+          security: [{ DeviceBearerAuth: [] }],
+          responses: { 200: { description: "Kiosk session state." } }
+        }
+      },
+      "/api/kiosk/v1/kiosk-sessions/{sessionToken}/ack": {
+        post: {
+          tags: ["Kiosk Voucher Link"],
+          summary: "Acknowledge a kiosk session",
+          security: [{ DeviceBearerAuth: [] }],
+          responses: { 200: { description: "Kiosk session acknowledged." } }
+        }
+      },
+      "/api/web/v1/kiosk-sessions/{sessionToken}": {
+        get: {
+          tags: ["Web Kiosk Link"],
+          summary: "Read a kiosk session from mobile",
+          responses: { 200: { description: "Kiosk session state." } }
+        }
+      },
+      "/api/web/v1/kiosk-sessions/{sessionToken}/qr.png": {
+        get: {
+          tags: ["Web Kiosk Link"],
+          summary: "Render kiosk session QR PNG",
+          responses: { 200: { description: "Kiosk session QR image." } }
+        }
+      },
+      "/api/web/v1/device/me": {
+        get: {
+          tags: ["Web Device"],
+          summary: "Read the current mobile device",
+          responses: { 200: { description: "Current device." } }
+        }
+      },
+      "/api/web/v1/device/claim-voucher": {
+        post: {
+          tags: ["Web Device"],
+          summary: "Claim or pair the current mobile device",
+          responses: { 200: { description: "Device claimed." } }
+        }
+      },
+      "/api/web/v1/me/vouchers": {
+        get: {
+          tags: ["Web Device"],
+          summary: "List vouchers linked to the current mobile device",
+          responses: { 200: { description: "Voucher list." } }
+        }
+      },
+      "/api/web/v1/kiosk-sessions/{sessionToken}/attach-voucher": {
+        post: {
+          tags: ["Web Kiosk Link"],
+          summary: "Attach a voucher to a kiosk session",
+          responses: { 200: { description: "Voucher attached." } }
+        }
+      },
+      "/api/kiosk/v1/checkout/voucher/validate": {
+        post: {
+          tags: ["Kiosk Checkout"],
+          summary: "Validate voucher before reserve",
+          security: [{ DeviceBearerAuth: [] }],
+          requestBody: {
+            required: true,
+            content: { "application/json": { schema: { $ref: "#/components/schemas/VoucherValidateRequest" } } }
+          },
+          responses: { 200: { description: "Voucher is valid and checkout_token is returned." } }
+        }
+      },
+      "/api/kiosk/v1/checkout/voucher/reserve": {
+        post: {
+          tags: ["Kiosk Checkout"],
+          summary: "Reserve voucher for a job",
+          security: [{ DeviceBearerAuth: [] }],
+          requestBody: {
+            required: true,
+            content: { "application/json": { schema: { $ref: "#/components/schemas/VoucherReserveRequest" } } }
+          },
+          responses: { 201: { description: "Voucher reserved or applied if net amount is zero." } }
+        }
+      },
+      "/api/kiosk/v1/checkout/voucher/{redemptionId}/apply": {
+        post: {
+          tags: ["Kiosk Checkout"],
+          summary: "Apply reserved voucher redemption",
+          description: "Marks a RESERVED redemption as APPLIED after the remaining payment is confirmed. Calling this on an already APPLIED redemption is idempotent.",
+          security: [{ DeviceBearerAuth: [] }],
+          parameters: [
+            {
+              name: "redemptionId",
+              in: "path",
+              required: true,
+              schema: { type: "integer", minimum: 1 },
+              example: 12
+            }
+          ],
+          requestBody: {
+            required: false,
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/VoucherRedemptionActionRequest" },
+                examples: {
+                  apply: {
+                    summary: "Apply a redemption",
+                    value: {
+                      device_id: "booth-world-tour-01"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          responses: {
+            200: {
+              description: "Redemption is applied.",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/VoucherApplyResponse" } } }
+            },
+            400: { description: "Invalid redemption id.", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } },
+            401: { description: "Invalid device token.", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } },
+            404: { description: "Redemption was not found.", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } },
+            409: { description: "Redemption was already released.", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+          }
+        }
+      },
+      "/api/kiosk/v1/checkout/voucher/{redemptionId}/release": {
+        post: {
+          tags: ["Kiosk Checkout"],
+          summary: "Release reserved voucher redemption",
+          description: "Cancels a RESERVED redemption and returns one usage to the voucher. This does not release APPLIED redemptions.",
+          security: [{ DeviceBearerAuth: [] }],
+          parameters: [
+            {
+              name: "redemptionId",
+              in: "path",
+              required: true,
+              schema: { type: "integer", minimum: 1 },
+              example: 12
+            }
+          ],
+          requestBody: {
+            required: false,
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/VoucherRedemptionActionRequest" },
+                examples: {
+                  release: {
+                    summary: "Release a redemption",
+                    value: {
+                      device_id: "booth-world-tour-01"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          responses: {
+            200: {
+              description: "Reserved redemption is released.",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/VoucherReleaseResponse" } } }
+            },
+            400: { description: "Invalid redemption id.", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } },
+            401: { description: "Invalid device token.", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+          }
+        }
+      }
+    }
+  };
+}
+
+function resolveOpenApiServerUrl(req) {
+  if (config.publicBaseUrlConfigured) {
+    return config.publicBaseUrl;
+  }
+
+  const forwardedProto = normalizeOptional(req.get("x-forwarded-proto"))?.split(",")[0]?.trim();
+  const forwardedHost = normalizeOptional(req.get("x-forwarded-host"))?.split(",")[0]?.trim();
+  const protocol = forwardedProto || req.protocol || "http";
+  const host = forwardedHost || req.get("host") || `localhost:${config.port}`;
+  return `${protocol}://${host}`.replace(/\/$/, "");
+}
+
+function renderSwaggerDocsPage() {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Photo Booth API Docs</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css">
+  <style>
+    body { margin: 0; background: #f7f7f4; }
+    .topbar { padding: 12px 18px; background: #10212a; color: white; font-family: Inter, system-ui, sans-serif; }
+    .topbar b { margin-right: 12px; }
+    .topbar a { color: #b9e6ef; }
+  </style>
+</head>
+<body>
+  <div class="topbar"><b>Photo Booth API Docs</b><a href="/api/docs/openapi.json">OpenAPI JSON</a></div>
+  <div id="swagger-ui"></div>
+  <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+  <script>
+    window.ui = SwaggerUIBundle({
+      url: "/api/docs/openapi.json",
+      dom_id: "#swagger-ui",
+      deepLinking: true,
+      persistAuthorization: true
+    });
+  </script>
+</body>
+</html>`;
+}
+
+function renderVoucherScanPage() {
+  return `<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Scan Voucher</title>
+  <style>
+    :root { --bg:#111914; --panel:#f7f0d8; --ink:#172018; --muted:#667061; --green:#bdf042; --red:#cc3a32; --yellow:#f5d33f; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100vh; background:radial-gradient(circle at 50% -10%, #2c4932 0, #111914 48%, #080b09 100%); color:var(--panel); font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    main { width:min(560px, 100%); margin:0 auto; padding:24px 18px 40px; }
+    .hero { text-align:center; margin:10px 0 18px; }
+    h1 { margin:0; font-size:30px; line-height:1; letter-spacing:.02em; text-transform:uppercase; }
+    .sub { color:#c8d4c2; margin:10px auto 0; max-width:360px; line-height:1.45; font-size:14px; }
+    .card { background:var(--panel); color:var(--ink); border-radius:24px; padding:16px; box-shadow:0 20px 60px rgba(0,0,0,.35); }
+    .video-wrap { position:relative; overflow:hidden; border-radius:18px; background:#050605; min-height:310px; display:grid; place-items:center; }
+    video { width:100%; min-height:310px; object-fit:cover; display:block; background:#050605; }
+    .reticle { position:absolute; width:58%; aspect-ratio:1; border:3px solid rgba(189,240,66,.95); border-radius:18px; box-shadow:0 0 0 999px rgba(0,0,0,.28); pointer-events:none; }
+    .reticle:before, .reticle:after { content:""; position:absolute; inset:18px; border:1px dashed rgba(255,255,255,.5); border-radius:12px; }
+    .unsupported { display:none; text-align:center; padding:38px 22px; color:#d9dfd5; }
+    .status { min-height:24px; margin:14px 2px 4px; color:var(--muted); font-size:14px; line-height:1.45; text-align:center; }
+    .status.ok { color:#1d6b37; font-weight:800; }
+    .status.error { color:var(--red); font-weight:800; }
+    .manual { margin-top:14px; display:grid; gap:10px; }
+    label { font-size:12px; color:var(--muted); font-weight:700; text-transform:uppercase; letter-spacing:.08em; }
+    input { width:100%; border:2px solid #ddd2aa; border-radius:14px; padding:15px 14px; font:inherit; font-size:18px; font-weight:800; text-transform:uppercase; letter-spacing:.06em; color:var(--ink); background:#fffaf0; }
+    button { border:0; border-radius:14px; padding:15px 16px; font:inherit; font-weight:900; letter-spacing:.02em; cursor:pointer; background:var(--yellow); color:#15180f; box-shadow:0 8px 0 rgba(0,0,0,.1); }
+    button.secondary { background:#202820; color:#fff; box-shadow:none; }
+    button:disabled { opacity:.55; cursor:not-allowed; }
+    .actions { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    .hint { margin-top:14px; color:#7c8579; font-size:12px; line-height:1.45; text-align:center; }
+    .missing { min-height:60vh; display:grid; place-items:center; text-align:center; }
+    code { background:rgba(0,0,0,.08); padding:2px 5px; border-radius:6px; }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="hero">
+      <h1>Scan Voucher</h1>
+      <p class="sub">สแกน QR voucher หรือกรอกรหัส voucher เพื่อส่งกลับไปยังตู้ถ่ายรูป</p>
+    </section>
+    <section id="missing" class="missing" hidden>
+      <div>
+        <h1>Session Missing</h1>
+        <p class="sub">ไม่พบ session สำหรับตู้ กรุณาสแกน QR จากหน้าตู้ใหม่อีกครั้ง</p>
+      </div>
+    </section>
+    <section id="scanner" class="card">
+      <div class="video-wrap">
+        <video id="video" playsinline muted></video>
+        <div class="reticle"></div>
+        <div id="unsupported" class="unsupported">เบราว์เซอร์นี้ไม่รองรับ QR scan อัตโนมัติ<br>กรุณากรอกรหัสด้านล่างแทน</div>
+      </div>
+      <div id="status" class="status">กำลังเปิดกล้อง...</div>
+      <div class="manual">
+        <label for="voucherCode">Voucher Code</label>
+        <input id="voucherCode" autocomplete="one-time-code" inputmode="text" placeholder="PB-ADF2633C">
+        <div class="actions">
+          <button id="submitBtn">SUBMIT</button>
+          <button id="restartBtn" class="secondary" type="button">SCAN AGAIN</button>
+        </div>
+      </div>
+      <div class="hint">หน้านี้เช็คสถานะก่อนเท่านั้น การตัดสิทธิ์จริงจะทำที่ตู้หลังจากส่งรหัสสำเร็จ</div>
+    </section>
+  </main>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const session = params.get("session") || "";
+    const video = document.getElementById("video");
+    const statusEl = document.getElementById("status");
+    const input = document.getElementById("voucherCode");
+    const submitBtn = document.getElementById("submitBtn");
+    const restartBtn = document.getElementById("restartBtn");
+    const unsupported = document.getElementById("unsupported");
+    const missing = document.getElementById("missing");
+    const scanner = document.getElementById("scanner");
+    let detector = null;
+    let stream = null;
+    let scanning = false;
+    let submitting = false;
+
+    function setStatus(message, kind) {
+      statusEl.textContent = message || "";
+      statusEl.className = "status" + (kind ? " " + kind : "");
+    }
+
+    function extractVoucherCode(payload) {
+      const text = String(payload || "").trim().toUpperCase();
+      const match = text.match(/PB-[A-Z0-9._-]{4,80}/);
+      if (match) return match[0];
+      const suffix = text.replace(/[^A-Z0-9]/g, "");
+      if (/^(?=.*[A-Z])(?=.*[0-9])[A-Z0-9]{6,21}$/.test(suffix)) return "PB-" + suffix;
+      return "";
+    }
+
+    async function submitVoucher(rawValue) {
+      const voucherCode = extractVoucherCode(rawValue);
+      if (!voucherCode) {
+        setStatus("QR ไม่ใช่ Voucher", "error");
+        return;
+      }
+
+      if (submitting) return;
+      submitting = true;
+      submitBtn.disabled = true;
+      input.value = voucherCode;
+      setStatus("กำลังเช็ค Voucher...", "");
+
+      try {
+        const response = await fetch("/api/web/v1/voucher-scan-sessions/" + encodeURIComponent(session) + "/submit", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Accept": "application/json" },
+          body: JSON.stringify({ voucher_code: voucherCode })
+        });
+        const body = await response.json().catch(() => ({ success:false, error:{ message:response.statusText } }));
+        if (!response.ok || body.success === false) throw new Error((body.error && body.error.message) || response.statusText);
+
+        const voucherStatus = body.data && body.data.voucher_status ? body.data.voucher_status : {};
+        if (voucherStatus.usable_now) {
+          setStatus("ส่ง Voucher กลับไปที่ตู้แล้ว", "ok");
+          stopCamera();
+          return;
+        }
+
+        if (voucherStatus.status === "NOT_FOUND" || voucherStatus.exists === false) {
+          setStatus("ไม่พบ Voucher", "error");
+        } else if (voucherStatus.status === "USED" || voucherStatus.quota_exhausted || voucherStatus.has_been_used) {
+          setStatus("Voucher นี้ถูกใช้ไปแล้ว", "error");
+        } else {
+          setStatus("Voucher ไม่พร้อมใช้งาน: " + (voucherStatus.status || "UNKNOWN"), "error");
+        }
+      } catch (error) {
+        setStatus(error.message || "ส่ง Voucher ไม่สำเร็จ", "error");
+      } finally {
+        submitting = false;
+        submitBtn.disabled = false;
+      }
+    }
+
+    async function scanLoop() {
+      if (!scanning || !detector || video.readyState < 2) {
+        if (scanning) requestAnimationFrame(scanLoop);
+        return;
+      }
+
+      try {
+        const codes = await detector.detect(video);
+        if (codes && codes.length > 0) {
+          await submitVoucher(codes[0].rawValue || "");
+        }
+      } catch (error) {
+        console.warn(error);
+      }
+
+      if (scanning) requestAnimationFrame(scanLoop);
+    }
+
+    async function startCamera() {
+      if (!session) {
+        scanner.hidden = true;
+        missing.hidden = false;
+        return;
+      }
+
+      stopCamera();
+      if (!("BarcodeDetector" in window)) {
+        unsupported.style.display = "block";
+        video.style.display = "none";
+        setStatus("กรอกรหัส Voucher ด้วยตัวเอง", "");
+        return;
+      }
+
+      try {
+        detector = new BarcodeDetector({ formats: ["qr_code"] });
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false });
+        video.srcObject = stream;
+        await video.play();
+        unsupported.style.display = "none";
+        video.style.display = "block";
+        scanning = true;
+        setStatus("สแกน QR voucher ได้เลย", "");
+        requestAnimationFrame(scanLoop);
+      } catch (error) {
+        unsupported.style.display = "block";
+        video.style.display = "none";
+        setStatus("เปิดกล้องไม่ได้ กรุณากรอกรหัสแทน", "error");
+      }
+    }
+
+    function stopCamera() {
+      scanning = false;
+      if (stream) {
+        for (const track of stream.getTracks()) track.stop();
+      }
+      stream = null;
+      video.srcObject = null;
+    }
+
+    submitBtn.addEventListener("click", () => submitVoucher(input.value));
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") submitVoucher(input.value);
+    });
+    restartBtn.addEventListener("click", startCamera);
+    window.addEventListener("pagehide", stopCamera);
+    startCamera();
+  </script>
+</body>
+</html>`;
+}
+
+function renderVoucherLinkPage() {
+  return `<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Voucher Link</title>
+  <style>
+    :root { --bg:#0f1a14; --panel:#f5f0dc; --ink:#162117; --muted:#66715f; --green:#97d43a; --yellow:#f1d348; --red:#d04a3c; --line:#d9cfb1; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100vh; background:radial-gradient(circle at 50% -10%, #2e5630 0, #0f1a14 48%, #070b08 100%); color:var(--panel); font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    main { width:min(860px, 100%); margin:0 auto; padding:20px 16px 42px; display:grid; gap:14px; }
+    .hero { text-align:center; padding:12px 8px 2px; }
+    h1 { margin:0; font-size:clamp(30px, 7vw, 52px); line-height:1; letter-spacing:.03em; text-transform:uppercase; }
+    .sub { margin:10px auto 0; max-width:560px; color:#cfd8c8; line-height:1.45; font-size:15px; }
+    .card { background:var(--panel); color:var(--ink); border-radius:24px; padding:16px; box-shadow:0 18px 52px rgba(0,0,0,.32); }
+    .grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+    .stack { display:grid; gap:12px; }
+    .title { margin:0 0 10px; font-size:15px; letter-spacing:.04em; text-transform:uppercase; }
+    .status { min-height:22px; color:var(--muted); font-size:14px; line-height:1.45; }
+    .status.ok { color:#136a33; font-weight:800; }
+    .status.error { color:var(--red); font-weight:800; }
+    .pill { display:inline-flex; align-items:center; gap:8px; padding:8px 12px; border-radius:999px; background:#1b2a21; color:#d7ebd2; font-weight:800; font-size:12px; letter-spacing:.05em; text-transform:uppercase; }
+    .voucher-list { display:grid; gap:10px; margin-top:12px; }
+    .voucher { border:1px solid var(--line); border-radius:18px; padding:12px 14px; background:#fffdf5; display:grid; gap:8px; }
+    .voucher.selected { border-color:#88c73a; box-shadow:0 0 0 2px rgba(136,199,58,.16) inset; }
+    .voucher h4 { margin:0; font-size:16px; }
+    .voucher small { color:var(--muted); }
+    .voucher .row { display:flex; flex-wrap:wrap; justify-content:space-between; gap:8px; align-items:center; }
+    .voucher button, .primary, .secondary { border:0; border-radius:14px; padding:13px 16px; font:inherit; font-weight:900; cursor:pointer; }
+    .primary { background:var(--yellow); color:#16180d; box-shadow:0 8px 0 rgba(0,0,0,.1); }
+    .secondary { background:#1f2b1f; color:#fff; }
+    .ghost { background:#ece7d6; color:var(--ink); }
+    .actions { display:flex; flex-wrap:wrap; gap:10px; margin-top:12px; }
+    label { display:block; margin:0 0 6px; color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.08em; font-weight:800; }
+    input { width:100%; border:2px solid #d9cfb1; border-radius:14px; padding:13px 14px; font:inherit; font-size:16px; font-weight:800; color:var(--ink); background:#fffaf0; }
+    .missing { min-height:48vh; display:grid; place-items:center; text-align:center; }
+    .compact { font-size:13px; color:var(--muted); line-height:1.45; }
+    .divider { height:1px; background:#ddd4b9; margin:8px 0; }
+    .empty { padding:14px; border:1px dashed #c8bfa3; border-radius:16px; color:var(--muted); background:rgba(255,255,255,.7); }
+    .meta { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+    .meta .pill { background:#f0ead7; color:#24311f; }
+    @media (max-width:760px) { .grid { grid-template-columns:1fr; } main { padding-bottom:28px; } }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="hero">
+      <h1>Voucher Link</h1>
+      <p class="sub">สแกน QR บนตู้เพื่อเปิดหน้านี้ แล้วเลือก voucher จากมือถือเพื่อส่งกลับไปยัง session ของตู้</p>
+    </section>
+
+    <section id="missingSession" class="card missing" hidden>
+      <div>
+        <h1>SESSION MISSING</h1>
+        <p class="sub">ไม่พบ session สำหรับตู้ กรุณาสแกน QR จากหน้าตู้ใหม่อีกครั้ง</p>
+      </div>
+    </section>
+
+    <section id="content" class="grid">
+      <div class="stack">
+        <div class="card">
+          <div class="meta">
+            <span id="sessionBadge" class="pill">Session: ...</span>
+            <span id="deviceBadge" class="pill">Device: ...</span>
+          </div>
+          <h3 class="title">Session Status</h3>
+          <div id="sessionStatus" class="status">กำลังโหลด session...</div>
+          <div id="sessionDetails" class="compact"></div>
+          <div class="actions">
+            <button id="refreshSessionBtn" class="ghost" type="button">Refresh Session</button>
+            <button id="signOutBtn" class="secondary" type="button">Forget Device</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3 class="title">Device Claim</h3>
+          <div id="deviceStatus" class="status">กำลังตรวจสอบ device...</div>
+          <div class="stack">
+            <div>
+              <label for="deviceName">Device name</label>
+              <input id="deviceName" placeholder="PHONE-01">
+            </div>
+            <div>
+              <label for="claimVoucherCode">Optional voucher code to link</label>
+              <input id="claimVoucherCode" placeholder="PB-ADF2633C">
+            </div>
+          </div>
+          <div class="actions">
+            <button id="claimBtn" class="primary" type="button">Claim Device</button>
+            <button id="reloadVouchersBtn" class="ghost" type="button">Reload Vouchers</button>
+          </div>
+          <div class="compact">ถ้า device นี้ถูกจำไว้แล้ว ระบบจะโหลด token จากเบราว์เซอร์และแสดง voucher ที่ผูกไว้ให้ทันที</div>
+        </div>
+      </div>
+
+      <div class="stack">
+        <div class="card">
+          <h3 class="title">Available Vouchers</h3>
+          <div id="voucherStatus" class="status">รอโหลด voucher list...</div>
+          <div id="voucherList" class="voucher-list"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const sessionToken = params.get("session") || "";
+    const deviceTokenStorageKey = "noah_kiosk_device_token";
+    const deviceNameStorageKey = "noah_kiosk_device_name";
+    const deviceTokenHeader = () => localStorage.getItem(deviceTokenStorageKey) || "";
+
+    const sessionBadge = document.getElementById("sessionBadge");
+    const deviceBadge = document.getElementById("deviceBadge");
+    const sessionStatus = document.getElementById("sessionStatus");
+    const sessionDetails = document.getElementById("sessionDetails");
+    const deviceStatus = document.getElementById("deviceStatus");
+    const voucherStatus = document.getElementById("voucherStatus");
+    const voucherList = document.getElementById("voucherList");
+    const missingSession = document.getElementById("missingSession");
+    const content = document.getElementById("content");
+    const deviceNameInput = document.getElementById("deviceName");
+    const claimVoucherInput = document.getElementById("claimVoucherCode");
+    const claimBtn = document.getElementById("claimBtn");
+    const refreshSessionBtn = document.getElementById("refreshSessionBtn");
+    const reloadVouchersBtn = document.getElementById("reloadVouchersBtn");
+    const signOutBtn = document.getElementById("signOutBtn");
+
+    let currentSession = null;
+    let currentDevice = null;
+    let currentVouchers = [];
+    let sessionTimer = null;
+    let voucherTimer = null;
+    let attaching = false;
+
+    function setStatus(el, message, kind) {
+      el.textContent = message || "";
+      el.className = "status" + (kind ? " " + kind : "");
+    }
+
+    function authHeaders(extra) {
+      const headers = Object.assign({ "Accept": "application/json" }, extra || {});
+      const token = deviceTokenHeader();
+      if (token) {
+        headers.Authorization = "Bearer " + token;
+      }
+      return headers;
+    }
+
+    async function fetchJson(url, options) {
+      const response = await fetch(url, Object.assign({ headers: authHeaders((options && options.headers) || {}) }, options || {}));
+      const payload = await response.json().catch(() => ({ success:false, error:{ message: response.statusText } }));
+      if (!response.ok || payload.success === false) {
+        const error = new Error((payload.error && payload.error.message) || response.statusText || "Request failed");
+        error.code = payload.error && payload.error.code;
+        error.status = response.status;
+        throw error;
+      }
+      return payload.data;
+    }
+
+    function formatRemaining(voucher) {
+      const remaining = voucher && voucher.voucher_status ? Number(voucher.voucher_status.remaining_uses || 0) : 0;
+      return String(Math.max(0, remaining));
+    }
+
+    function isUsable(voucher) {
+      return Boolean(voucher && voucher.voucher_status && voucher.voucher_status.usable_now);
+    }
+
+    function renderVouchers() {
+      voucherList.innerHTML = "";
+      const usable = currentVouchers.filter(isUsable);
+      if (!currentVouchers.length) {
+        voucherList.innerHTML = '<div class="empty">ยังไม่มี voucher ที่ผูกไว้กับ device นี้</div>';
+        return;
+      }
+
+      for (const voucher of currentVouchers) {
+        const el = document.createElement("div");
+        el.className = "voucher" + (isUsable(voucher) ? " selected" : "");
+        const status = voucher.voucher_status || {};
+        const canAttach = Boolean(deviceTokenHeader() && currentSession && currentSession.status === "PENDING" && isUsable(voucher) && !attaching);
+        el.innerHTML = [
+          '<div class="row">',
+          '<h4>' + voucher.voucher_code + '</h4>',
+          '<small>' + (status.status || 'UNKNOWN') + '</small>',
+          '</div>',
+          '<small>Remaining: ' + formatRemaining(voucher) + '</small>',
+          '<small>Claimed: ' + (voucher.claimed_at || '-') + '</small>',
+          '<div class="actions">',
+          '<button class="primary" type="button"' + (canAttach ? '' : ' disabled') + '>Attach to session</button>',
+          '</div>'
+        ].join('');
+        const button = el.querySelector("button");
+        button.addEventListener("click", function () {
+          attachVoucher(voucher.voucher_code);
+        });
+        voucherList.appendChild(el);
+      }
+
+      if (usable.length === 1 && deviceTokenHeader() && !attaching && currentSession && currentSession.status === "PENDING") {
+        setTimeout(function () {
+          attachVoucher(usable[0].voucher_code);
+        }, 250);
+      }
+    }
+
+    async function loadSession() {
+      if (!sessionToken) {
+        content.hidden = true;
+        missingSession.hidden = false;
+        return;
+      }
+
+      try {
+        const data = await fetchJson("/api/web/v1/kiosk-sessions/" + encodeURIComponent(sessionToken));
+        currentSession = data;
+        sessionBadge.textContent = "Session: " + sessionToken.slice(0, 8);
+        deviceBadge.textContent = "Device: " + (data.mobile_device_name || (currentDevice && currentDevice.device_name) || "pending");
+        if (data.status === "PENDING") {
+          setStatus(sessionStatus, "Waiting for voucher attachment...", "");
+        } else if (data.status === "ATTACHED") {
+          setStatus(sessionStatus, "Voucher attached. Waiting for Unity to redeem.", "ok");
+        } else if (data.status === "CONSUMED" || data.status === "REDEEMED") {
+          setStatus(sessionStatus, "Session completed.", "ok");
+        } else if (data.status === "CANCELLED" || data.status === "EXPIRED") {
+          setStatus(sessionStatus, "Session closed: " + data.status, "error");
+        } else {
+          setStatus(sessionStatus, "Session status: " + data.status, "");
+        }
+        sessionDetails.textContent = "Project: " + (data.project_id || "-") + " | " + (data.voucher_code ? "Voucher: " + data.voucher_code + " | " : "") + "Expires: " + (data.expires_at || "-");
+      } catch (error) {
+        setStatus(sessionStatus, error.message || "Failed to load session", "error");
+      }
+    }
+
+    async function loadDevice() {
+      const token = deviceTokenHeader();
+      if (!token) {
+        currentDevice = null;
+        deviceBadge.textContent = "Device: unknown";
+        setStatus(deviceStatus, "ยังไม่พบ device token ใน browser. กด Claim Device เพื่อเริ่ม pairing.", "");
+        return;
+      }
+
+      try {
+        const data = await fetchJson("/api/web/v1/device/me");
+        currentDevice = data.device;
+        deviceBadge.textContent = "Device: " + (currentDevice.device_name || "unknown");
+        deviceNameInput.value = currentDevice.device_name || localStorage.getItem(deviceNameStorageKey) || "PHONE-01";
+        setStatus(deviceStatus, "Device recognized.", "ok");
+      } catch (error) {
+        currentDevice = null;
+        if (error.status === 404) {
+          setStatus(deviceStatus, "Device token ไม่ถูกจำใน backend แล้ว กด Claim Device เพื่อ pair ใหม่", "error");
+          localStorage.removeItem(deviceTokenStorageKey);
+        } else {
+          setStatus(deviceStatus, error.message || "Failed to load device", "error");
+        }
+      }
+    }
+
+    async function loadVouchers() {
+      const token = deviceTokenHeader();
+      if (!token) {
+        currentVouchers = [];
+        voucherStatus.textContent = "ยังไม่ได้ claim device";
+        renderVouchers();
+        return;
+      }
+
+      try {
+        const data = await fetchJson("/api/web/v1/me/vouchers" + (currentSession && currentSession.project_id ? "?project_id=" + encodeURIComponent(currentSession.project_id) : ""));
+        currentVouchers = data.vouchers || [];
+        voucherStatus.textContent = currentVouchers.length ? "Loaded " + currentVouchers.length + " vouchers" : "No vouchers linked";
+        renderVouchers();
+      } catch (error) {
+        currentVouchers = [];
+        voucherStatus.textContent = error.message || "Failed to load vouchers";
+        renderVouchers();
+      }
+    }
+
+    async function claimDevice() {
+      const deviceName = ((deviceNameInput.value || localStorage.getItem(deviceNameStorageKey) || "PHONE-01").trim() || "PHONE-01");
+      const voucherCode = (claimVoucherInput.value || "").trim();
+      claimBtn.disabled = true;
+      setStatus(deviceStatus, "Claiming device...", "");
+      try {
+        const data = await fetchJson("/api/web/v1/device/claim-voucher", {
+          method: "POST",
+          headers: authHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify({
+            device_name: deviceName,
+            project_id: currentSession && currentSession.project_id ? currentSession.project_id : undefined,
+            voucher_code: voucherCode || undefined,
+            claim_source: "voucher-link-page"
+          })
+        });
+        if (data.device_token) {
+          localStorage.setItem(deviceTokenStorageKey, data.device_token);
+          localStorage.setItem(deviceNameStorageKey, deviceName);
+        }
+        setStatus(deviceStatus, "Device claimed and saved on this browser.", "ok");
+        claimVoucherInput.value = "";
+        await loadDevice();
+        await loadVouchers();
+      } catch (error) {
+        setStatus(deviceStatus, error.message || "Claim failed", "error");
+      } finally {
+        claimBtn.disabled = false;
+      }
+    }
+
+    async function attachVoucher(voucherCode) {
+      if (attaching) {
+        return;
+      }
+      if (!sessionToken || !currentSession || currentSession.status !== "PENDING") {
+        return;
+      }
+      attaching = true;
+      voucherStatus.textContent = "Attaching " + voucherCode + " ...";
+      try {
+        const data = await fetchJson("/api/web/v1/kiosk-sessions/" + encodeURIComponent(sessionToken) + "/attach-voucher", {
+          method: "POST",
+          headers: authHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify({ voucher_code: voucherCode })
+        });
+        currentSession = data;
+        setStatus(sessionStatus, "Voucher attached to session.", "ok");
+        await loadSession();
+        await loadVouchers();
+      } catch (error) {
+        setStatus(sessionStatus, error.message || "Attach failed", "error");
+        await loadSession();
+      } finally {
+        attaching = false;
+        renderVouchers();
+      }
+    }
+
+    function stopTimers() {
+      if (sessionTimer) {
+        clearInterval(sessionTimer);
+        sessionTimer = null;
+      }
+      if (voucherTimer) {
+        clearInterval(voucherTimer);
+        voucherTimer = null;
+      }
+    }
+
+    async function bootstrap() {
+      if (!sessionToken) {
+        content.hidden = true;
+        missingSession.hidden = false;
+        return;
+      }
+
+      missingSession.hidden = true;
+      content.hidden = false;
+      deviceNameInput.value = localStorage.getItem(deviceNameStorageKey) || "PHONE-01";
+      sessionBadge.textContent = "Session: " + sessionToken.slice(0, 8);
+      await loadSession();
+      await loadDevice();
+      await loadVouchers();
+      stopTimers();
+      sessionTimer = setInterval(loadSession, 1500);
+      voucherTimer = setInterval(loadVouchers, 5000);
+    }
+
+    claimBtn.addEventListener("click", claimDevice);
+    refreshSessionBtn.addEventListener("click", loadSession);
+    reloadVouchersBtn.addEventListener("click", loadVouchers);
+    signOutBtn.addEventListener("click", function () {
+      localStorage.removeItem(deviceTokenStorageKey);
+      localStorage.removeItem(deviceNameStorageKey);
+      currentDevice = null;
+      currentVouchers = [];
+      deviceBadge.textContent = "Device: unknown";
+      setStatus(deviceStatus, "Device removed from this browser.", "");
+      voucherStatus.textContent = "Login again or claim device";
+      renderVouchers();
+      loadDevice();
+    });
+
+    window.addEventListener("pagehide", stopTimers);
+    bootstrap();
+  </script>
+</body>
+</html>`;
+}
+
+function renderVoucherTestPage() {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Voucher Test Tool</title>
+  <style>
+    :root { --bg:#f4f4f1; --panel:#fff; --ink:#17232c; --muted:#65717a; --line:#deddd8; --teal:#14627a; --green:#16704d; --red:#b8323d; --orange:#c95722; --mono:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--ink); font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif; }
+    header { background:#10212a; color:white; padding:18px 24px; display:flex; justify-content:space-between; gap:16px; align-items:flex-start; }
+    h1 { margin:0 0 4px; font-size:22px; }
+    header p { margin:0; color:#b7cbd0; font-size:13px; }
+    main { padding:22px; max-width:1280px; margin:0 auto; }
+    .grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; align-items:start; }
+    .panel { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:16px; }
+    .panel h2 { margin:0 0 13px; font-size:16px; }
+    .form-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    .full { grid-column:1/-1; }
+    label { display:block; color:var(--muted); font-size:11px; margin-bottom:5px; }
+    input, select, textarea { width:100%; border:1px solid #d8d7d2; border-radius:9px; padding:10px; font:inherit; font-size:13px; background:white; color:var(--ink); }
+    textarea { min-height:168px; resize:vertical; font-family:var(--mono); }
+    button { border:0; border-radius:10px; padding:11px 13px; font:inherit; font-size:13px; font-weight:700; cursor:pointer; background:#e9e9e4; color:var(--ink); }
+    button.primary { background:var(--teal); color:white; }
+    button.green { background:#e7f5ee; color:var(--green); }
+    button.orange { background:#fff0e8; color:var(--orange); }
+    .actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:13px; }
+    .status { margin-top:10px; min-height:18px; font-size:12px; color:var(--muted); }
+    .status.ok { color:var(--green); }
+    .status.error { color:var(--red); }
+    pre { margin:0; white-space:pre-wrap; word-break:break-word; background:#10212a; color:#dff3f6; padding:14px; border-radius:12px; min-height:180px; font:12px/1.5 var(--mono); }
+    code { font-family:var(--mono); color:var(--teal); }
+    .hint { color:var(--muted); font-size:12px; line-height:1.5; margin-top:8px; }
+    .steps { display:grid; gap:8px; margin-bottom:16px; }
+    .step { background:#fff; border:1px solid var(--line); border-left:4px solid var(--teal); border-radius:10px; padding:10px 12px; font-size:13px; color:var(--muted); }
+    .step b { color:var(--ink); }
+    @media (max-width:900px) { header { display:block; } main { padding:14px; } .grid { grid-template-columns:1fr; } .form-grid { grid-template-columns:1fr; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Voucher Test Tool</h1>
+      <p>Generate a voucher and check web-facing voucher status against this backend.</p>
+    </div>
+    <p>Docs: <a style="color:#b9e6ef" href="/api/docs">/api/docs</a></p>
+  </header>
+  <main>
+    <div class="steps">
+      <div class="step"><b>1. Generate</b> creates a code. Save the returned plain code immediately.</div>
+      <div class="step"><b>2. Check Status</b> calls <code>/api/web/v1/vouchers/status</code>. It does not require a device token and does not consume quota.</div>
+    </div>
+    <div class="grid">
+      <section class="panel">
+        <h2>Auth</h2>
+        <div class="form-grid">
+          <div class="full">
+            <label for="adminToken">Admin bearer token</label>
+            <input id="adminToken" type="password" autocomplete="off" placeholder="ADMIN_BEARER_TOKEN">
+          </div>
+          <div class="full">
+            <label for="projectId">Project ID</label>
+            <input id="projectId" value="prj_world_tour">
+          </div>
+        </div>
+        <div class="actions">
+          <button id="saveAuth">Save auth in this browser</button>
+          <button id="clearAuth">Clear</button>
+        </div>
+        <div class="hint">This page sends requests to the same origin, so use <code>https://api.wajanapir.com/tools/voucher-test</code> on production.</div>
+      </section>
+
+      <section class="panel">
+        <h2>Latest Result</h2>
+        <pre id="output">No request sent yet.</pre>
+      </section>
+
+      <section class="panel">
+        <h2>1. Generate Voucher</h2>
+        <div class="form-grid">
+          <div>
+            <label for="codeMode">Code mode</label>
+            <select id="codeMode"><option>AUTO</option><option>MANUAL</option></select>
+          </div>
+          <div>
+            <label for="codeName">Manual code</label>
+            <input id="codeName" value="WORLDTOUR-VIP-001">
+          </div>
+          <div>
+            <label for="benefitType">Benefit type</label>
+            <select id="benefitType"><option>FREE_SESSION</option><option>FIXED_DISCOUNT</option><option>PERCENT_DISCOUNT</option><option>FREE_ADDON</option><option>STAFF_TEST</option></select>
+          </div>
+          <div>
+            <label for="quantity">Quantity</label>
+            <input id="quantity" type="number" min="1" max="500" value="1">
+          </div>
+          <div>
+            <label for="maxUses">Max uses per code</label>
+            <input id="maxUses" type="number" min="1" value="1">
+          </div>
+          <div>
+            <label for="validUntil">Valid until</label>
+            <input id="validUntil" type="datetime-local">
+          </div>
+          <div class="full">
+            <label for="campaignName">Campaign name</label>
+            <input id="campaignName" value="Voucher Test">
+          </div>
+          <div class="full">
+            <label for="purpose">Purpose</label>
+            <input id="purpose" value="Manual QA test">
+          </div>
+        </div>
+        <div class="actions">
+          <button class="primary" id="generateBtn">Generate</button>
+          <button class="green" id="copyGeneratedBtn">Copy generated code to status check</button>
+        </div>
+        <div id="generateStatus" class="status"></div>
+      </section>
+
+      <section class="panel">
+        <h2>2. Check Voucher Status</h2>
+        <div class="form-grid">
+          <div class="full">
+            <label for="voucherCode">Voucher code</label>
+            <input id="voucherCode" placeholder="PB-XXXXXXXX">
+          </div>
+        </div>
+        <div class="actions">
+          <button class="primary" id="statusBtn">Check Status</button>
+        </div>
+        <div id="statusResult" class="status"></div>
+        <div class="hint">This status check is for frontend websites. Use <code>usable_now</code>, <code>has_been_used</code>, and <code>quota_exhausted</code> from the response.</div>
+      </section>
+    </div>
+  </main>
+  <script>
+    const storageKey = "photoBoothVoucherTest";
+    const fields = ["adminToken", "projectId"];
+    const state = { generatedCode: "" };
+
+    function el(id) { return document.getElementById(id); }
+    function pretty(value) { return JSON.stringify(value, null, 2); }
+    function show(value) { el("output").textContent = typeof value === "string" ? value : pretty(value); }
+    function status(id, message, kind) { el(id).textContent = message || ""; el(id).className = "status" + (kind ? " " + kind : ""); }
+    function authHeaders(kind) {
+      const headers = { "Content-Type": "application/json" };
+      const token = kind === "admin" ? el("adminToken").value.trim() : "";
+      if (token) headers.Authorization = "Bearer " + token;
+      return headers;
+    }
+    async function post(path, body, kind) {
+      const response = await fetch(path, { method: "POST", headers: authHeaders(kind), body: JSON.stringify(body) });
+      const json = await response.json().catch(() => ({ success: false, error: { message: response.statusText } }));
+      show(json);
+      if (!response.ok || json.success === false) throw new Error((json.error && json.error.message) || response.statusText);
+      return json.data;
+    }
+    function loadSaved() {
+      try {
+        const saved = JSON.parse(localStorage.getItem(storageKey) || "{}");
+        fields.forEach((id) => { if (saved[id]) el(id).value = saved[id]; });
+      } catch {}
+      if (!el("adminToken").value && (location.hostname === "localhost" || location.hostname === "127.0.0.1")) {
+        el("adminToken").value = "dev-admin-token";
+      }
+    }
+    function saveAuth() {
+      const saved = {};
+      fields.forEach((id) => { saved[id] = el(id).value; });
+      localStorage.setItem(storageKey, JSON.stringify(saved));
+      show("Saved auth fields in this browser.");
+    }
+    function validUntilIso() {
+      const value = el("validUntil").value;
+      return value ? new Date(value).toISOString() : null;
+    }
+
+    el("saveAuth").addEventListener("click", saveAuth);
+    el("clearAuth").addEventListener("click", () => { localStorage.removeItem(storageKey); show("Cleared saved auth fields."); });
+    el("generateBtn").addEventListener("click", async () => {
+      try {
+        status("generateStatus", "Generating...", "");
+        const body = {
+          project_id: el("projectId").value.trim(),
+          campaign_name: el("campaignName").value.trim(),
+          purpose: el("purpose").value.trim(),
+          code_mode: el("codeMode").value,
+          benefit_type: el("benefitType").value,
+          quantity: Number(el("quantity").value || 1),
+          max_uses_per_code: Number(el("maxUses").value || 1)
+        };
+        const until = validUntilIso();
+        if (until) body.valid_until = until;
+        if (body.code_mode === "MANUAL") body.code_name = el("codeName").value.trim();
+        const data = await post("/api/admin/v1/vouchers/generate", body, "admin");
+        state.generatedCode = data.vouchers && data.vouchers[0] ? data.vouchers[0].code : "";
+        if (state.generatedCode) el("voucherCode").value = state.generatedCode;
+        status("generateStatus", "Generated. Code copied to status check field.", "ok");
+      } catch (error) {
+        status("generateStatus", error.message, "error");
+      }
+    });
+    el("copyGeneratedBtn").addEventListener("click", () => {
+      if (state.generatedCode) el("voucherCode").value = state.generatedCode;
+    });
+    el("statusBtn").addEventListener("click", async () => {
+      try {
+        status("statusResult", "Checking status...", "");
+        const data = await post("/api/web/v1/vouchers/status", {
+          voucher_code: el("voucherCode").value.trim(),
+          project_id: el("projectId").value.trim()
+        }, "web");
+        status("statusResult", "Status: " + data.status + ". Usable now: " + String(data.usable_now) + ".", data.usable_now ? "ok" : "error");
+      } catch (error) {
+        status("statusResult", error.message, "error");
+      }
+    });
+    loadSaved();
+  </script>
+</body>
+</html>`;
 }
 
 function normalizeOptional(value) {

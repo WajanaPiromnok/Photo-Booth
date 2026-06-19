@@ -28,5 +28,25 @@ namespace PhotoBooth.Booth.Editor.Frontend
             Selection.activeGameObject = controller.gameObject;
             Debug.Log("Installed editable MRKREME UI in the current scene.");
         }
+
+        [MenuItem("Photo Booth/UI/Install Editable Voucher Entry Screen In Scene", priority = 201)]
+        public static void InstallEditableVoucherEntryScreenInScene()
+        {
+            var controller = UnityEngine.Object.FindFirstObjectByType<BoothFrontendController>();
+            if (controller == null)
+            {
+                EditorUtility.DisplayDialog("Photo Booth", "BoothFrontendController was not found in the current scene.", "OK");
+                return;
+            }
+
+            Undo.RegisterFullObjectHierarchyUndo(controller.gameObject, "Install Editable Voucher Entry Screen");
+            controller.EnsureEditableVoucherEntryScreenInScene();
+            EditorUtility.SetDirty(controller);
+            EditorSceneManager.MarkSceneDirty(controller.gameObject.scene);
+
+            var voucherScreen = controller.transform.Find("BoothFrontendCanvas/EditableMrkremeFrontendRoot/VoucherEntryScreen");
+            Selection.activeGameObject = voucherScreen != null ? voucherScreen.gameObject : controller.gameObject;
+            Debug.Log("Installed editable VoucherEntryScreen in the current scene.");
+        }
     }
 }

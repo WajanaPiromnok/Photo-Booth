@@ -4,6 +4,10 @@ using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using OpenCVForUnity.CoreModule;
+using OpenCVForUnity.ImgprocModule;
+using OpenCVForUnity.ObjdetectModule;
+using OpenCVForUnity.UnityIntegration;
 using PhotoBooth.Booth.AR;
 using PhotoBooth.Booth.Domain;
 using PhotoBooth.Booth.Services;
@@ -13,8 +17,8 @@ using UnityEngine;
 using UnityEngine.Networking;
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
-using Process = System.Diagnostics.Process;
-using ProcessStartInfo = System.Diagnostics.ProcessStartInfo;
+using UnityEngine.InputSystem;
+using Rect = UnityEngine.Rect;
 #if UNITY_EDITOR
 using UnityEditor;
 #endif
@@ -25,6 +29,11 @@ namespace PhotoBooth.Booth.Frontend
     {
         private const string MrKremeResourceRoot = "MrkremeUi/";
         private const int NoArPresetIndex = -2;
+        private const int VoucherCodeMaxLength = 24;
+        private const string VoucherCodePrefix = "PB-";
+        private const int VoucherSuccessCountdownSeconds = 5;
+        private const float VoucherQrScanIntervalSeconds = 0.25f;
+        private const float UsbVoucherScannerFlushSeconds = 0.35f;
         // MediaPipe FaceMesh 478-point landmark indices for face regions.
         private static readonly int[] FaceMarkJawIndices = { 10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109, 10 };
         private static readonly int[] FaceMarkRightBrowIndices = { 46, 53, 52, 65, 55, 70, 63, 105, 66, 107 };
@@ -79,10 +88,10 @@ namespace PhotoBooth.Booth.Frontend
         [SerializeField] private bool forcePortraitResolution = true;
         [SerializeField] private int countdownSeconds = 3;
         [SerializeField] private int capturesPerSession = 1;
-        [SerializeField] private int motionClipFramesPerSecond = 4;
+        [SerializeField] private int motionClipFramesPerSecond = 15;
         [SerializeField] private bool enableArTracking = true;
         [SerializeField] private int maxArFaces = 4;
-        [SerializeField] private int arPreviewUpdateIntervalMs = 33;
+        [SerializeField] private int arPreviewUpdateIntervalMs = 100;
         [SerializeField] private bool mirrorArOverlayHorizontally;
         [SerializeField] private bool showFaceMarkDebugLines = true;
         [SerializeField] private bool showArDebugTelemetry = true;
@@ -110,10 +119,22 @@ namespace PhotoBooth.Booth.Frontend
         [SerializeField] private Color faceMarkDebugLineColor = new(0f, 1f, 0.55f, 0.9f);
         [SerializeField] private string ffmpegExecutablePath = "ffmpeg";
         [SerializeField] private int ffmpegTimeoutSeconds = 20;
-        [SerializeField] private bool enableObsbotPowerControl = true;
+        [SerializeField] private CameraDeviceControllerKind cameraDeviceControllerKind = CameraDeviceControllerKind.None;
+        [SerializeField] private bool enableObsbotPowerControl = false;
         [SerializeField] private string obsbotControlExecutablePath = "tools/obsbot-control/bin/obsbot-control";
         [SerializeField] private string obsbotControlDeviceName = "OBSBOT";
         [SerializeField] private int obsbotControlTimeoutMs = 8000;
+        [SerializeField] private string externalCameraWakeCommand = string.Empty;
+        [SerializeField] private string externalCameraSleepCommand = string.Empty;
+        [SerializeField] private string externalCameraStatusCommand = string.Empty;
+        [SerializeField] private int externalCameraCommandTimeoutMs = 8000;
+        [SerializeField] private bool useGPhoto2RawCapture = true;
+        [SerializeField] private bool useGPhoto2Preview = false;
+        [SerializeField] private int gPhoto2PreviewFramesPerSecond = 30;
+        [SerializeField] private bool gPhoto2PreviewFailureFallbackEnabled = true;
+        [SerializeField] private string gPhoto2ExecutablePath = "/opt/homebrew/bin/gphoto2";
+        [SerializeField] private int gPhoto2CaptureTimeoutMs = 20000;
+        [SerializeField] private bool gPhoto2KillPtpcameraBeforeCommand = true;
         [SerializeField] private Vector2Int cameraCaptureSize = new(1280, 720);
         [SerializeField] private Vector2Int thumbnailSize = new(320, 180);
         [SerializeField] private Sprite[] captureForegroundTextures;
@@ -145,6 +166,21 @@ namespace PhotoBooth.Booth.Frontend
         [SerializeField] private TextMeshProUGUI captureCountText;
         [SerializeField] private TextMeshProUGUI aiStyleText;
         [SerializeField] private TextMeshProUGUI nameEntryText;
+        [SerializeField] private TextMeshProUGUI voucherCodeEntryText;
+        [SerializeField] private TextMeshProUGUI voucherCodeCountText;
+        [SerializeField] private GameObject voucherModalRoot;
+        [SerializeField] private TextMeshProUGUI voucherModalMessageText;
+        [SerializeField] private Button voucherModalConfirmButton;
+        [SerializeField] private Button voucherScanButton;
+        [SerializeField] private Button voucherCameraOnButton;
+        [SerializeField] private Button voucherCameraOffButton;
+        [SerializeField] private TextMeshProUGUI voucherScanStatusText;
+        [SerializeField] private GameObject voucherScanPreviewFrame;
+        [SerializeField] private RawImage voucherScanPreview;
+        [SerializeField] private GameObject voucherRemoteScanPanel;
+        [SerializeField] private RawImage voucherRemoteQrImage;
+        [SerializeField] private TextMeshProUGUI voucherRemoteScanStatusText;
+        [SerializeField] private Button voucherRemoteRefreshButton;
         [SerializeField] private TextMeshProUGUI downloadUrlText;
         [SerializeField] private TextMeshProUGUI printStatusText;
         [SerializeField] private TextMeshProUGUI arDebugText;
@@ -161,6 +197,7 @@ namespace PhotoBooth.Booth.Frontend
         [SerializeField] private Sprite[] previewFrameSprites = Array.Empty<Sprite>();
         [SerializeField] private Rect[] previewFrameCaptureSlots = Array.Empty<Rect>();
         [SerializeField] private Button captureButton;
+        [SerializeField] private Button captureRetakeButton;
         [SerializeField] private Button retakeButton;
         [SerializeField] private Button continueButton;
         [SerializeField] private Button printButton;
@@ -171,6 +208,8 @@ namespace PhotoBooth.Booth.Frontend
         private readonly ArStickerRenderer arStickerRenderer = new();
         private readonly ArTrackingStabilizer arTrackingStabilizer = new();
         private BoothCameraCaptureService cameraCaptureService;
+        private GPhoto2CameraCaptureService gPhoto2CaptureService;
+        private BoothCameraCaptureService voucherScannerCameraService;
         private IArTrackingProvider arTrackingProvider;
         private ArTrackingFrame latestArTrackingFrame = ArTrackingFrame.Empty;
         private BoothFrontendAnalyticsClient backendAnalytics;
@@ -189,6 +228,7 @@ namespace PhotoBooth.Booth.Frontend
         private int selectedArStickerIndex = -1;
         private Texture2D motionPreviewTexture;
         private Texture2D composedPreviewTexture;
+        private Texture2D captureReviewTexture;
         private Texture2D qrPreviewTexture;
         private Sprite qrPreviewSprite;
         private Sprite previewFrameRuntimeSprite;
@@ -209,12 +249,16 @@ namespace PhotoBooth.Booth.Frontend
         private CancellationTokenSource previewFrameMotionPlaybackCancellation;
         private CancellationTokenSource qrLoadingCancellation;
         private CancellationTokenSource arPreviewCancellation;
+        private Texture2D arFrameTexture;
         private BoothRawCaptureUploadQueue rawCaptureUploadQueue;
         private bool rawCaptureUploadStarted;
         private bool previewScreenShowsFinalDownload;
         private bool printRequestStarted;
+        private bool isCaptureReviewing;
+        private bool captureReviewRetakeUsed;
         private bool isStartingCapturePreview;
-        private bool loggedMissingObsbotControl;
+        private ICameraDeviceController cameraDeviceController;
+        private string cameraDeviceControllerSignature = string.Empty;
         private bool hasDefaultCameraPreviewRect;
         private Vector2 defaultCameraPreviewAnchorMin;
         private Vector2 defaultCameraPreviewAnchorMax;
@@ -236,6 +280,196 @@ namespace PhotoBooth.Booth.Frontend
         private bool selectedThemeUsesMonsterFrame;
         private int selectedImagePreviewIndex = 1;
         private string passengerName = string.Empty;
+        private string voucherCode = string.Empty;
+        private string pendingVoucherCheckoutToken = string.Empty;
+        private string pendingVoucherCode = string.Empty;
+        private string pendingVoucherIdempotencyKey = string.Empty;
+        private long pendingVoucherRedemptionId;
+        private int pendingVoucherRemainingUsesAfterApply = -1;
+        private int voucherAttemptCounter;
+        private bool voucherSuccessContinueRequested;
+        private bool isVoucherScannerStarting;
+        private bool isConfirmingScannedVoucher;
+        private bool isUsbVoucherScannerInputHooked;
+        private float usbVoucherScannerLastInputAt;
+        private string usbVoucherScannerBuffer = string.Empty;
+        private CancellationTokenSource voucherScannerCancellation;
+        private CancellationTokenSource voucherRemoteScanCancellation;
+        private Texture2D voucherRemoteQrTexture;
+        private string voucherRemoteScanSessionToken = string.Empty;
+        private QRCodeDetector voucherQrDetector;
+        private Mat voucherQrRgbaMat;
+        private Mat voucherQrGrayMat;
+        private Mat voucherQrPointsMat;
+        private readonly List<string> voucherQrDecodedInfo = new();
+        private readonly List<Mat> voucherQrStraightQrcode = new();
+
+        private sealed class VoucherApiException : Exception
+        {
+            public VoucherApiException(string code, string message, long responseCode)
+                : base(string.IsNullOrWhiteSpace(message) ? "Voucher request failed." : message)
+            {
+                Code = code ?? string.Empty;
+                ResponseCode = responseCode;
+            }
+
+            public string Code { get; }
+            public long ResponseCode { get; }
+        }
+
+        [Serializable]
+        private sealed class BoothApiErrorPayload
+        {
+            public string code;
+            public string message;
+        }
+
+        [Serializable]
+        private sealed class VoucherValidateRequest
+        {
+            public string job_id;
+            public string voucher_code;
+            public string device_id;
+        }
+
+        [Serializable]
+        private sealed class VoucherRemoteScanCreateRequest
+        {
+            public string job_id;
+            public string device_id;
+        }
+
+        [Serializable]
+        private sealed class VoucherRemoteScanAckRequest
+        {
+            public string status;
+            public string device_id;
+        }
+
+        [Serializable]
+        private sealed class VoucherReserveRequest
+        {
+            public string job_id;
+            public string checkout_token;
+            public string idempotency_key;
+            public long gross_amount_minor;
+            public string currency;
+            public string device_id;
+            public string theme_id;
+            public string image_preview_id;
+            public string passenger_name;
+            public long amount_minor_units;
+            public string payment_reference;
+            public string session_started_at_utc;
+        }
+
+        [Serializable]
+        private sealed class VoucherRedemptionActionRequest
+        {
+            public string device_id;
+        }
+
+        [Serializable]
+        private sealed class VoucherValidateData
+        {
+            public bool valid;
+            public string project_id;
+            public string project_code;
+            public long voucher_id;
+            public string benefit_type;
+            public long benefit_value_minor;
+            public long benefit_percent;
+            public int remaining_uses;
+            public string checkout_token;
+        }
+
+        [Serializable]
+        private sealed class VoucherStatusData
+        {
+            public bool exists;
+            public string project_id;
+            public string project_code;
+            public string code_masked;
+            public string status;
+            public bool usable_now;
+            public bool has_been_used;
+            public bool quota_exhausted;
+            public int used_count;
+            public int max_uses;
+            public int remaining_uses;
+            public string benefit_type;
+            public long benefit_value_minor;
+            public long benefit_percent;
+            public string valid_from;
+            public string valid_until;
+        }
+
+        [Serializable]
+        private sealed class VoucherRemoteScanSessionData
+        {
+            public string session_token;
+            public string project_id;
+            public string device_id;
+            public string job_id;
+            public string status;
+            public string voucher_code;
+            public VoucherStatusData voucher_status;
+            public string scan_url;
+            public string qr_png_url;
+            public string expires_at;
+        }
+
+        [Serializable]
+        private sealed class VoucherReserveData
+        {
+            public long redemption_id;
+            public string status;
+            public long gross_amount_minor;
+            public long discount_amount_minor;
+            public long net_amount_minor;
+            public string currency_code;
+            public bool payment_required;
+        }
+
+        [Serializable]
+        private sealed class VoucherRedemptionActionData
+        {
+            public long redemption_id;
+            public string status;
+            public bool released;
+        }
+
+        [Serializable]
+        private sealed class VoucherValidateEnvelope
+        {
+            public bool success;
+            public VoucherValidateData data;
+            public BoothApiErrorPayload error;
+        }
+
+        [Serializable]
+        private sealed class VoucherRemoteScanSessionEnvelope
+        {
+            public bool success;
+            public VoucherRemoteScanSessionData data;
+            public BoothApiErrorPayload error;
+        }
+
+        [Serializable]
+        private sealed class VoucherReserveEnvelope
+        {
+            public bool success;
+            public VoucherReserveData data;
+            public BoothApiErrorPayload error;
+        }
+
+        [Serializable]
+        private sealed class VoucherRedemptionActionEnvelope
+        {
+            public bool success;
+            public VoucherRedemptionActionData data;
+            public BoothApiErrorPayload error;
+        }
 
 #if UNITY_EDITOR
         private void OnEnable()
@@ -245,6 +479,7 @@ namespace PhotoBooth.Booth.Frontend
                 return;
             }
 
+            ScheduleEditorVoucherEntryScreenInstall();
             ScheduleEditorTracked3dFaceGuidePreview();
         }
 
@@ -256,7 +491,40 @@ namespace PhotoBooth.Booth.Frontend
                 return;
             }
 
+            ScheduleEditorVoucherEntryScreenInstall();
             ScheduleEditorTracked3dFaceGuidePreview();
+        }
+
+        private void ScheduleEditorVoucherEntryScreenInstall()
+        {
+            EditorApplication.delayCall -= ApplyEditorVoucherEntryScreenInstall;
+            EditorApplication.delayCall += ApplyEditorVoucherEntryScreenInstall;
+        }
+
+        private void ApplyEditorVoucherEntryScreenInstall()
+        {
+            EditorApplication.delayCall -= ApplyEditorVoucherEntryScreenInstall;
+            if (this == null || Application.isPlaying)
+            {
+                return;
+            }
+
+            if (FindScreenRoot(BoothUiScreenId.ArtStyleSelect) == null)
+            {
+                return;
+            }
+
+            if (FindScreenRoot(BoothUiScreenId.VoucherEntry) == null)
+            {
+                EnsureVoucherEntryScreen();
+            }
+
+            BindUiEvents();
+            EditorUtility.SetDirty(this);
+            if (gameObject.scene.IsValid())
+            {
+                UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(gameObject.scene);
+            }
         }
 
         private void ScheduleEditorTracked3dFaceGuidePreview()
@@ -331,6 +599,7 @@ namespace PhotoBooth.Booth.Frontend
                 BuildRuntimeUi();
             }
 
+            EnsureVoucherEntryScreen();
             BindUiEvents();
             flowCancellation = new CancellationTokenSource();
             SwitchScreen(BoothUiScreenId.Attract, "Touch start to begin.");
@@ -398,6 +667,25 @@ namespace PhotoBooth.Booth.Frontend
 #endif
         }
 
+        public void EnsureEditableVoucherEntryScreenInScene()
+        {
+            EnsureVoucherEntryScreen();
+            BindUiEvents();
+#if UNITY_EDITOR
+            UnityEditor.EditorUtility.SetDirty(this);
+#endif
+        }
+
+        private void Update()
+        {
+            if (currentScreen != BoothUiScreenId.VoucherEntry)
+            {
+                return;
+            }
+
+            ProcessUsbVoucherScannerInput();
+        }
+
         public async void StartSessionFromUi()
         {
             if (!await BeginBusyAsync())
@@ -414,15 +702,18 @@ namespace PhotoBooth.Booth.Frontend
                 selectedAiStyle = null;
                 pendingThemeIndex = -1;
                 pendingImagePreviewIndex = 1;
-                pendingThemeUsesMonsterFrame = false;
+                pendingThemeUsesMonsterFrame = true;
                 selectedThemeUsesMonsterFrame = false;
                 selectedImagePreviewIndex = 1;
                 pendingArPresetIndex = -1;
                 selectedArPresetIndex = -1;
                 selectedArStickerIndex = -1;
                 passengerName = string.Empty;
+                voucherCode = string.Empty;
+                ClearPendingVoucherState();
                 ResetCaptureSequence();
                 UpdateNameEntryDisplay();
+                UpdateVoucherCodeDisplay();
                 latestMotionClip = null;
                 EnsureDefaultArStickerPresets();
                 ApplyNoArPresetSelection(updateStatus: false, trackSelection: false);
@@ -430,11 +721,13 @@ namespace PhotoBooth.Booth.Frontend
                 StopMotionClipPlayback();
                 StopLivePhotoPreviewPlayback();
                 StopPreviewFrameMotionPlayback();
+                ClearCaptureReviewImage();
                 ClearPreview(motionPreview, ref motionPreviewTexture);
                 ClearPreview(composedPreview, ref composedPreviewTexture);
                 ClearPreviewFrameSlots();
                 ClearQrPreview();
-                SetMonsterFramePreviewMode(false);
+                ApplyMonsterFrameSelection(true);
+                UpdateMonsterToggleSelectionVisuals(true);
                 await TrackAsync("booth_frontend_session_started");
                 SwitchScreen(BoothUiScreenId.ThemeSelect, "Choose your frame.");
             }
@@ -478,6 +771,7 @@ namespace PhotoBooth.Booth.Frontend
             var theme = ResolveTheme(themeIndex);
             pendingImagePreviewIndex = ResolveImagePreviewIndex(theme, themeIndex);
             ApplyMonsterFrameSelection(useMonsterFrame);
+            UpdateMonsterToggleSelectionVisuals(useMonsterFrame);
             SetStatus($"Selected frame: {theme.displayName}{BuildMonsterFrameStatusSuffix(useMonsterFrame)}. Tap confirm to continue.");
             priceText?.SetText(FormatPrice(theme));
         }
@@ -496,6 +790,7 @@ namespace PhotoBooth.Booth.Frontend
         {
             pendingThemeUsesMonsterFrame = false;
             ApplyMonsterFrameSelection(false);
+            UpdateMonsterToggleSelectionVisuals(false);
             if (pendingThemeIndex >= 0)
             {
                 ChooseThemeCandidateFromUi(pendingThemeIndex, false);
@@ -506,6 +801,7 @@ namespace PhotoBooth.Booth.Frontend
         {
             pendingThemeUsesMonsterFrame = true;
             ApplyMonsterFrameSelection(true);
+            UpdateMonsterToggleSelectionVisuals(true);
             if (pendingThemeIndex >= 0)
             {
                 ChooseThemeCandidateFromUi(pendingThemeIndex, true);
@@ -742,6 +1038,60 @@ namespace PhotoBooth.Booth.Frontend
             }
         }
 
+        public async void OpenVoucherEntryFromUi()
+        {
+            if (!await BeginBusyAsync())
+            {
+                return;
+            }
+
+            try
+            {
+                EnsureCurrentJob();
+                if (pendingVoucherRedemptionId > 0)
+                {
+                    await ReleasePendingVoucherReservationAsync();
+                    currentJob = CreateCheckoutRetryJobPreservingSelection(currentJob);
+                }
+
+                voucherCode = string.IsNullOrWhiteSpace(pendingVoucherCode) ? voucherCode : ExtractVoucherSuffix(pendingVoucherCode);
+                UpdateVoucherCodeDisplay();
+                SwitchScreen(BoothUiScreenId.VoucherEntry, "Enter voucher code.");
+            }
+            catch (Exception exception)
+            {
+                Debug.LogError($"Opening voucher entry failed: {exception}");
+                ShowError(exception.Message);
+            }
+            finally
+            {
+                EndBusy();
+            }
+        }
+
+        public async void BackFromVoucherEntryFromUi()
+        {
+            if (!await BeginBusyAsync())
+            {
+                return;
+            }
+
+            try
+            {
+                StopVoucherScanner("voucher_back");
+                SwitchScreen(BoothUiScreenId.PaymentMock, "Choose payment.");
+            }
+            catch (Exception exception)
+            {
+                Debug.LogError($"Voucher back navigation failed: {exception}");
+                ShowError(exception.Message);
+            }
+            finally
+            {
+                EndBusy();
+            }
+        }
+
         public async void PayMockFromUi()
         {
             if (!await BeginBusyAsync())
@@ -752,8 +1102,20 @@ namespace PhotoBooth.Booth.Frontend
             try
             {
                 EnsureCurrentJobOrCreateQuickDemo(paymentConfirmed: false);
-                currentJob = runtime.SessionService.SetPaymentPending(currentJob.JobId, $"MOCK-{currentJob.JobId}");
-                currentJob = runtime.SessionService.ConfirmPayment(currentJob.JobId, $"MOCK-{currentJob.JobId}");
+                var paymentReference = pendingVoucherRedemptionId > 0
+                    ? $"MOCK-{currentJob.JobId}-VOUCHER-{pendingVoucherRedemptionId}"
+                    : $"MOCK-{currentJob.JobId}";
+                if (currentJob.Status == BoothJobStatus.ThemeSelected)
+                {
+                    currentJob = runtime.SessionService.SetPaymentPending(currentJob.JobId, paymentReference);
+                }
+
+                currentJob = runtime.SessionService.ConfirmPayment(currentJob.JobId, paymentReference);
+                if (pendingVoucherRedemptionId > 0)
+                {
+                    await ApplyReservedVoucherAsync(pendingVoucherRedemptionId, flowCancellation.Token);
+                }
+
                 await TrackAsync("booth_frontend_mock_payment_confirmed", metadata: BuildAiMetadata());
                 UpdateNameEntryDisplay();
                 ResetCaptureSequence();
@@ -793,6 +1155,141 @@ namespace PhotoBooth.Booth.Frontend
 
             passengerName = passengerName[..^1];
             UpdateNameEntryDisplay();
+        }
+
+        public void AppendVoucherCharacterFromUi(string character)
+        {
+            var normalizedCharacter = NormalizeVoucherCodeCharacter(character);
+            if (string.IsNullOrWhiteSpace(normalizedCharacter) || voucherCode.Length >= ResolveVoucherSuffixMaxLength())
+            {
+                return;
+            }
+
+            voucherCode += normalizedCharacter;
+            UpdateVoucherCodeDisplay();
+        }
+
+        public void BackspaceVoucherFromUi()
+        {
+            if (string.IsNullOrEmpty(voucherCode))
+            {
+                return;
+            }
+
+            voucherCode = voucherCode[..^1];
+            UpdateVoucherCodeDisplay();
+        }
+
+        public async void ConfirmVoucherFromUi()
+        {
+            if (!await BeginBusyAsync())
+            {
+                return;
+            }
+
+            try
+            {
+                await ConfirmVoucherAsync(BuildFullVoucherCode(), "voucher_confirm");
+            }
+            catch (VoucherApiException exception)
+            {
+                Debug.LogWarning($"Voucher confirmation rejected: {exception.Code} {exception.Message}");
+                ShowVoucherRetryModal(ResolveVoucherFailureMessage(exception));
+            }
+            catch (Exception exception)
+            {
+                Debug.LogError($"Voucher confirmation failed: {exception}");
+                ShowVoucherRetryModal(exception.Message);
+            }
+            finally
+            {
+                EndBusy();
+            }
+        }
+
+        private async Task ConfirmScannedVoucherAsync(string normalizedVoucherCode)
+        {
+            if (isConfirmingScannedVoucher)
+            {
+                return;
+            }
+
+            isConfirmingScannedVoucher = true;
+            if (!await BeginBusyAsync())
+            {
+                isConfirmingScannedVoucher = false;
+                return;
+            }
+
+            try
+            {
+                await ConfirmVoucherAsync(normalizedVoucherCode, "voucher_scanned");
+            }
+            catch (VoucherApiException exception)
+            {
+                Debug.LogWarning($"Scanned voucher confirmation rejected: {exception.Code} {exception.Message}");
+                ShowVoucherRetryModal(ResolveVoucherFailureMessage(exception));
+            }
+            catch (Exception exception)
+            {
+                Debug.LogError($"Scanned voucher confirmation failed: {exception}");
+                ShowVoucherRetryModal(exception.Message);
+            }
+            finally
+            {
+                isConfirmingScannedVoucher = false;
+                EndBusy();
+            }
+        }
+
+        private async Task ConfirmVoucherAsync(string rawVoucherCode, string stopScannerReason)
+        {
+            StopVoucherScanner(stopScannerReason);
+            EnsureCurrentJob();
+            if (currentJob.Status != BoothJobStatus.ThemeSelected)
+            {
+                currentJob = CreateCheckoutRetryJobPreservingSelection(currentJob);
+            }
+
+            var normalizedVoucherCode = NormalizeVoucherCode(rawVoucherCode);
+            if (string.IsNullOrWhiteSpace(ExtractVoucherSuffix(normalizedVoucherCode)))
+            {
+                SetStatus("Enter a voucher code first.");
+                return;
+            }
+
+            voucherCode = ExtractVoucherSuffix(normalizedVoucherCode);
+            UpdateVoucherCodeDisplay();
+
+            var validate = await ValidateVoucherAsync(normalizedVoucherCode, flowCancellation.Token);
+            pendingVoucherCheckoutToken = validate.checkout_token ?? string.Empty;
+            pendingVoucherCode = normalizedVoucherCode;
+            pendingVoucherIdempotencyKey = ResolveVoucherIdempotencyKey(normalizedVoucherCode);
+            pendingVoucherRemainingUsesAfterApply = Mathf.Max(0, validate.remaining_uses - 1);
+
+            var reserve = await ReserveVoucherAsync(validate.checkout_token, pendingVoucherIdempotencyKey, flowCancellation.Token);
+            pendingVoucherRedemptionId = reserve.redemption_id;
+            currentJob = runtime.SessionService.SetPaymentPending(currentJob.JobId, $"VOUCHER-{reserve.redemption_id}");
+            await TrackAsync(
+                "booth_frontend_voucher_reserved",
+                metadata: new Dictionary<string, string>
+                {
+                    ["voucher_code"] = normalizedVoucherCode,
+                    ["voucher_status"] = reserve.status ?? string.Empty,
+                    ["voucher_redemption_id"] = reserve.redemption_id.ToString(),
+                    ["voucher_net_amount_minor"] = reserve.net_amount_minor.ToString()
+                });
+
+            if (!string.Equals(reserve.status, "APPLIED", StringComparison.OrdinalIgnoreCase))
+            {
+                await ApplyReservedVoucherAsync(reserve.redemption_id, flowCancellation.Token);
+            }
+
+            currentJob = runtime.SessionService.ConfirmPayment(currentJob.JobId, $"VOUCHER-{reserve.redemption_id}");
+            pendingVoucherCheckoutToken = string.Empty;
+            var remainingUsesAfterApply = pendingVoucherRemainingUsesAfterApply;
+            ClearPendingVoucherState(clearEnteredCode: false);
+            await ShowVoucherConfirmedCountdownAndCaptureAsync(remainingUsesAfterApply);
         }
 
         public async void ConfirmNameFromUi()
@@ -835,8 +1332,911 @@ namespace PhotoBooth.Booth.Frontend
             UpdatePassengerNameLabelTexts();
         }
 
+        private void UpdateVoucherCodeDisplay()
+        {
+            var fullCode = BuildFullVoucherCode();
+            voucherCodeEntryText?.SetText(fullCode);
+            voucherCodeCountText?.SetText($"{voucherCode.Length} / {ResolveVoucherSuffixMaxLength()}");
+            UpdateVoucherPlaceholderSlots(fullCode);
+        }
+
+        private string BuildFullVoucherCode()
+        {
+            return $"{VoucherCodePrefix}{voucherCode}";
+        }
+
+        private int ResolveVoucherSuffixMaxLength()
+        {
+            var slotLabels = FindVoucherPlaceholderSlotLabels();
+            if (slotLabels.Count > VoucherCodePrefix.Length)
+            {
+                return slotLabels.Count - VoucherCodePrefix.Length;
+            }
+
+            return Mathf.Max(0, VoucherCodeMaxLength - VoucherCodePrefix.Length);
+        }
+
+        private void UpdateVoucherPlaceholderSlots(string fullCode)
+        {
+            var slotLabels = FindVoucherPlaceholderSlotLabels();
+            if (slotLabels.Count == 0)
+            {
+                return;
+            }
+
+            for (var i = 0; i < slotLabels.Count; i++)
+            {
+                var label = slotLabels[i];
+                if (label == null)
+                {
+                    continue;
+                }
+
+                label.SetText(i < fullCode.Length ? fullCode[i].ToString() : string.Empty);
+            }
+        }
+
+        private List<TextMeshProUGUI> FindVoucherPlaceholderSlotLabels()
+        {
+            var labels = new List<TextMeshProUGUI>();
+            var root = FindScreenRoot(BoothUiScreenId.VoucherEntry);
+            var grid = root != null ? FindDescendant(root, "Placeholder/Grid") : null;
+            if (grid == null)
+            {
+                return labels;
+            }
+
+            for (var i = 0; i < grid.childCount; i++)
+            {
+                var child = grid.GetChild(i);
+                var label = child.GetComponentInChildren<TextMeshProUGUI>(true);
+                if (label != null)
+                {
+                    labels.Add(label);
+                }
+            }
+
+            return labels;
+        }
+
+        public void StartVoucherScannerFromUi()
+        {
+            StartVoucherScanner();
+        }
+
+        public void TurnVoucherCameraOnFromUi()
+        {
+            StartVoucherScanner();
+        }
+
+        public void TurnVoucherCameraOffFromUi()
+        {
+            StopVoucherScanner("camera_off_button");
+            SetVoucherScanStatus("Camera off");
+        }
+
+        private void StartVoucherScanner(bool restart = false)
+        {
+            if (currentScreen != BoothUiScreenId.VoucherEntry)
+            {
+                return;
+            }
+
+            if (restart)
+            {
+                StopVoucherScanner("restart");
+            }
+
+            SetVoucherScanPreviewVisible(true);
+
+            if (voucherScannerCameraService != null && voucherScannerCameraService.IsPreviewing)
+            {
+                SetVoucherScanStatus("Scanning...");
+                return;
+            }
+
+            if (voucherScannerCancellation != null || isVoucherScannerStarting)
+            {
+                SetVoucherScanStatus("Scanning...");
+                return;
+            }
+
+            if (voucherScannerCameraService != null && !voucherScannerCameraService.IsPreviewing)
+            {
+                voucherScannerCameraService.Dispose();
+                voucherScannerCameraService = null;
+            }
+
+            voucherScannerCancellation = new CancellationTokenSource();
+            RegisterUsbVoucherScannerInput();
+            _ = RunVoucherScannerAsync(voucherScannerCancellation.Token);
+        }
+
+        private async Task RunVoucherScannerAsync(CancellationToken cancellationToken)
+        {
+            isVoucherScannerStarting = true;
+            SetVoucherScanStatus("Scanning...");
+            try
+            {
+                EnsureVoucherQrDetector();
+                voucherScannerCameraService ??= CreateVoucherScannerCameraService();
+                await WakeCameraDeviceAsync(cancellationToken);
+                await voucherScannerCameraService.StartPreviewAsync(cancellationToken);
+                SetVoucherScanStatus("Scanning...");
+                while (!cancellationToken.IsCancellationRequested && currentScreen == BoothUiScreenId.VoucherEntry)
+                {
+                    TryDecodeVoucherQrFrame();
+                    await Task.Delay(Mathf.RoundToInt(VoucherQrScanIntervalSeconds * 1000f), cancellationToken);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception exception)
+            {
+                Debug.LogWarning($"Voucher QR scanner unavailable: {exception.Message}");
+                SetVoucherScanStatus("QR camera unavailable. Type code.");
+                voucherScannerCameraService?.StopPreview();
+                voucherScannerCameraService?.Dispose();
+                voucherScannerCameraService = null;
+                SafeCancelAndDisposeVoucherScannerCancellation();
+                SetVoucherScanPreviewVisible(false);
+                SleepObsbotAfterVoucherScannerStop("scanner_unavailable");
+            }
+            finally
+            {
+                isVoucherScannerStarting = false;
+                if (voucherScannerCancellation != null && voucherScannerCancellation.IsCancellationRequested)
+                {
+                    SafeCancelAndDisposeVoucherScannerCancellation();
+                }
+            }
+        }
+
+        private BoothCameraCaptureService CreateVoucherScannerCameraService()
+        {
+            return new BoothCameraCaptureService(
+                voucherScanPreview,
+                cameraCaptureSize.x,
+                cameraCaptureSize.y,
+                preferredDeviceNames: runtime?.PreferredCameraDeviceNames,
+                preferredDeviceDiscoveryTimeoutSeconds: runtime?.PreferredCameraDeviceDiscoveryTimeoutSeconds ?? 3,
+                gPhoto2CaptureService: null,
+                useGPhoto2Preview: false);
+        }
+
+        private void StopVoucherScanner(string reason = "stop")
+        {
+            if (voucherScannerCameraService != null && voucherScannerCameraService.IsPreviewing)
+            {
+                Debug.Log($"Voucher QR scanner stopping: reason={reason}, device={voucherScannerCameraService.CurrentDeviceName}");
+            }
+
+            SafeCancelAndDisposeVoucherScannerCancellation();
+
+            isVoucherScannerStarting = false;
+            usbVoucherScannerBuffer = string.Empty;
+            UnregisterUsbVoucherScannerInput();
+            voucherScannerCameraService?.StopPreview();
+            voucherScannerCameraService?.Dispose();
+            voucherScannerCameraService = null;
+            ClearVoucherQrDecodeBuffers();
+            SetVoucherScanPreviewVisible(false);
+            SleepObsbotAfterVoucherScannerStop(reason);
+        }
+
+        private void SleepObsbotAfterVoucherScannerStop(string reason)
+        {
+            if (string.Equals(reason, "restart", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(reason, "voucher_detected", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(reason, "voucher_scanned", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(reason, "voucher_confirm", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(reason, "leave_voucher_for_capture", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            _ = SleepCameraDeviceAsync();
+        }
+
+        private void SafeCancelAndDisposeVoucherScannerCancellation()
+        {
+            var cancellation = voucherScannerCancellation;
+            voucherScannerCancellation = null;
+            if (cancellation == null)
+            {
+                return;
+            }
+
+            try
+            {
+                cancellation.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+
+            try
+            {
+                cancellation.Dispose();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+        }
+
+        private void TryDecodeVoucherQrFrame()
+        {
+            if (voucherScannerCameraService == null || !voucherScannerCameraService.IsPreviewing)
+            {
+                return;
+            }
+
+            var frame = voucherScannerCameraService.CaptureCurrentFrameTexture();
+            try
+            {
+                EnsureVoucherQrMats(frame.width, frame.height);
+                OpenCVMatUtils.Texture2DToMat(frame, voucherQrRgbaMat);
+                Imgproc.cvtColor(voucherQrRgbaMat, voucherQrGrayMat, Imgproc.COLOR_RGBA2GRAY);
+                ClearVoucherQrDecodedCollections();
+                if (!voucherQrDetector.detectAndDecodeMulti(voucherQrGrayMat, voucherQrDecodedInfo, voucherQrPointsMat, voucherQrStraightQrcode))
+                {
+                    return;
+                }
+
+                foreach (var payload in voucherQrDecodedInfo)
+                {
+                    if (TryApplyScannedVoucherPayload(payload))
+                    {
+                        return;
+                    }
+                }
+            }
+            catch (Exception exception)
+            {
+                Debug.LogWarning($"Voucher QR decode failed: {exception.Message}");
+            }
+            finally
+            {
+                Destroy(frame);
+                ClearVoucherQrDecodedCollections();
+            }
+        }
+
+        private void ProcessUsbVoucherScannerInput()
+        {
+#if ENABLE_LEGACY_INPUT_MANAGER
+            var input = UnityEngine.Input.inputString;
+            if (!string.IsNullOrEmpty(input))
+            {
+                foreach (var character in input)
+                {
+                    AppendUsbVoucherScannerCharacter(character);
+                }
+            }
+#endif
+
+#if ENABLE_INPUT_SYSTEM
+            var keyboard = Keyboard.current;
+            if (keyboard != null && (keyboard.enterKey.wasPressedThisFrame || keyboard.numpadEnterKey.wasPressedThisFrame))
+            {
+                FlushUsbVoucherScannerBuffer();
+            }
+#endif
+
+            if (!string.IsNullOrWhiteSpace(usbVoucherScannerBuffer)
+                && Time.realtimeSinceStartup - usbVoucherScannerLastInputAt >= UsbVoucherScannerFlushSeconds)
+            {
+                FlushUsbVoucherScannerBuffer();
+            }
+        }
+
+        private void RegisterUsbVoucherScannerInput()
+        {
+#if ENABLE_INPUT_SYSTEM
+            if (isUsbVoucherScannerInputHooked || Keyboard.current == null)
+            {
+                return;
+            }
+
+            Keyboard.current.onTextInput += HandleUsbVoucherScannerTextInput;
+            isUsbVoucherScannerInputHooked = true;
+#endif
+        }
+
+        private void UnregisterUsbVoucherScannerInput()
+        {
+#if ENABLE_INPUT_SYSTEM
+            if (!isUsbVoucherScannerInputHooked || Keyboard.current == null)
+            {
+                isUsbVoucherScannerInputHooked = false;
+                return;
+            }
+
+            Keyboard.current.onTextInput -= HandleUsbVoucherScannerTextInput;
+            isUsbVoucherScannerInputHooked = false;
+#else
+            isUsbVoucherScannerInputHooked = false;
+#endif
+        }
+
+        private void HandleUsbVoucherScannerTextInput(char character)
+        {
+            if (currentScreen != BoothUiScreenId.VoucherEntry)
+            {
+                return;
+            }
+
+            AppendUsbVoucherScannerCharacter(character);
+        }
+
+        private void AppendUsbVoucherScannerCharacter(char character)
+        {
+            if (character is '\r' or '\n')
+            {
+                FlushUsbVoucherScannerBuffer();
+                return;
+            }
+
+            if (!char.IsControl(character))
+            {
+                usbVoucherScannerBuffer += character;
+                usbVoucherScannerLastInputAt = Time.realtimeSinceStartup;
+            }
+        }
+
+        private void FlushUsbVoucherScannerBuffer()
+        {
+            var payload = usbVoucherScannerBuffer;
+            usbVoucherScannerBuffer = string.Empty;
+            if (!string.IsNullOrWhiteSpace(payload))
+            {
+                TryApplyScannedVoucherPayload(payload);
+            }
+        }
+
+        private bool TryApplyScannedVoucherPayload(string payload)
+        {
+            if (!TryExtractScannedVoucherCode(payload, out var normalizedVoucherCode))
+            {
+                if (IsVoucherRemoteScanPayload(payload))
+                {
+                    SetVoucherScanStatus("Scan this QR with your phone");
+                    return false;
+                }
+
+                SetVoucherScanStatus("Please scan voucher QR code");
+                return false;
+            }
+
+            voucherCode = ExtractVoucherSuffix(normalizedVoucherCode);
+            UpdateVoucherCodeDisplay();
+            SetVoucherScanStatus("QR detected");
+            StopVoucherScanner("voucher_detected");
+            _ = ConfirmScannedVoucherAsync(normalizedVoucherCode);
+            return true;
+        }
+
+        private static bool IsVoucherRemoteScanPayload(string payload)
+        {
+            return !string.IsNullOrWhiteSpace(payload)
+                && payload.IndexOf("voucher-scan", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private void SetVoucherScanPreviewVisible(bool isVisible)
+        {
+            if (voucherScanPreviewFrame != null)
+            {
+                voucherScanPreviewFrame.SetActive(isVisible);
+            }
+
+            if (voucherScanPreview == null)
+            {
+                return;
+            }
+
+            voucherScanPreview.gameObject.SetActive(isVisible);
+            voucherScanPreview.color = isVisible ? Color.white : new Color(1f, 1f, 1f, 0.08f);
+            if (!isVisible)
+            {
+                voucherScanPreview.texture = null;
+            }
+        }
+
+        private static bool TryExtractScannedVoucherCode(string payload, out string normalizedVoucherCode)
+        {
+            normalizedVoucherCode = string.Empty;
+            if (string.IsNullOrWhiteSpace(payload))
+            {
+                return false;
+            }
+
+            var trimmed = payload.Trim();
+            var prefixedCode = ExtractPrefixedVoucherCode(trimmed);
+            if (!string.IsNullOrWhiteSpace(prefixedCode))
+            {
+                normalizedVoucherCode = NormalizeVoucherCode(prefixedCode);
+                return normalizedVoucherCode.StartsWith(VoucherCodePrefix, StringComparison.OrdinalIgnoreCase);
+            }
+
+            var suffix = NormalizeVoucherCode(trimmed);
+            if (IsPlainVoucherSuffix(suffix))
+            {
+                normalizedVoucherCode = NormalizeVoucherCode($"{VoucherCodePrefix}{suffix}");
+                return true;
+            }
+
+            return false;
+        }
+
+        private static string ExtractPrefixedVoucherCode(string payload)
+        {
+            var upper = payload.ToUpperInvariant();
+            var prefixIndex = upper.IndexOf(VoucherCodePrefix, StringComparison.Ordinal);
+            if (prefixIndex < 0)
+            {
+                return string.Empty;
+            }
+
+            var chars = new List<char>();
+            for (var i = prefixIndex; i < payload.Length; i++)
+            {
+                var character = char.ToUpperInvariant(payload[i]);
+                if ((character >= 'A' && character <= 'Z')
+                    || (character >= '0' && character <= '9')
+                    || character is '-' or '_' or '.')
+                {
+                    chars.Add(character);
+                    continue;
+                }
+
+                if (chars.Count > VoucherCodePrefix.Length)
+                {
+                    break;
+                }
+            }
+
+            return new string(chars.ToArray());
+        }
+
+        private static bool IsPlainVoucherSuffix(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value) || value.Length < 6 || value.Length > VoucherCodeMaxLength - VoucherCodePrefix.Length)
+            {
+                return false;
+            }
+
+            var hasLetter = false;
+            var hasDigit = false;
+            foreach (var character in value)
+            {
+                if (character >= 'A' && character <= 'Z')
+                {
+                    hasLetter = true;
+                    continue;
+                }
+
+                if (character >= '0' && character <= '9')
+                {
+                    hasDigit = true;
+                    continue;
+                }
+
+                if (!((character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9')))
+                {
+                    return false;
+                }
+            }
+
+            return hasLetter && hasDigit;
+        }
+
+        private void SetVoucherScanStatus(string message)
+        {
+            voucherScanStatusText?.SetText(message ?? string.Empty);
+        }
+
+        public void RefreshVoucherRemoteScanFromUi()
+        {
+            StartVoucherRemoteScanSession(restart: true);
+        }
+
+        private void StartVoucherRemoteScanSession(bool restart = false)
+        {
+            if (currentScreen != BoothUiScreenId.VoucherEntry)
+            {
+                return;
+            }
+
+            EnsureVoucherRemoteScanUi(FindScreenRoot(BoothUiScreenId.VoucherEntry));
+            SetVoucherRemoteScanPanelVisible(true);
+
+            if (restart)
+            {
+                StopVoucherRemoteScanSession("CANCELLED");
+                SetVoucherRemoteScanPanelVisible(true);
+            }
+
+            if (voucherRemoteScanCancellation != null)
+            {
+                SetVoucherRemoteScanStatus("Open this QR with your phone");
+                return;
+            }
+
+            voucherRemoteScanCancellation = new CancellationTokenSource();
+            _ = RunVoucherRemoteScanSessionAsync(voucherRemoteScanCancellation.Token);
+        }
+
+        private async Task RunVoucherRemoteScanSessionAsync(CancellationToken cancellationToken)
+        {
+            SetVoucherRemoteScanStatus("Preparing QR...");
+            ClearVoucherRemoteQrTexture();
+            try
+            {
+                EnsureCurrentJob();
+                var session = await CreateVoucherRemoteScanSessionAsync(cancellationToken);
+                voucherRemoteScanSessionToken = session.session_token ?? string.Empty;
+                SetVoucherRemoteScanStatus("Open this QR with your phone");
+                try
+                {
+                    await LoadVoucherRemoteQrTextureAsync(session.qr_png_url, cancellationToken);
+                }
+                catch (Exception exception) when (exception is not OperationCanceledException)
+                {
+                    Debug.LogWarning($"Voucher remote QR image unavailable: {exception.Message}");
+                    SetVoucherRemoteScanStatus(string.IsNullOrWhiteSpace(session.scan_url)
+                        ? "QR unavailable. Tap refresh."
+                        : $"QR unavailable\n{session.scan_url}");
+                }
+
+                while (!cancellationToken.IsCancellationRequested && currentScreen == BoothUiScreenId.VoucherEntry)
+                {
+                    await Task.Delay(1000, cancellationToken);
+                    var polled = await PollVoucherRemoteScanSessionAsync(voucherRemoteScanSessionToken, cancellationToken);
+                    if (polled == null)
+                    {
+                        continue;
+                    }
+
+                    if (string.Equals(polled.status, "PENDING", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    if (string.Equals(polled.status, "EXPIRED", StringComparison.OrdinalIgnoreCase))
+                    {
+                        SetVoucherRemoteScanStatus("QR expired. Tap refresh.");
+                        StopVoucherRemoteScanSession(null);
+                        return;
+                    }
+
+                    if ((string.Equals(polled.status, "ATTACHED", StringComparison.OrdinalIgnoreCase)
+                            || string.Equals(polled.status, "SUBMITTED_AVAILABLE", StringComparison.OrdinalIgnoreCase))
+                        && TryExtractScannedVoucherCode(polled.voucher_code, out var normalizedVoucherCode))
+                    {
+                        voucherCode = ExtractVoucherSuffix(normalizedVoucherCode);
+                        UpdateVoucherCodeDisplay();
+                        SetVoucherRemoteScanStatus("Voucher attached");
+                        var sessionToken = voucherRemoteScanSessionToken;
+                        StopVoucherRemoteScanSession(null);
+                        await ConfirmRemoteVoucherAsync(normalizedVoucherCode, sessionToken);
+                        return;
+                    }
+
+                    if (string.Equals(polled.status, "SUBMITTED_REJECTED", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var message = ResolveVoucherStatusFailureMessage(polled.voucher_status);
+                        SetVoucherRemoteScanStatus(message);
+                        StopVoucherRemoteScanSession("CANCELLED");
+                        ShowVoucherRetryModal(message);
+                        return;
+                    }
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception exception)
+            {
+                Debug.LogWarning($"Voucher remote scan unavailable: {exception.Message}");
+                SetVoucherRemoteScanStatus("Mobile link unavailable. Tap refresh.");
+                StopVoucherRemoteScanSession(null);
+            }
+        }
+
+        private async Task ConfirmRemoteVoucherAsync(string normalizedVoucherCode, string sessionToken)
+        {
+            if (isConfirmingScannedVoucher)
+            {
+                return;
+            }
+
+            isConfirmingScannedVoucher = true;
+            if (!await BeginBusyAsync())
+            {
+                isConfirmingScannedVoucher = false;
+                await AckVoucherRemoteScanSessionAsync(sessionToken, "CANCELLED", flowCancellation?.Token ?? CancellationToken.None);
+                return;
+            }
+
+            try
+            {
+                await ConfirmVoucherAsync(normalizedVoucherCode, "voucher_scanned");
+                await AckVoucherRemoteScanSessionAsync(sessionToken, "CONSUMED", flowCancellation?.Token ?? CancellationToken.None);
+            }
+            catch (VoucherApiException exception)
+            {
+                await AckVoucherRemoteScanSessionAsync(sessionToken, "CANCELLED", flowCancellation?.Token ?? CancellationToken.None);
+                Debug.LogWarning($"Remote scanned voucher confirmation rejected: {exception.Code} {exception.Message}");
+                ShowVoucherRetryModal(ResolveVoucherFailureMessage(exception));
+            }
+            catch (Exception exception)
+            {
+                await AckVoucherRemoteScanSessionAsync(sessionToken, "CANCELLED", flowCancellation?.Token ?? CancellationToken.None);
+                Debug.LogError($"Remote scanned voucher confirmation failed: {exception}");
+                ShowVoucherRetryModal(exception.Message);
+            }
+            finally
+            {
+                isConfirmingScannedVoucher = false;
+                EndBusy();
+            }
+        }
+
+        private void StopVoucherRemoteScanSession(string ackStatus)
+        {
+            var sessionToken = voucherRemoteScanSessionToken;
+            voucherRemoteScanSessionToken = string.Empty;
+            SafeCancelAndDisposeVoucherRemoteScanCancellation();
+            if (!string.IsNullOrWhiteSpace(ackStatus) && !string.IsNullOrWhiteSpace(sessionToken))
+            {
+                _ = AckVoucherRemoteScanSessionAsync(sessionToken, ackStatus, flowCancellation?.Token ?? CancellationToken.None);
+            }
+        }
+
+        private void SafeCancelAndDisposeVoucherRemoteScanCancellation()
+        {
+            var cancellation = voucherRemoteScanCancellation;
+            voucherRemoteScanCancellation = null;
+            if (cancellation == null)
+            {
+                return;
+            }
+
+            try
+            {
+                cancellation.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+
+            try
+            {
+                cancellation.Dispose();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+        }
+
+        private void SetVoucherRemoteScanStatus(string message)
+        {
+            voucherRemoteScanStatusText?.SetText(message ?? string.Empty);
+        }
+
+        private void SetVoucherRemoteScanPanelVisible(bool isVisible)
+        {
+            if (voucherRemoteScanPanel != null)
+            {
+                voucherRemoteScanPanel.SetActive(isVisible);
+                if (isVisible)
+                {
+                    voucherRemoteScanPanel.transform.SetAsLastSibling();
+                }
+            }
+
+            if (voucherRemoteQrImage != null)
+            {
+                voucherRemoteQrImage.gameObject.SetActive(isVisible);
+            }
+        }
+
+        private static string ResolveVoucherStatusFailureMessage(VoucherStatusData status)
+        {
+            if (status == null || !status.exists || string.Equals(status.status, "NOT_FOUND", StringComparison.OrdinalIgnoreCase))
+            {
+                return "ไม่พบ Voucher";
+            }
+
+            if (status.quota_exhausted
+                || status.has_been_used
+                || string.Equals(status.status, "USED", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Voucher นี้ถูกใช้ไปแล้ว";
+            }
+
+            return string.IsNullOrWhiteSpace(status.status) ? "Voucher ไม่พร้อมใช้งาน" : $"Voucher {status.status}";
+        }
+
+        private void ClearVoucherRemoteQrTexture()
+        {
+            if (voucherRemoteQrImage != null)
+            {
+                voucherRemoteQrImage.texture = null;
+            }
+
+            if (voucherRemoteQrTexture != null)
+            {
+                Destroy(voucherRemoteQrTexture);
+                voucherRemoteQrTexture = null;
+            }
+        }
+
+        private void EnsureVoucherQrDetector()
+        {
+            voucherQrDetector ??= new QRCodeDetector();
+            voucherQrPointsMat ??= new Mat();
+        }
+
+        private void EnsureVoucherQrMats(int width, int height)
+        {
+            if (voucherQrRgbaMat == null || voucherQrRgbaMat.cols() != width || voucherQrRgbaMat.rows() != height)
+            {
+                voucherQrRgbaMat?.Dispose();
+                voucherQrGrayMat?.Dispose();
+                voucherQrRgbaMat = new Mat(height, width, CvType.CV_8UC4);
+                voucherQrGrayMat = new Mat(height, width, CvType.CV_8UC1);
+            }
+        }
+
+        private void ClearVoucherQrDecodedCollections()
+        {
+            foreach (var mat in voucherQrStraightQrcode)
+            {
+                mat?.Dispose();
+            }
+
+            voucherQrStraightQrcode.Clear();
+            voucherQrDecodedInfo.Clear();
+        }
+
+        private void ClearVoucherQrDecodeBuffers()
+        {
+            ClearVoucherQrDecodedCollections();
+            voucherQrDetector?.Dispose();
+            voucherQrDetector = null;
+            voucherQrRgbaMat?.Dispose();
+            voucherQrRgbaMat = null;
+            voucherQrGrayMat?.Dispose();
+            voucherQrGrayMat = null;
+            voucherQrPointsMat?.Dispose();
+            voucherQrPointsMat = null;
+        }
+
+        private void ShowVoucherRetryModal(string message)
+        {
+            EnsureVoucherModal();
+            if (voucherModalRoot == null)
+            {
+                SetStatus(message);
+                return;
+            }
+
+            voucherModalMessageText?.SetText(string.IsNullOrWhiteSpace(message) ? "Voucher not found" : message);
+            if (voucherModalConfirmButton != null)
+            {
+                SetButtonLabel(voucherModalConfirmButton, "confirm");
+                voucherModalConfirmButton.interactable = true;
+                voucherModalConfirmButton.onClick = new Button.ButtonClickedEvent();
+                voucherModalConfirmButton.onClick.AddListener(RetryVoucherEntryFromModal);
+                voucherModalConfirmButton.gameObject.SetActive(true);
+            }
+
+            voucherModalRoot.SetActive(true);
+            voucherModalRoot.transform.SetAsLastSibling();
+        }
+
+        private void HideVoucherModal()
+        {
+            if (voucherModalRoot != null)
+            {
+                voucherModalRoot.SetActive(false);
+            }
+        }
+
+        private void RetryVoucherEntryFromModal()
+        {
+            HideVoucherModal();
+            if (currentScreen != BoothUiScreenId.VoucherEntry)
+            {
+                return;
+            }
+
+            SetVoucherScanStatus("Scanning...");
+            StartVoucherScanner(restart: true);
+            StartVoucherRemoteScanSession(restart: true);
+        }
+
+        private void ContinueVoucherSuccessFromUi()
+        {
+            voucherSuccessContinueRequested = true;
+            if (voucherModalConfirmButton != null)
+            {
+                voucherModalConfirmButton.interactable = false;
+            }
+        }
+
+        private async Task ShowVoucherConfirmedCountdownAndCaptureAsync(int remainingUsesAfterApply)
+        {
+            EnsureVoucherModal();
+            voucherSuccessContinueRequested = false;
+            var remainingUsesText = Mathf.Max(0, remainingUsesAfterApply).ToString();
+            voucherModalMessageText?.SetText($"Voucher Confirm\nRemaining : {remainingUsesText}\nCountdown : {VoucherSuccessCountdownSeconds}");
+            if (voucherModalRoot != null)
+            {
+                if (voucherModalConfirmButton != null)
+                {
+                    SetButtonLabel(voucherModalConfirmButton, "AGREE");
+                    voucherModalConfirmButton.interactable = true;
+                    voucherModalConfirmButton.onClick = new Button.ButtonClickedEvent();
+                    voucherModalConfirmButton.onClick.AddListener(ContinueVoucherSuccessFromUi);
+                    voucherModalConfirmButton.gameObject.SetActive(true);
+                }
+
+                voucherModalRoot.SetActive(true);
+                voucherModalRoot.transform.SetAsLastSibling();
+            }
+
+            var deadline = Time.realtimeSinceStartup + VoucherSuccessCountdownSeconds;
+            while (!voucherSuccessContinueRequested && Time.realtimeSinceStartup < deadline)
+            {
+                var remainingSeconds = Mathf.Max(1, Mathf.CeilToInt(deadline - Time.realtimeSinceStartup));
+                voucherModalMessageText?.SetText($"Voucher Confirm\nRemaining : {remainingUsesText}\nCountdown : {remainingSeconds}");
+                await Task.Delay(100, flowCancellation?.Token ?? CancellationToken.None);
+            }
+
+            HideVoucherModal();
+            SetStatus("Voucher applied. Preparing camera...");
+            ResetCaptureSequence();
+            EnsureDefaultArStickerPresets();
+            ApplyNoArPresetSelection(updateStatus: false, trackSelection: false);
+            await ShowCaptureAsync(BuildCaptureReadyMessage());
+        }
+
+        private static string ResolveVoucherFailureMessage(VoucherApiException exception)
+        {
+            if (exception == null)
+            {
+                return "Voucher not found";
+            }
+
+            var code = exception.Code ?? string.Empty;
+            if (code.Contains("QUOTA", StringComparison.OrdinalIgnoreCase)
+                || code.Contains("USED", StringComparison.OrdinalIgnoreCase)
+                || code.Contains("EXHAUSTED", StringComparison.OrdinalIgnoreCase)
+                || exception.ResponseCode == 409)
+            {
+                return "Voucher already used";
+            }
+
+            if (code.Contains("NOT_FOUND", StringComparison.OrdinalIgnoreCase)
+                || exception.ResponseCode == 404)
+            {
+                return "Voucher not found";
+            }
+
+            return string.IsNullOrWhiteSpace(exception.Message) ? "Voucher not found" : exception.Message;
+        }
+
         public async void CaptureFromUi()
         {
+            if (isCaptureReviewing)
+            {
+                await ContinueCaptureReviewAsync();
+                return;
+            }
+
             if (!await BeginBusyAsync())
             {
                 return;
@@ -852,21 +2252,19 @@ namespace PhotoBooth.Booth.Frontend
                 }
 
                 cameraCaptureService ??= CreateCameraCaptureService();
-                await SetObsbotPowerStateAsync("wake", flowCancellation.Token);
+                await WakeCameraDeviceAsync(flowCancellation.Token);
                 await cameraCaptureService.StartPreviewAsync(flowCancellation.Token);
+                ApplyHd33PreviewRotation(capturing: false);
                 await StartArPreviewAsync(flowCancellation.Token);
 
                 var totalCaptures = ResolveCapturesPerSession();
                 var captureNumber = Mathf.Clamp(capturedPhotoCount + 1, 1, totalCaptures);
-                SetStatus(BuildCaptureReadyMessage());
+                SetStatus(await BuildCaptureStatusMessageAsync(BuildCaptureReadyMessage(), flowCancellation.Token));
 
                 latestMotionClip = await RecordCountdownMotionClipAsync(captureNumber);
 
                 countdownText?.SetText("");
-                var rawPath = await CapturePreviewCompositePngAsync($"capture_{captureNumber:00}.png", flowCancellation.Token);
-                EnqueueRawCaptureUpload(rawPath, captureNumber, totalCaptures);
-                Debug.Log($"Raw capture queued for upload: job={currentJob.JobId}, capture={captureNumber}/{totalCaptures}, localPath={rawPath}");
-
+                var rawPath = await CaptureRawImageAsync(captureNumber, flowCancellation.Token);
                 capturedRawImagePaths.Add(rawPath);
                 if (latestMotionClip?.FramePaths != null)
                 {
@@ -884,7 +2282,7 @@ namespace PhotoBooth.Booth.Frontend
                 }
 
                 var allMotionFramePaths = capturedMotionFramePaths.ToArray();
-                var aggregateFrameRate = latestMotionClip?.FrameRate ?? Mathf.Clamp(motionClipFramesPerSecond, 1, 8);
+                var aggregateFrameRate = latestMotionClip?.FrameRate ?? Mathf.Clamp(motionClipFramesPerSecond, 1, 15);
                 var aggregateVideoPath = await EncodeMotionVideoAsync(allMotionFramePaths, aggregateFrameRate, flowCancellation.Token);
                 latestMotionClip = new BoothCaptureClip
                 {
@@ -893,15 +2291,7 @@ namespace PhotoBooth.Booth.Frontend
                     VideoPath = aggregateVideoPath
                 };
 
-                currentJob = runtime.SessionService.MarkCaptured(
-                    currentJob.JobId,
-                    capturedPhotoCount,
-                    GetLatestCapturedRawImagePath(),
-                    latestMotionClip.FramePaths,
-                    latestMotionClip.VideoPath);
-
-                await TrackAsync("booth_frontend_capture_completed", metadata: BuildAiMetadata());
-                SwitchScreen(BoothUiScreenId.ArtStyleSelect, "Type your name.");
+                await EnterCaptureReviewAsync();
             }
             catch (Exception exception)
             {
@@ -915,8 +2305,112 @@ namespace PhotoBooth.Booth.Frontend
             }
         }
 
+        private async Task EnterCaptureReviewAsync()
+        {
+            EnsureCurrentJob();
+            isCaptureReviewing = true;
+            StopArPreview();
+            cameraCaptureService?.StopPreview();
+            ClearArPreviewOverlay();
+            ShowCaptureReviewImage(GetLatestCapturedRawImagePath());
+            UpdateCaptureReviewControls();
+            SetStatus("Review your photo. Tap capture to continue or refresh to retake.");
+            await TrackAsync("booth_frontend_capture_review_shown", metadata: BuildAiMetadata());
+        }
+
+        private async Task ContinueCaptureReviewAsync()
+        {
+            if (!await BeginBusyAsync())
+            {
+                return;
+            }
+
+            try
+            {
+                EnsureCurrentJob();
+                var totalCaptures = ResolveCapturesPerSession();
+                var acceptedRawPaths = GetCapturedRawImagePaths();
+                for (var index = 0; index < acceptedRawPaths.Length; index += 1)
+                {
+                    EnqueueRawCaptureUpload(acceptedRawPaths[index], index + 1, totalCaptures);
+                    Debug.Log($"Raw capture queued for upload: job={currentJob.JobId}, capture={index + 1}/{totalCaptures}, localPath={acceptedRawPaths[index]}");
+                }
+
+                currentJob = runtime.SessionService.MarkCaptured(
+                    currentJob.JobId,
+                    capturedPhotoCount,
+                    GetLatestCapturedRawImagePath(),
+                    latestMotionClip?.FramePaths ?? Array.Empty<string>(),
+                    latestMotionClip?.VideoPath);
+
+                isCaptureReviewing = false;
+                ClearCaptureReviewImage();
+                await TrackAsync("booth_frontend_capture_completed", metadata: BuildAiMetadata());
+                SwitchScreen(BoothUiScreenId.ArtStyleSelect, "Type your name.");
+            }
+            catch (Exception exception)
+            {
+                Debug.LogError($"Capture review continue failed: {exception}");
+                ShowError(exception.Message);
+            }
+            finally
+            {
+                EndBusy();
+            }
+        }
+
+        private async Task RetakeCaptureReviewAsync()
+        {
+            if (!await BeginBusyAsync())
+            {
+                return;
+            }
+
+            try
+            {
+                EnsureCurrentJob();
+                if (captureReviewRetakeUsed)
+                {
+                    SetStatus("Retake already used. Tap capture to continue.");
+                    return;
+                }
+
+                captureReviewRetakeUsed = true;
+                isCaptureReviewing = false;
+                latestMotionClip = null;
+                ResetCaptureSequence(resetReviewRetake: false);
+                ApplyNoArPresetSelection(updateStatus: false, trackSelection: false);
+                ResetArSelectionVisuals();
+                StopMotionClipPlayback();
+                StopLivePhotoPreviewPlayback();
+                StopPreviewFrameMotionPlayback();
+                ClearCaptureReviewImage();
+                ClearArPreviewOverlay();
+                ClearPreview(motionPreview, ref motionPreviewTexture);
+                ClearPreview(composedPreview, ref composedPreviewTexture);
+                ClearPreviewFrameSlots();
+                await TrackAsync("booth_frontend_capture_review_retake_tapped", metadata: BuildAiMetadata());
+                await ShowCaptureAsync(BuildCaptureReadyMessage());
+            }
+            catch (Exception exception)
+            {
+                Debug.LogError($"Capture review retake failed: {exception}");
+                ShowError(exception.Message);
+            }
+            finally
+            {
+                EndBusy();
+            }
+        }
+
         public async void RetakeFromUi()
         {
+            if (isCaptureReviewing)
+            {
+                await RetakeCaptureReviewAsync();
+                return;
+            }
+
             if (!await BeginBusyAsync())
             {
                 return;
@@ -997,7 +2491,7 @@ namespace PhotoBooth.Booth.Frontend
             try
             {
                 await MarkCurrentJobDoneAsync();
-                ResetFromUi();
+                await ResetSessionToAttractAsync();
             }
             finally
             {
@@ -1141,8 +2635,34 @@ namespace PhotoBooth.Booth.Frontend
             }
         }
 
-        public void ResetFromUi()
+        public async void ResetFromUi()
         {
+            if (!await BeginBusyAsync())
+            {
+                return;
+            }
+
+            try
+            {
+                await ResetSessionToAttractAsync();
+            }
+            finally
+            {
+                EndBusy();
+            }
+        }
+
+        private async Task ResetSessionToAttractAsync()
+        {
+            try
+            {
+                await ReleasePendingVoucherReservationAsync();
+            }
+            catch (Exception exception)
+            {
+                Debug.LogWarning($"Voucher release during reset failed: {exception.Message}");
+            }
+
             currentJob = null;
             selectedTheme = null;
             selectedArPreset = null;
@@ -1156,11 +2676,14 @@ namespace PhotoBooth.Booth.Frontend
             selectedArPresetIndex = -1;
             selectedArStickerIndex = -1;
             passengerName = string.Empty;
+            voucherCode = string.Empty;
+            ClearPendingVoucherState();
             latestMotionClip = null;
             ResetCaptureSequence();
             cameraCaptureService?.StopPreview();
             StopMotionClipPlayback();
             StopLivePhotoPreviewPlayback();
+            ClearCaptureReviewImage();
             ClearPreview(motionPreview, ref motionPreviewTexture);
             ClearPreview(composedPreview, ref composedPreviewTexture);
             ClearPreviewFrameSlots();
@@ -1168,6 +2691,7 @@ namespace PhotoBooth.Booth.Frontend
             SetMonsterFramePreviewMode(false);
             ResetSessionSelectionVisuals();
             UpdateNameEntryDisplay();
+            UpdateVoucherCodeDisplay();
             downloadUrlText?.SetText(string.Empty);
             printStatusText?.SetText(string.Empty);
             SwitchScreen(BoothUiScreenId.Attract, "Touch start to begin.");
@@ -1177,143 +2701,165 @@ namespace PhotoBooth.Booth.Frontend
         {
             SwitchScreen(BoothUiScreenId.Capture, message);
             cameraCaptureService ??= CreateCameraCaptureService();
-            await SetObsbotPowerStateAsync("wake", flowCancellation.Token);
+            await WakeCameraDeviceAsync(flowCancellation.Token);
             await cameraCaptureService.StartPreviewAsync(flowCancellation.Token);
+            ApplyHd33PreviewRotation(capturing: false);
+            SetStatus(await BuildCaptureStatusMessageAsync(message, flowCancellation.Token));
             await StartArPreviewAsync(flowCancellation.Token);
             EnsureCaptureForegroundOverlay();
             ApplyMonsterFrameSelection(selectedThemeUsesMonsterFrame);
             countdownText?.SetText(string.Empty);
+            ClearCaptureReviewImage();
+            isCaptureReviewing = false;
+            UpdateCaptureReviewControls();
             UpdateCaptureCountText();
         }
 
         private BoothCameraCaptureService CreateCameraCaptureService()
         {
+            var gPhoto2Capture = GetOrCreateGPhoto2CaptureService();
             return new BoothCameraCaptureService(
                 cameraPreview,
                 cameraCaptureSize.x,
                 cameraCaptureSize.y,
-                preferredDeviceNames: runtime?.PreferredCameraDeviceNames);
+                preferredDeviceNames: runtime?.PreferredCameraDeviceNames,
+                preferredDeviceDiscoveryTimeoutSeconds: runtime?.PreferredCameraDeviceDiscoveryTimeoutSeconds ?? 3,
+                gPhoto2CaptureService: gPhoto2Capture,
+                useGPhoto2Preview: useGPhoto2Preview,
+                gPhoto2PreviewFramesPerSecond: gPhoto2PreviewFramesPerSecond,
+                gPhoto2PreviewFailureFallbackEnabled: gPhoto2PreviewFailureFallbackEnabled);
         }
 
-        private async Task SetObsbotPowerStateAsync(string action, CancellationToken cancellationToken = default)
+        private GPhoto2CameraCaptureService GetOrCreateGPhoto2CaptureService()
         {
-            if (!enableObsbotPowerControl || string.IsNullOrWhiteSpace(action))
-            {
-                return;
-            }
-
-            var executablePath = ResolveObsbotControlExecutablePath();
-            if (string.IsNullOrWhiteSpace(executablePath) || !File.Exists(executablePath))
-            {
-                if (!loggedMissingObsbotControl)
-                {
-                    loggedMissingObsbotControl = true;
-                    Debug.LogWarning($"OBSBOT power control skipped; executable not found: {executablePath ?? "(empty)"}. Run scripts/build-obsbot-control.sh first.");
-                }
-
-                return;
-            }
-
-            var arguments = $"{QuoteProcessArgument(action)} --timeout-ms {Mathf.Max(250, obsbotControlTimeoutMs)}";
-            if (!string.IsNullOrWhiteSpace(obsbotControlDeviceName))
-            {
-                arguments += $" --device-name {QuoteProcessArgument(obsbotControlDeviceName.Trim())}";
-            }
-
-            try
-            {
-                var result = await Task.Run(() => RunObsbotControlProcess(executablePath, arguments), cancellationToken);
-                if (result.ExitCode == 0)
-                {
-                    Debug.Log($"OBSBOT power control {action} succeeded: {result.Output.Trim()}");
-                    return;
-                }
-
-                Debug.LogWarning($"OBSBOT power control {action} failed: exit={result.ExitCode}, output={result.Output.Trim()}, error={result.Error.Trim()}");
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-            catch (Exception exception)
-            {
-                Debug.LogWarning($"OBSBOT power control {action} failed: {exception.Message}");
-            }
+            gPhoto2CaptureService ??= new GPhoto2CameraCaptureService(
+                gPhoto2ExecutablePath,
+                gPhoto2CaptureTimeoutMs,
+                gPhoto2KillPtpcameraBeforeCommand);
+            return gPhoto2CaptureService;
         }
 
-        private string ResolveObsbotControlExecutablePath()
+        private static string BuildCameraStatusSuffix(BoothCameraCaptureService cameraService)
         {
-            if (string.IsNullOrWhiteSpace(obsbotControlExecutablePath))
+            if (cameraService == null || string.IsNullOrWhiteSpace(cameraService.CurrentDeviceName))
+            {
+                return "Camera: unavailable.";
+            }
+
+            var deviceName = cameraService.CurrentDeviceName;
+            var deviceSource = cameraService.CurrentDeviceSource;
+            return string.Equals(deviceName, deviceSource, StringComparison.OrdinalIgnoreCase)
+                ? $"Camera: {deviceName}."
+                : $"Camera: {deviceName} ({deviceSource}).";
+        }
+
+        private async Task<string> BuildCaptureStatusMessageAsync(string message, CancellationToken cancellationToken)
+        {
+            var status = $"{message} {BuildCameraStatusSuffix(cameraCaptureService)}";
+            if (!ShouldAttemptGPhoto2StillCapture())
+            {
+                return status;
+            }
+
+            var gPhoto2Ready = await CheckGPhoto2CameraReadyAsync(cancellationToken);
+            return $"{status} Camera/gPhoto2: {(gPhoto2Ready ? "ready" : "not detected")}.";
+        }
+
+        private bool ShouldAttemptGPhoto2StillCapture()
+        {
+            return useGPhoto2RawCapture
+                   && cameraCaptureService != null
+                   && !IsBlockedGPhoto2StillCaptureDevice(cameraCaptureService.CurrentDeviceName);
+        }
+
+        private static bool IsBlockedGPhoto2StillCaptureDevice(string deviceName)
+        {
+            return string.IsNullOrWhiteSpace(deviceName)
+                   || BoothCameraCaptureService.IsObsbotDeviceName(deviceName)
+                   || BoothCameraCaptureService.IsVirtualCameraDeviceName(deviceName)
+                   || BoothCameraCaptureService.IsBuiltInCameraDeviceName(deviceName);
+        }
+
+        private async Task<bool> CheckGPhoto2CameraReadyAsync(CancellationToken cancellationToken)
+        {
+            var cameraName = await GetOrCreateGPhoto2CaptureService().DetectCameraNameAsync(cancellationToken);
+            var ready = BoothCameraCaptureService.IsCanonLikeCameraDeviceName(cameraName);
+            Debug.Log($"PhotoBooth gPhoto2 camera check: ready={ready}, device={cameraName ?? "(none)"}");
+            return ready;
+        }
+
+        private Task WakeCameraDeviceAsync(CancellationToken cancellationToken = default)
+        {
+            return ResolveCameraDeviceController().WakeAsync(cancellationToken);
+        }
+
+        private Task SleepCameraDeviceAsync(CancellationToken cancellationToken = default)
+        {
+            return ResolveCameraDeviceController().SleepAsync(cancellationToken);
+        }
+
+        private ICameraDeviceController ResolveCameraDeviceController()
+        {
+            var signature = BuildCameraDeviceControllerSignature();
+            if (cameraDeviceController != null && string.Equals(cameraDeviceControllerSignature, signature, StringComparison.Ordinal))
+            {
+                return cameraDeviceController;
+            }
+
+            cameraDeviceControllerSignature = signature;
+            cameraDeviceController = CreateCameraDeviceController();
+            return cameraDeviceController;
+        }
+
+        private ICameraDeviceController CreateCameraDeviceController()
+        {
+            return cameraDeviceControllerKind switch
+            {
+                CameraDeviceControllerKind.ObsbotCli when enableObsbotPowerControl => new ObsbotCliCameraDeviceController(
+                    ResolveProjectRelativePath(obsbotControlExecutablePath),
+                    obsbotControlDeviceName,
+                    obsbotControlTimeoutMs),
+                CameraDeviceControllerKind.ExternalCommand => new ExternalCommandCameraDeviceController(
+                    externalCameraWakeCommand,
+                    externalCameraSleepCommand,
+                    externalCameraStatusCommand,
+                    externalCameraCommandTimeoutMs),
+                _ => NoopCameraDeviceController.Instance
+            };
+        }
+
+        private string BuildCameraDeviceControllerSignature()
+        {
+            return string.Join(
+                "|",
+                cameraDeviceControllerKind.ToString(),
+                enableObsbotPowerControl.ToString(),
+                obsbotControlExecutablePath ?? string.Empty,
+                obsbotControlDeviceName ?? string.Empty,
+                obsbotControlTimeoutMs.ToString(),
+                externalCameraWakeCommand ?? string.Empty,
+                externalCameraSleepCommand ?? string.Empty,
+                externalCameraStatusCommand ?? string.Empty,
+                externalCameraCommandTimeoutMs.ToString());
+        }
+
+        private static string ResolveProjectRelativePath(string configuredPath)
+        {
+            if (string.IsNullOrWhiteSpace(configuredPath))
             {
                 return null;
             }
 
-            var configuredPath = obsbotControlExecutablePath.Trim();
-            return Path.IsPathRooted(configuredPath)
-                ? configuredPath
-                : Path.GetFullPath(Path.Combine(Application.dataPath, "..", configuredPath));
-        }
-
-        private static string QuoteProcessArgument(string value)
-        {
-            return $"\"{(value ?? string.Empty).Replace("\"", "\\\"")}\"";
-        }
-
-        private static ProcessResult RunObsbotControlProcess(string executablePath, string arguments)
-        {
-            using var process = new Process
-            {
-                StartInfo = new ProcessStartInfo
-                {
-                    FileName = executablePath,
-                    Arguments = arguments,
-                    UseShellExecute = false,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    CreateNoWindow = true
-                }
-            };
-
-            process.Start();
-            var exited = process.WaitForExit(15000);
-            if (!exited)
-            {
-                try
-                {
-                    process.Kill();
-                }
-                catch
-                {
-                    // Best effort: process may have exited between WaitForExit and Kill.
-                }
-
-                return new ProcessResult(124, string.Empty, "Timed out waiting for obsbot-control.");
-            }
-
-            return new ProcessResult(
-                process.ExitCode,
-                process.StandardOutput.ReadToEnd(),
-                process.StandardError.ReadToEnd());
-        }
-
-        private readonly struct ProcessResult
-        {
-            public readonly int ExitCode;
-            public readonly string Output;
-            public readonly string Error;
-
-            public ProcessResult(int exitCode, string output, string error)
-            {
-                ExitCode = exitCode;
-                Output = output ?? string.Empty;
-                Error = error ?? string.Empty;
-            }
+            var trimmedPath = configuredPath.Trim();
+            return Path.IsPathRooted(trimmedPath)
+                ? trimmedPath
+                : Path.GetFullPath(Path.Combine(Application.dataPath, "..", trimmedPath));
         }
 
         private async Task<BoothCaptureClip> RecordCountdownMotionClipAsync(int captureNumber)
         {
             var framePaths = new List<string>();
-            var framesPerSecond = Mathf.Clamp(motionClipFramesPerSecond, 1, 8);
+            var framesPerSecond = Mathf.Clamp(motionClipFramesPerSecond, 1, 15);
             var totalFrames = Mathf.Max(1, countdownSeconds) * framesPerSecond;
             var frameDelayMs = Mathf.RoundToInt(1000f / framesPerSecond);
             var safeCaptureNumber = Mathf.Max(1, captureNumber);
@@ -1343,6 +2889,59 @@ namespace PhotoBooth.Booth.Frontend
             return await CapturePreviewCompositePngAsync(fileName, hideCountdownText: true, cancellationToken: cancellationToken);
         }
 
+        private async Task<string> CaptureRawImageAsync(int captureNumber, CancellationToken cancellationToken)
+        {
+            var safeCaptureNumber = Mathf.Max(1, captureNumber);
+            var useGPhoto2StillCapture = ShouldAttemptGPhoto2StillCapture() && await CheckGPhoto2CameraReadyAsync(cancellationToken);
+            Debug.Log($"PhotoBooth still capture path: source={(useGPhoto2StillCapture ? "gphoto2" : "preview")}, device={cameraCaptureService?.CurrentDeviceName ?? "(unknown)"}, previewSource={cameraCaptureService?.CurrentDeviceSource ?? "none"}");
+
+            if (!useGPhoto2StillCapture)
+            {
+                return await CapturePreviewCompositePngAsync($"capture_{safeCaptureNumber:00}.png", cancellationToken);
+            }
+
+            if (currentJob?.Paths == null)
+            {
+                throw new InvalidOperationException("Current job paths are not ready for raw capture.");
+            }
+
+            SetStatus("Capturing with camera...");
+            var cameraService = cameraCaptureService;
+            if (cameraService != null)
+            {
+                if (cameraService.IsUsingGPhoto2Preview)
+                {
+                    await cameraService.PausePreviewAsync(cancellationToken);
+                }
+                else
+                {
+                    cameraService.StopPreview();
+                }
+            }
+
+            try
+            {
+                return await GetOrCreateGPhoto2CaptureService().CaptureImageAndDownloadAsync(
+                    currentJob.Paths.RawDirectory,
+                    $"capture_{safeCaptureNumber:00}.jpg",
+                    cancellationToken);
+            }
+            finally
+            {
+                if (cameraService != null)
+                {
+                    if (cameraService.IsUsingGPhoto2Preview)
+                    {
+                        cameraService.ResumePreview();
+                    }
+                    else if (currentScreen == BoothUiScreenId.Capture)
+                    {
+                        await cameraService.StartPreviewAsync(cancellationToken);
+                    }
+                }
+            }
+        }
+
         private async Task<string> CapturePreviewCompositePngAsync(string fileName, bool hideCountdownText, CancellationToken cancellationToken)
         {
             if (cameraPreview == null)
@@ -1365,11 +2964,15 @@ namespace PhotoBooth.Booth.Frontend
         private IEnumerator CapturePreviewCompositePngCoroutine(string outputPath, bool hideCountdownText, TaskCompletionSource<string> completion)
         {
             var restoreCountdownEnabled = countdownText != null && countdownText.enabled;
+            var previewRect = cameraPreview != null ? cameraPreview.rectTransform : null;
+            var restorePreviewRotation = previewRect != null ? previewRect.localRotation : Quaternion.identity;
             if (hideCountdownText && countdownText != null)
             {
                 countdownText.enabled = false;
+                Canvas.ForceUpdateCanvases();
             }
 
+            ApplyHd33PreviewRotation(capturing: true);
             yield return new WaitForEndOfFrame();
 
             Texture2D screenshot = null;
@@ -1407,7 +3010,15 @@ namespace PhotoBooth.Booth.Frontend
                 if (hideCountdownText && countdownText != null)
                 {
                     countdownText.enabled = restoreCountdownEnabled;
+                    Canvas.ForceUpdateCanvases();
                 }
+
+                if (previewRect != null)
+                {
+                    previewRect.localRotation = restorePreviewRotation;
+                }
+
+                ApplyHd33PreviewRotation(capturing: false);
             }
         }
 
@@ -1590,7 +3201,110 @@ namespace PhotoBooth.Booth.Frontend
             return new[] { GetLatestCapturedRawImagePath() };
         }
 
-        private void ResetCaptureSequence()
+        private void ShowCaptureReviewImage(string imagePath)
+        {
+            ClearCaptureReviewImage();
+            if (cameraPreview == null || string.IsNullOrWhiteSpace(imagePath) || !File.Exists(imagePath))
+            {
+                return;
+            }
+
+            captureReviewTexture = new Texture2D(2, 2, TextureFormat.RGBA32, false);
+            if (!ImageConversion.LoadImage(captureReviewTexture, File.ReadAllBytes(imagePath)))
+            {
+                ClearCaptureReviewImage();
+                return;
+            }
+
+            cameraPreview.texture = captureReviewTexture;
+            cameraPreview.color = Color.white;
+            cameraPreview.uvRect = new Rect(0f, 0f, 1f, 1f);
+            ApplyHd33PreviewRotation(capturing: false);
+        }
+
+        private void ClearCaptureReviewImage()
+        {
+            if (cameraPreview != null && ReferenceEquals(cameraPreview.texture, captureReviewTexture))
+            {
+                cameraPreview.texture = null;
+            }
+
+            if (captureReviewTexture != null)
+            {
+                Destroy(captureReviewTexture);
+                captureReviewTexture = null;
+            }
+        }
+
+        private void ApplyHd33PreviewRotation(bool capturing)
+        {
+            if (cameraPreview == null || !IsHd33PreviewDevice())
+            {
+                return;
+            }
+
+            var euler = cameraPreview.rectTransform.localEulerAngles;
+            euler.y = 0f;
+            cameraPreview.rectTransform.localEulerAngles = euler;
+        }
+
+        private bool IsHd33PreviewDevice()
+        {
+            return cameraCaptureService != null
+                && !string.IsNullOrWhiteSpace(cameraCaptureService.CurrentDeviceName)
+                && BoothCameraCaptureService.IsHd33DeviceName(cameraCaptureService.CurrentDeviceName);
+        }
+
+        private void UpdateCaptureReviewControls()
+        {
+            EnsureCaptureRetakeButton();
+            if (captureRetakeButton != null)
+            {
+                captureRetakeButton.gameObject.SetActive(isCaptureReviewing);
+                captureRetakeButton.interactable = isCaptureReviewing && !captureReviewRetakeUsed && !isBusy;
+                SetButtonLabel(captureRetakeButton, captureReviewRetakeUsed ? "USED" : "RETAKE");
+            }
+
+            SetButtonLabel(captureButton, isCaptureReviewing ? "NEXT" : string.Empty);
+        }
+
+        private void EnsureCaptureRetakeButton()
+        {
+            if (captureRetakeButton != null)
+            {
+                return;
+            }
+
+            captureRetakeButton = FindButtonInScreen(
+                BoothUiScreenId.Capture,
+                "CaptureRetakeButton",
+                "CaptureRefreshButton",
+                "RetakeButton",
+                "RefreshButton");
+            if (captureRetakeButton == null)
+            {
+                var captureRoot = FindScreenRoot(BoothUiScreenId.Capture);
+                if (captureRoot == null)
+                {
+                    return;
+                }
+
+                captureRetakeButton = CreateButton(
+                    captureRoot,
+                    "CaptureRetakeButton",
+                    "RETAKE",
+                    new Vector2(0.22f, 0.075f),
+                    Vector2.zero,
+                    new Vector2(220f, 72f));
+                StyleMrkremeButton(captureRetakeButton, new Color(0.94f, 0.91f, 0.82f, 1f), Color.black);
+            }
+
+            captureRetakeButton.onClick = new Button.ButtonClickedEvent();
+            captureRetakeButton.onClick.AddListener(RetakeFromUi);
+            captureRetakeButton.gameObject.SetActive(false);
+        }
+
+        private void ResetCaptureSequence(bool resetReviewRetake = true)
         {
             capturedRawImagePaths.Clear();
             capturedMotionFramePaths.Clear();
@@ -1599,6 +3313,13 @@ namespace PhotoBooth.Booth.Frontend
             rawCaptureUploadStarted = false;
             printRequestStarted = false;
             previewScreenShowsFinalDownload = false;
+            isCaptureReviewing = false;
+            if (resetReviewRetake)
+            {
+                captureReviewRetakeUsed = false;
+            }
+
+            UpdateCaptureReviewControls();
             UpdateCaptureCountText();
         }
 
@@ -1790,25 +3511,18 @@ namespace PhotoBooth.Booth.Frontend
             }
 
             await EnsureArTrackingProviderAsync(cancellationToken);
-            var frameTexture = cameraCaptureService.CaptureCurrentFrameTexture();
-            try
+            cameraCaptureService.CaptureCurrentFrameTexture(ref arFrameTexture);
+            var rawFrame = await arTrackingProvider.TrackAsync(arFrameTexture, cancellationToken) ?? ArTrackingFrame.Empty;
+            latestArTrackingFrame = arTrackingStabilizer.Update(rawFrame);
+            var faceCount = latestArTrackingFrame.Faces?.Length ?? 0;
+            if (!loggedFirstArFrame || faceCount != lastLoggedArFaceCount)
             {
-                var rawFrame = await arTrackingProvider.TrackAsync(frameTexture, cancellationToken) ?? ArTrackingFrame.Empty;
-                latestArTrackingFrame = arTrackingStabilizer.Update(rawFrame);
-                var faceCount = latestArTrackingFrame.Faces?.Length ?? 0;
-                if (!loggedFirstArFrame || faceCount != lastLoggedArFaceCount)
-                {
-                    loggedFirstArFrame = true;
-                    lastLoggedArFaceCount = faceCount;
-                    Debug.Log($"PhotoBooth AR frame: provider={latestArTrackingFrame.ProviderName}, faces={faceCount}, size={latestArTrackingFrame.PixelWidth}x{latestArTrackingFrame.PixelHeight}");
-                }
+                loggedFirstArFrame = true;
+                lastLoggedArFaceCount = faceCount;
+                Debug.Log($"PhotoBooth AR frame: provider={latestArTrackingFrame.ProviderName}, faces={faceCount}, size={latestArTrackingFrame.PixelWidth}x{latestArTrackingFrame.PixelHeight}");
+            }
 
-                return latestArTrackingFrame;
-            }
-            finally
-            {
-                Destroy(frameTexture);
-            }
+            return latestArTrackingFrame;
         }
 
         private async Task EnsureArTrackingProviderAsync(CancellationToken cancellationToken)
@@ -1897,7 +3611,7 @@ namespace PhotoBooth.Booth.Frontend
                 ResolveArStickers(),
                 cameraCaptureService.CurrentWidth,
                 cameraCaptureService.CurrentHeight,
-                mirrorArOverlayHorizontally);
+                ShouldMirrorArOverlay());
             UpdateFaceMarkDebugLines(frame, cameraCaptureService.CurrentWidth, cameraCaptureService.CurrentHeight);
             UpdateArPreviewFaceAnchor(frame, cameraCaptureService.CurrentWidth, cameraCaptureService.CurrentHeight);
             UpdateArPreviewStickerObjects(renderItems, cameraCaptureService.CurrentWidth, cameraCaptureService.CurrentHeight);
@@ -1911,7 +3625,12 @@ namespace PhotoBooth.Booth.Frontend
                 return;
             }
 
-            arStickerRenderer.ApplyToTexture(texture, frame, ResolveArStickers(), mirrorArOverlayHorizontally);
+            arStickerRenderer.ApplyToTexture(texture, frame, ResolveArStickers(), ShouldMirrorArOverlay());
+        }
+
+        private bool ShouldMirrorArOverlay()
+        {
+            return mirrorArOverlayHorizontally ^ IsHd33PreviewDevice();
         }
 
         private void ApplyTracked3dFaceModelToTexture(Texture2D texture, ArTrackingFrame frame)
@@ -1974,6 +3693,7 @@ namespace PhotoBooth.Booth.Frontend
         {
             TrackScreenExit();
             var wasCaptureScreen = currentScreen == BoothUiScreenId.Capture;
+            var wasVoucherEntryScreen = currentScreen == BoothUiScreenId.VoucherEntry;
 
             foreach (var binding in screens)
             {
@@ -1994,7 +3714,7 @@ namespace PhotoBooth.Booth.Frontend
                 cameraCaptureService?.StopPreview();
                 if (wasCaptureScreen)
                 {
-                    _ = SetObsbotPowerStateAsync("sleep");
+                    _ = SleepCameraDeviceAsync();
                 }
             }
 
@@ -2006,12 +3726,24 @@ namespace PhotoBooth.Booth.Frontend
                 HideQrLoading();
             }
 
+            if (wasVoucherEntryScreen && screenId != BoothUiScreenId.VoucherEntry)
+            {
+                StopVoucherScanner(screenId == BoothUiScreenId.Capture ? "leave_voucher_for_capture" : "leave_voucher");
+                StopVoucherRemoteScanSession("CANCELLED");
+            }
+
             currentScreen = screenId;
             currentScreenStartedAt = Time.realtimeSinceStartup;
             titleText?.SetText(ScreenTitle(screenId));
             SetStatus(statusMessage);
             UpdatePassengerNameLabelTexts();
             _ = TrackAsync("booth_frontend_screen_entered", screenIdOverride: screenId);
+            if (screenId == BoothUiScreenId.VoucherEntry)
+            {
+                StartVoucherScanner();
+                StartVoucherRemoteScanSession();
+            }
+
             if (screenId == BoothUiScreenId.Capture)
             {
                 _ = EnsureCapturePreviewStartedAsync();
@@ -3064,9 +4796,33 @@ namespace PhotoBooth.Booth.Frontend
             SetInteractable(true);
         }
 
+        public async void BackFromPaymentFromUi()
+        {
+            if (!await BeginBusyAsync())
+            {
+                return;
+            }
+
+            try
+            {
+                await ReleasePendingVoucherReservationAsync();
+                SwitchScreen(BoothUiScreenId.ThemeSelect, "Choose your frame.");
+            }
+            catch (Exception exception)
+            {
+                Debug.LogError($"Payment back navigation failed: {exception}");
+                ShowError(exception.Message);
+            }
+            finally
+            {
+                EndBusy();
+            }
+        }
+
         private void SetInteractable(bool interactable)
         {
             if (captureButton != null) captureButton.interactable = interactable;
+            if (captureRetakeButton != null) captureRetakeButton.interactable = interactable && isCaptureReviewing && !captureReviewRetakeUsed;
             if (retakeButton != null) retakeButton.interactable = interactable;
             if (continueButton != null) continueButton.interactable = interactable;
             if (printButton != null) printButton.interactable = interactable;
@@ -3098,6 +4854,397 @@ namespace PhotoBooth.Booth.Frontend
             }
         }
 
+        private void ClearPendingVoucherState(bool clearEnteredCode = true)
+        {
+            pendingVoucherCheckoutToken = string.Empty;
+            pendingVoucherCode = string.Empty;
+            pendingVoucherIdempotencyKey = string.Empty;
+            pendingVoucherRedemptionId = 0;
+            pendingVoucherRemainingUsesAfterApply = -1;
+            voucherAttemptCounter = 0;
+            if (clearEnteredCode)
+            {
+                voucherCode = string.Empty;
+            }
+        }
+
+        private async Task ReleasePendingVoucherReservationAsync()
+        {
+            if (pendingVoucherRedemptionId <= 0)
+            {
+                return;
+            }
+
+            try
+            {
+                await ReleaseReservedVoucherAsync(pendingVoucherRedemptionId, flowCancellation?.Token ?? CancellationToken.None);
+            }
+            finally
+            {
+                ClearPendingVoucherState(clearEnteredCode: false);
+            }
+        }
+
+        private string ResolveVoucherIdempotencyKey(string normalizedVoucherCode)
+        {
+            if (!string.IsNullOrWhiteSpace(pendingVoucherIdempotencyKey)
+                && string.Equals(pendingVoucherCode, normalizedVoucherCode, StringComparison.OrdinalIgnoreCase))
+            {
+                return pendingVoucherIdempotencyKey;
+            }
+
+            voucherAttemptCounter += 1;
+            return $"{runtime.BackendDeviceId}-{currentJob.JobId}-voucher-{voucherAttemptCounter}";
+        }
+
+        private async Task<VoucherValidateData> ValidateVoucherAsync(string normalizedVoucherCode, CancellationToken cancellationToken)
+        {
+            EnsureVoucherBackendConfigured();
+            var envelope = await SendVoucherRequestAsync<VoucherValidateEnvelope>(
+                "/api/kiosk/v1/checkout/voucher/validate",
+                new VoucherValidateRequest
+                {
+                    job_id = currentJob.JobId,
+                    voucher_code = normalizedVoucherCode,
+                    device_id = runtime.BackendDeviceId
+                },
+                cancellationToken);
+            return envelope.data ?? throw new InvalidOperationException("Voucher validation returned no data.");
+        }
+
+        private async Task<VoucherRemoteScanSessionData> CreateVoucherRemoteScanSessionAsync(CancellationToken cancellationToken)
+        {
+            EnsureVoucherBackendConfigured();
+            var envelope = await SendVoucherRequestAsync<VoucherRemoteScanSessionEnvelope>(
+                "/api/kiosk/v1/kiosk-sessions",
+                new VoucherRemoteScanCreateRequest
+                {
+                    job_id = currentJob.JobId,
+                    device_id = runtime.BackendDeviceId
+                },
+                cancellationToken);
+            return envelope.data ?? throw new InvalidOperationException("Voucher scan session returned no data.");
+        }
+
+        private async Task<VoucherRemoteScanSessionData> PollVoucherRemoteScanSessionAsync(string sessionToken, CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrWhiteSpace(sessionToken))
+            {
+                return null;
+            }
+
+            EnsureVoucherBackendConfigured();
+            var envelope = await SendVoucherGetRequestAsync<VoucherRemoteScanSessionEnvelope>(
+                $"/api/kiosk/v1/kiosk-sessions/{UnityWebRequest.EscapeURL(sessionToken)}",
+                cancellationToken);
+            return envelope.data;
+        }
+
+        private async Task AckVoucherRemoteScanSessionAsync(string sessionToken, string status, CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrWhiteSpace(sessionToken) || string.IsNullOrWhiteSpace(status))
+            {
+                return;
+            }
+
+            try
+            {
+                EnsureVoucherBackendConfigured();
+                await SendVoucherRequestAsync<VoucherRemoteScanSessionEnvelope>(
+                    $"/api/kiosk/v1/kiosk-sessions/{UnityWebRequest.EscapeURL(sessionToken)}/ack",
+                    new VoucherRemoteScanAckRequest
+                    {
+                        status = status,
+                        device_id = runtime.BackendDeviceId
+                    },
+                    cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception exception)
+            {
+                Debug.LogWarning($"Voucher scan session ack failed: {exception.Message}");
+            }
+        }
+
+        private async Task LoadVoucherRemoteQrTextureAsync(string qrPngUrl, CancellationToken cancellationToken)
+        {
+            if (voucherRemoteQrImage == null || string.IsNullOrWhiteSpace(qrPngUrl))
+            {
+                return;
+            }
+
+            using var request = UnityWebRequestTexture.GetTexture(qrPngUrl);
+            request.timeout = runtime.BackendRequestTimeoutSeconds;
+            await SendWebRequestAsync(request, cancellationToken);
+            if (request.result != UnityWebRequest.Result.Success || request.responseCode is < 200 or >= 300)
+            {
+                throw new InvalidOperationException($"Voucher remote QR download failed: {request.error}");
+            }
+
+            ClearVoucherRemoteQrTexture();
+            voucherRemoteQrTexture = DownloadHandlerTexture.GetContent(request);
+            voucherRemoteQrTexture.name = "VoucherRemoteQrTexture";
+            voucherRemoteQrImage.texture = voucherRemoteQrTexture;
+            voucherRemoteQrImage.color = Color.white;
+        }
+
+        private async Task<VoucherReserveData> ReserveVoucherAsync(string checkoutToken, string idempotencyKey, CancellationToken cancellationToken)
+        {
+            EnsureVoucherBackendConfigured();
+            var envelope = await SendVoucherRequestAsync<VoucherReserveEnvelope>(
+                "/api/kiosk/v1/checkout/voucher/reserve",
+                new VoucherReserveRequest
+                {
+                    job_id = currentJob.JobId,
+                    checkout_token = checkoutToken,
+                    idempotency_key = idempotencyKey,
+                    gross_amount_minor = currentJob.AmountMinorUnits,
+                    currency = currentJob.CurrencyCode,
+                    device_id = runtime.BackendDeviceId,
+                    theme_id = currentJob.ThemeId,
+                    image_preview_id = currentJob.ThemeId,
+                    passenger_name = string.IsNullOrWhiteSpace(passengerName) ? null : passengerName,
+                    amount_minor_units = currentJob.AmountMinorUnits,
+                    payment_reference = currentJob.PaymentReference,
+                    session_started_at_utc = ResolveSessionStartedAtUtc(currentJob)
+                },
+                cancellationToken);
+            return envelope.data ?? throw new InvalidOperationException("Voucher reserve returned no data.");
+        }
+
+        private async Task ApplyReservedVoucherAsync(long redemptionId, CancellationToken cancellationToken)
+        {
+            EnsureVoucherBackendConfigured();
+            var envelope = await SendVoucherRequestAsync<VoucherRedemptionActionEnvelope>(
+                $"/api/kiosk/v1/checkout/voucher/{redemptionId}/apply",
+                new VoucherRedemptionActionRequest { device_id = runtime.BackendDeviceId },
+                cancellationToken);
+            if (envelope.data == null || !string.Equals(envelope.data.status, "APPLIED", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("Voucher apply did not return APPLIED.");
+            }
+
+            ClearPendingVoucherState(clearEnteredCode: false);
+        }
+
+        private async Task ReleaseReservedVoucherAsync(long redemptionId, CancellationToken cancellationToken)
+        {
+            EnsureVoucherBackendConfigured();
+            await SendVoucherRequestAsync<VoucherRedemptionActionEnvelope>(
+                $"/api/kiosk/v1/checkout/voucher/{redemptionId}/release",
+                new VoucherRedemptionActionRequest { device_id = runtime.BackendDeviceId },
+                cancellationToken);
+        }
+
+        private async Task<TEnvelope> SendVoucherRequestAsync<TEnvelope>(string path, object payload, CancellationToken cancellationToken)
+        {
+            var baseUrl = runtime.BackendBoothApiBaseUrl.Trim().TrimEnd('/');
+            var url = $"{baseUrl}{path}";
+            var body = JsonUtility.ToJson(payload);
+            using var request = new UnityWebRequest(url, UnityWebRequest.kHttpVerbPOST)
+            {
+                uploadHandler = new UploadHandlerRaw(System.Text.Encoding.UTF8.GetBytes(body)),
+                downloadHandler = new DownloadHandlerBuffer(),
+                timeout = runtime.BackendRequestTimeoutSeconds
+            };
+            request.SetRequestHeader("Content-Type", "application/json");
+            request.SetRequestHeader("Accept", "application/json");
+            request.SetRequestHeader("Authorization", $"Bearer {runtime.BackendDeviceToken}");
+            request.SetRequestHeader("X-Device-Id", runtime.BackendDeviceId);
+            await SendWebRequestAsync(request, cancellationToken);
+
+            var responseText = request.downloadHandler?.text ?? string.Empty;
+            if (request.result != UnityWebRequest.Result.Success || request.responseCode is < 200 or >= 300)
+            {
+                var apiError = ParseVoucherApiError(responseText);
+                throw new VoucherApiException(
+                    apiError?.code,
+                    BuildVoucherRequestErrorMessage(apiError, request.responseCode, request.error),
+                    request.responseCode);
+            }
+
+            var envelope = JsonUtility.FromJson<TEnvelope>(responseText);
+            if (envelope == null)
+            {
+                throw new InvalidOperationException("Voucher API returned an unreadable response.");
+            }
+
+            var successField = typeof(TEnvelope).GetField("success");
+            var errorField = typeof(TEnvelope).GetField("error");
+            if (successField != null && successField.FieldType == typeof(bool) && !(bool)successField.GetValue(envelope))
+            {
+                var error = errorField?.GetValue(envelope) as BoothApiErrorPayload;
+                throw new VoucherApiException(error?.code, error?.message, request.responseCode);
+            }
+
+            return envelope;
+        }
+
+        private async Task<TEnvelope> SendVoucherGetRequestAsync<TEnvelope>(string path, CancellationToken cancellationToken)
+        {
+            var baseUrl = runtime.BackendBoothApiBaseUrl.Trim().TrimEnd('/');
+            var url = $"{baseUrl}{path}";
+            using var request = UnityWebRequest.Get(url);
+            request.downloadHandler = new DownloadHandlerBuffer();
+            request.timeout = runtime.BackendRequestTimeoutSeconds;
+            request.SetRequestHeader("Accept", "application/json");
+            request.SetRequestHeader("Authorization", $"Bearer {runtime.BackendDeviceToken}");
+            request.SetRequestHeader("X-Device-Id", runtime.BackendDeviceId);
+            await SendWebRequestAsync(request, cancellationToken);
+
+            var responseText = request.downloadHandler?.text ?? string.Empty;
+            if (request.result != UnityWebRequest.Result.Success || request.responseCode is < 200 or >= 300)
+            {
+                var apiError = ParseVoucherApiError(responseText);
+                throw new VoucherApiException(
+                    apiError?.code,
+                    BuildVoucherRequestErrorMessage(apiError, request.responseCode, request.error),
+                    request.responseCode);
+            }
+
+            var envelope = JsonUtility.FromJson<TEnvelope>(responseText);
+            if (envelope == null)
+            {
+                throw new InvalidOperationException("Voucher API returned an unreadable response.");
+            }
+
+            var successField = typeof(TEnvelope).GetField("success");
+            var errorField = typeof(TEnvelope).GetField("error");
+            if (successField != null && successField.FieldType == typeof(bool) && !(bool)successField.GetValue(envelope))
+            {
+                var error = errorField?.GetValue(envelope) as BoothApiErrorPayload;
+                throw new VoucherApiException(error?.code, error?.message, request.responseCode);
+            }
+
+            return envelope;
+        }
+
+        private static async Task SendWebRequestAsync(UnityWebRequest request, CancellationToken cancellationToken)
+        {
+            var operation = request.SendWebRequest();
+            while (!operation.isDone)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                await Task.Yield();
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+
+        private static BoothApiErrorPayload ParseVoucherApiError(string responseText)
+        {
+            if (!string.IsNullOrWhiteSpace(responseText))
+            {
+                try
+                {
+                    var envelope = JsonUtility.FromJson<VoucherReserveEnvelope>(responseText);
+                    if (envelope?.error != null)
+                    {
+                        return envelope.error;
+                    }
+                }
+                catch
+                {
+                    // Ignore parse failures and use fallback values from UnityWebRequest.
+                }
+            }
+
+            return null;
+        }
+
+        private static string BuildVoucherRequestErrorMessage(BoothApiErrorPayload apiError, long responseCode, string fallbackError)
+        {
+            if (!string.IsNullOrWhiteSpace(apiError?.message))
+            {
+                return apiError.message;
+            }
+
+            if (!string.IsNullOrWhiteSpace(fallbackError))
+            {
+                return fallbackError;
+            }
+
+            return responseCode > 0
+                ? $"Voucher request failed with HTTP {responseCode}."
+                : "Voucher request failed.";
+        }
+
+        private void EnsureVoucherBackendConfigured()
+        {
+            if (runtime == null)
+            {
+                throw new InvalidOperationException("Booth runtime is unavailable.");
+            }
+
+            if (string.IsNullOrWhiteSpace(runtime.BackendBoothApiBaseUrl))
+            {
+                throw new InvalidOperationException("Backend booth API base URL is not configured.");
+            }
+
+            if (string.IsNullOrWhiteSpace(runtime.BackendDeviceToken))
+            {
+                throw new InvalidOperationException("Backend device token is not configured.");
+            }
+        }
+
+        private static string NormalizeVoucherCode(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return string.Empty;
+            }
+
+            var trimmed = value.Trim().ToUpperInvariant().Replace(" ", string.Empty);
+            var chars = new List<char>(trimmed.Length);
+            foreach (var character in trimmed)
+            {
+                if ((character >= 'A' && character <= 'Z')
+                    || (character >= '0' && character <= '9')
+                    || character is '-' or '_' or '.')
+                {
+                    chars.Add(character);
+                }
+            }
+
+            return new string(chars.ToArray(), 0, Math.Min(chars.Count, VoucherCodeMaxLength));
+        }
+
+        private static string ExtractVoucherSuffix(string value)
+        {
+            var normalized = NormalizeVoucherCode(value);
+            if (normalized.StartsWith(VoucherCodePrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                return normalized[VoucherCodePrefix.Length..];
+            }
+
+            return normalized;
+        }
+
+        private static string NormalizeVoucherCodeCharacter(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return string.Empty;
+            }
+
+            var normalized = NormalizeVoucherCode(value);
+            if (string.IsNullOrEmpty(normalized))
+            {
+                return string.Empty;
+            }
+
+            return normalized[0].ToString();
+        }
+
+        private static string FormatAmountMinor(long amountMinor, string currencyCode)
+        {
+            var amount = amountMinor / 100m;
+            var currency = string.IsNullOrWhiteSpace(currencyCode) ? "THB" : currencyCode.Trim().ToUpperInvariant();
+            return $"{amount:0.00} {currency}";
+        }
+
         private void EnsureCurrentJobOrCreateQuickDemo(bool paymentConfirmed)
         {
             if (currentJob != null)
@@ -3126,6 +5273,27 @@ namespace PhotoBooth.Booth.Frontend
             }
 
             currentJob = runtime.SessionService.SetPassengerName(currentJob.JobId, passengerName);
+        }
+
+        private BoothJob CreateCheckoutRetryJobPreservingSelection(BoothJob previousJob)
+        {
+            EnsureDefaultThemes();
+            EnsureDefaultAiStyles();
+            selectedTheme ??= themes[0];
+            selectedAiStyle ??= aiStyles[0];
+
+            var amountMinor = previousJob?.AmountMinorUnits ?? selectedTheme.priceMinorUnits;
+            var currencyCode = string.IsNullOrWhiteSpace(previousJob?.CurrencyCode) ? selectedTheme.currencyCode : previousJob.CurrencyCode;
+            var nextJob = runtime.SessionService.CreateJob(amountMinor, currencyCode);
+            nextJob = runtime.SessionService.SelectTheme(nextJob.JobId, ResolveBackendImagePreviewId(selectedTheme));
+            nextJob = runtime.SessionService.SelectAiStyle(nextJob.JobId, selectedAiStyle.styleId, selectedAiStyle.aiPrompt);
+            if (!string.IsNullOrWhiteSpace(passengerName))
+            {
+                nextJob = runtime.SessionService.SetPassengerName(nextJob.JobId, passengerName);
+            }
+
+            ClearPendingVoucherState(clearEnteredCode: false);
+            return nextJob;
         }
 
         private void EnqueueRawCaptureUpload(string rawPath, int captureIndex, int captureTotal)
@@ -3198,7 +5366,7 @@ namespace PhotoBooth.Booth.Frontend
         private async Task EnsureCapturePreviewStartedAsync()
         {
             ApplyMonsterFrameSelection(selectedThemeUsesMonsterFrame);
-            if (isStartingCapturePreview || currentScreen != BoothUiScreenId.Capture)
+            if (isCaptureReviewing || isStartingCapturePreview || currentScreen != BoothUiScreenId.Capture)
             {
                 return;
             }
@@ -3208,10 +5376,11 @@ namespace PhotoBooth.Booth.Frontend
             {
                 Debug.Log("PhotoBooth capture preview start requested.");
                 cameraCaptureService ??= CreateCameraCaptureService();
-                await SetObsbotPowerStateAsync("wake", flowCancellation?.Token ?? CancellationToken.None);
+                await WakeCameraDeviceAsync(flowCancellation?.Token ?? CancellationToken.None);
                 await cameraCaptureService.StartPreviewAsync(flowCancellation?.Token ?? CancellationToken.None);
-                Debug.Log($"PhotoBooth capture preview running: {cameraCaptureService.IsPreviewing}, device={cameraCaptureService.CurrentDeviceName}, texture={cameraCaptureService.CurrentWidth}x{cameraCaptureService.CurrentHeight}");
-                SetStatus($"{BuildCaptureReadyMessage()} Camera: {cameraCaptureService.CurrentDeviceName}");
+                ApplyHd33PreviewRotation(capturing: false);
+                Debug.Log($"PhotoBooth capture preview running: {cameraCaptureService.IsPreviewing}, device={cameraCaptureService.CurrentDeviceName}, source={cameraCaptureService.CurrentDeviceSource}, texture={cameraCaptureService.CurrentWidth}x{cameraCaptureService.CurrentHeight}");
+                SetStatus(await BuildCaptureStatusMessageAsync(BuildCaptureReadyMessage(), flowCancellation?.Token ?? CancellationToken.None));
                 await StartArPreviewAsync(flowCancellation?.Token ?? CancellationToken.None);
             }
             catch (Exception exception)
@@ -3321,6 +5490,33 @@ namespace PhotoBooth.Booth.Frontend
                 if (isFrameSelectionMarker || isMonsterToggleMarker)
                 {
                     candidate.gameObject.SetActive(false);
+                }
+            }
+        }
+
+        private void UpdateMonsterToggleSelectionVisuals(bool useMonsterFrame)
+        {
+            var root = FindScreenRoot(BoothUiScreenId.ThemeSelect);
+            if (root == null)
+            {
+                return;
+            }
+
+            foreach (var candidate in root.GetComponentsInChildren<Transform>(true))
+            {
+                if (candidate == null || candidate.parent == null || !string.Equals(candidate.name, "Select", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                var parentName = candidate.parent.name;
+                if (string.Equals(parentName, "Monster", StringComparison.Ordinal))
+                {
+                    candidate.gameObject.SetActive(useMonsterFrame);
+                }
+                else if (string.Equals(parentName, "No Monster", StringComparison.Ordinal))
+                {
+                    candidate.gameObject.SetActive(!useMonsterFrame);
                 }
             }
         }
@@ -4361,6 +6557,7 @@ namespace PhotoBooth.Booth.Frontend
                 BoothUiScreenId.ThemeSelect => "Choose Your Frame",
                 BoothUiScreenId.ArSelect => "Choose Your AR",
                 BoothUiScreenId.ArtStyleSelect => "Type Your Name",
+                BoothUiScreenId.VoucherEntry => "Enter Voucher",
                 BoothUiScreenId.PaymentMock => "Choose Payment",
                 BoothUiScreenId.Capture => "Take A Photo",
                 BoothUiScreenId.Preview => "Preview",
@@ -4646,6 +6843,24 @@ namespace PhotoBooth.Booth.Frontend
             StyleMrkremeButton(confirmNameButton);
             confirmNameButton.onClick.AddListener(ConfirmNameFromUi);
 
+            var voucherEntry = CreateScreen(background.transform, BoothUiScreenId.VoucherEntry, builtScreens);
+            CreateBackgroundImage(voucherEntry.transform, "CreamPatternBackground", "piece_06");
+            CreatePanelBlock(voucherEntry.transform, "TopMetalPanel", new Vector2(0.5f, 0.91f), new Vector2(1080f, 330f), MetalColor);
+            CreateText(voucherEntry.transform, "VoucherTitle", "TYPE YOUR\nCODE HERE", 62, TextAlignmentOptions.Center, new Vector2(0.5f, 0.91f), new Vector2(0.5f, 0.91f), Vector2.zero, new Vector2(760f, 180f)).color = Color.black;
+            CreateSheetImage(voucherEntry.transform, "BoardingPassArt", "piece_02", new Rect(95f, 2515f, 1350f, 1370f), new Vector2(0.5f, 0.62f), new Vector2(610f, 620f));
+            voucherCodeEntryText = CreateText(voucherEntry.transform, "VoucherCodeText", string.Empty, 34, TextAlignmentOptions.Left, new Vector2(0.5f, 0.49f), new Vector2(0.5f, 0.49f), new Vector2(-78f, 0f), new Vector2(520f, 52f));
+            voucherCodeEntryText.color = new Color(0.08f, 0.08f, 0.08f, 1f);
+            voucherCodeCountText = CreateText(voucherEntry.transform, "VoucherCodeCountText", $"0 / {VoucherCodeMaxLength}", 30, TextAlignmentOptions.Right, new Vector2(0.5f, 0.49f), new Vector2(0.5f, 0.49f), new Vector2(160f, 0f), new Vector2(240f, 52f));
+            voucherCodeCountText.color = new Color(0.08f, 0.08f, 0.08f, 1f);
+            BuildVoucherKeyboard(voucherEntry.transform);
+            CreatePanelBlock(voucherEntry.transform, "BottomMetalPanel", new Vector2(0.5f, 0.075f), new Vector2(1080f, 280f), MetalColor);
+            var voucherBackButton = CreateButton(voucherEntry.transform, "VoucherBackButton", "BACK", new Vector2(0.25f, 0.075f), Vector2.zero, new Vector2(420f, 120f));
+            var confirmVoucherButton = CreateButton(voucherEntry.transform, "ConfirmVoucherButton", "APPLY", new Vector2(0.75f, 0.075f), Vector2.zero, new Vector2(420f, 120f));
+            StyleMrkremeButton(voucherBackButton, new Color(0.85f, 0.24f, 0.18f, 1f), Color.white);
+            StyleMrkremeButton(confirmVoucherButton);
+            voucherBackButton.onClick.AddListener(BackFromVoucherEntryFromUi);
+            confirmVoucherButton.onClick.AddListener(ConfirmVoucherFromUi);
+
             var payment = CreateScreen(background.transform, BoothUiScreenId.PaymentMock, builtScreens);
             CreateBackgroundImage(payment.transform, "CreamPatternBackground", "piece_06");
             CreatePanelBlock(payment.transform, "TopMetalPanel", new Vector2(0.5f, 0.91f), new Vector2(1080f, 330f), MetalColor);
@@ -4754,6 +6969,10 @@ namespace PhotoBooth.Booth.Frontend
             captureButton = CreateButton(capture.transform, "CaptureButton", string.Empty, new Vector2(0.5f, 0.075f), Vector2.zero, new Vector2(150f, 150f));
             StyleCaptureButton(captureButton);
             captureButton.onClick.AddListener(CaptureFromUi);
+            captureRetakeButton = CreateButton(capture.transform, "CaptureRetakeButton", "RETAKE", new Vector2(0.22f, 0.075f), Vector2.zero, new Vector2(220f, 72f));
+            StyleMrkremeButton(captureRetakeButton, new Color(0.94f, 0.91f, 0.82f, 1f), Color.black);
+            captureRetakeButton.onClick.AddListener(RetakeFromUi);
+            captureRetakeButton.gameObject.SetActive(false);
 
             var preview = CreateScreen(background.transform, BoothUiScreenId.Preview, builtScreens);
             CreateBackgroundImage(preview.transform, "CreamPatternBackground", "piece_06");
@@ -4829,6 +7048,7 @@ namespace PhotoBooth.Booth.Frontend
 
         private void BindUiEvents()
         {
+            EnsureVoucherEntryScreen();
             cameraPreview ??= FindRawImageInScreen(BoothUiScreenId.Capture, "CameraPreview") ?? FindRawImage("CameraPreview");
             captureCountText ??= FindText("CaptureCount");
             captureForegroundOverlay ??= FindImage("CaptureForegroundOverlay");
@@ -4838,12 +7058,17 @@ namespace PhotoBooth.Booth.Frontend
             qrPreview = FindRawImageInScreen(BoothUiScreenId.Preview, "QrPreview", "QR Code") ?? qrPreview ?? FindRawImage("QrPreview");
             qrLoadingText ??= FindTextInScreen(BoothUiScreenId.Preview, "QrLoading", "QrLoadingText") ?? FindText("QrLoading");
             previewFrameImage ??= FindPreviewFrameImage();
+            voucherCodeEntryText ??= FindTextInScreen(BoothUiScreenId.VoucherEntry, "VoucherCodeText");
+            voucherCodeCountText ??= FindTextInScreen(BoothUiScreenId.VoucherEntry, "VoucherCodeCountText");
+            EnsureVoucherModal();
+            EnsureVoucherScanUi(FindScreenRoot(BoothUiScreenId.VoucherEntry));
             if (captureForegroundOverlay != null)
             {
                 captureForegroundOverlay.raycastTarget = false;
             }
 
             UpdateCaptureCountText();
+            UpdateVoucherCodeDisplay();
             SetObjectActive("ThemeButton3", false);
             SetObjectActive("ThemeButton4", false);
             SetObjectActive("FramePreview3", false);
@@ -4874,12 +7099,21 @@ namespace PhotoBooth.Booth.Frontend
             WireButton("ArPresetConfirmButton", ConfirmArPresetSelectionFromUi);
             WireButton("QrPayButton", PayMockFromUi);
             WireButton("CardPayButton", PayMockFromUi);
-            WireButton("VoucherButton", PayMockFromUi);
-            WireButton("PaymentBackButton", () => SwitchScreen(BoothUiScreenId.ThemeSelect, "Choose your frame."));
+            WireButton("VoucherButton", OpenVoucherEntryFromUi);
+            WireButton("PaymentBackButton", BackFromPaymentFromUi);
             WireButton("ConfirmNameButton", ConfirmNameFromUi);
+            WireButton("ConfirmVoucherButton", ConfirmVoucherFromUi);
+            WireButton("VoucherBackButton", BackFromVoucherEntryFromUi);
+            WireButton("VoucherModalConfirmButton", HideVoucherModal);
+            WireButton("VoucherScanButton", StartVoucherScannerFromUi);
+            WireButton("VoucherCameraOnButton", TurnVoucherCameraOnFromUi);
+            WireButton("VoucherCameraOffButton", TurnVoucherCameraOffFromUi);
+            WireButton("VoucherRemoteRefreshButton", RefreshVoucherRemoteScanFromUi);
             WireButton("CaptureButton", CaptureFromUi);
-            WireButton("RetakeButton", RetakeFromUi);
-            WireButton("ContinueButton", FinishPreviewAndReturnHomeFromUi);
+            WireButtonInScreen(BoothUiScreenId.Capture, "CaptureRetakeButton", RetakeFromUi);
+            WireButtonInScreen(BoothUiScreenId.Capture, "CaptureRefreshButton", RetakeFromUi);
+            WireButtonInScreen(BoothUiScreenId.Preview, "RetakeButton", RetakeFromUi);
+            WireButtonInScreen(BoothUiScreenId.Preview, "ContinueButton", FinishPreviewAndReturnHomeFromUi);
             WireButton("PrintButton", PrintFromUi);
             WireButton("DoneButton", DoneFromUi);
             WireButton("ResetButton", ResetFromUi);
@@ -4893,12 +7127,462 @@ namespace PhotoBooth.Booth.Frontend
             }
 
             WireButton("Key_Back", BackspaceNameFromUi);
+            WireVoucherKeyboardButtons();
         }
 
         private void WireMonsterFramePreviewButtons()
         {
             WireThemePreviewGrid("Grid - No Monster", useMonsterFrame: false);
             WireThemePreviewGrid("Grid - Monster", useMonsterFrame: true);
+        }
+
+        private void EnsureVoucherEntryScreen()
+        {
+            if (FindScreenRoot(BoothUiScreenId.VoucherEntry) != null)
+            {
+                return;
+            }
+
+            var artStyleRoot = FindScreenRoot(BoothUiScreenId.ArtStyleSelect);
+            if (artStyleRoot == null)
+            {
+                return;
+            }
+
+            var voucherScreen = Instantiate(artStyleRoot.gameObject, artStyleRoot.parent);
+            voucherScreen.name = "VoucherEntryScreen";
+            voucherScreen.SetActive(false);
+            RegisterScreenBinding(BoothUiScreenId.VoucherEntry, voucherScreen);
+            ConfigureVoucherEntryScreen(voucherScreen.transform);
+        }
+
+        private void RegisterScreenBinding(BoothUiScreenId screenId, GameObject root)
+        {
+            if (root == null)
+            {
+                return;
+            }
+
+            if (screens == null)
+            {
+                screens = new[] { new ScreenBinding { screenId = screenId, root = root } };
+                return;
+            }
+
+            for (var i = 0; i < screens.Length; i++)
+            {
+                if (screens[i] == null || screens[i].screenId != screenId)
+                {
+                    continue;
+                }
+
+                screens[i].root = root;
+                return;
+            }
+
+            Array.Resize(ref screens, screens.Length + 1);
+            screens[^1] = new ScreenBinding { screenId = screenId, root = root };
+        }
+
+        private void ConfigureVoucherEntryScreen(Transform root)
+        {
+            if (root == null)
+            {
+                return;
+            }
+
+            foreach (var button in root.GetComponentsInChildren<Button>(true))
+            {
+                if (button != null)
+                {
+                    button.onClick = new Button.ButtonClickedEvent();
+                }
+            }
+
+            var title = FindChildText(root, "NameTitle");
+            if (title != null)
+            {
+                title.SetText("TYPE YOUR\nCODE HERE");
+            }
+
+            var entryText = FindChildText(root, "PassengerName");
+            if (entryText != null)
+            {
+                entryText.name = "VoucherCodeText";
+                entryText.SetText(string.Empty);
+                voucherCodeEntryText = entryText;
+            }
+
+            var countText = FindChildText(root, "NameCount");
+            if (countText != null)
+            {
+                countText.name = "VoucherCodeCountText";
+                countText.SetText($"0 / {VoucherCodeMaxLength}");
+                voucherCodeCountText = countText;
+            }
+
+            var confirmButton = FindChildButton(root, "ConfirmNameButton");
+            if (confirmButton != null)
+            {
+                confirmButton.name = "ConfirmVoucherButton";
+                var label = confirmButton.GetComponentInChildren<TextMeshProUGUI>(true);
+                if (label != null)
+                {
+                    label.SetText("APPLY");
+                }
+            }
+
+            var bottomPanel = root.Find("BottomMetalPanel");
+            if (bottomPanel != null)
+            {
+                var backButton = CreateButton(bottomPanel.parent, "VoucherBackButton", "BACK", new Vector2(0.25f, 0.075f), Vector2.zero, new Vector2(420f, 120f));
+                StyleMrkremeButton(backButton, new Color(0.85f, 0.24f, 0.18f, 1f), Color.white);
+
+                var applyButton = confirmButton != null ? confirmButton.GetComponent<RectTransform>() : null;
+                if (applyButton != null)
+                {
+                    applyButton.anchorMin = new Vector2(0.75f, 0.075f);
+                    applyButton.anchorMax = new Vector2(0.75f, 0.075f);
+                    applyButton.anchoredPosition = Vector2.zero;
+                    applyButton.sizeDelta = new Vector2(420f, 120f);
+                }
+            }
+
+            RemoveKeyboardButtons(root);
+            BuildVoucherKeyboard(root);
+            EnsureVoucherModal();
+            EnsureVoucherScanUi(root);
+            EnsureVoucherRemoteScanUi(root);
+            UpdateVoucherCodeDisplay();
+        }
+
+        private void EnsureVoucherScanUi(Transform root)
+        {
+            if (root == null)
+            {
+                return;
+            }
+
+            voucherScanButton ??= FindChildButton(root, "VoucherScanButton");
+            if (voucherScanButton == null)
+            {
+                voucherScanButton = CreateButton(root, "VoucherScanButton", "SCAN QR", new Vector2(0.5f, 0.405f), Vector2.zero, new Vector2(360f, 70f));
+                StyleKeyboardButton(voucherScanButton);
+            }
+
+            voucherCameraOnButton ??= FindChildButton(root, "VoucherCameraOnButton");
+            if (voucherCameraOnButton == null)
+            {
+                voucherCameraOnButton = CreateButton(root, "VoucherCameraOnButton", "CAM ON", new Vector2(0.39f, 0.455f), Vector2.zero, new Vector2(180f, 54f));
+                StyleKeyboardButton(voucherCameraOnButton);
+            }
+
+            voucherCameraOffButton ??= FindChildButton(root, "VoucherCameraOffButton");
+            if (voucherCameraOffButton == null)
+            {
+                voucherCameraOffButton = CreateButton(root, "VoucherCameraOffButton", "CAM OFF", new Vector2(0.61f, 0.455f), Vector2.zero, new Vector2(180f, 54f));
+                StyleKeyboardButton(voucherCameraOffButton);
+            }
+
+            voucherScanStatusText ??= FindChildText(root, "VoucherScanStatusText");
+            if (voucherScanStatusText == null)
+            {
+                voucherScanStatusText = CreateText(root, "VoucherScanStatusText", string.Empty, 24, TextAlignmentOptions.Center, new Vector2(0.5f, 0.365f), new Vector2(0.5f, 0.365f), Vector2.zero, new Vector2(620f, 54f));
+                voucherScanStatusText.color = new Color(0.08f, 0.08f, 0.08f, 1f);
+            }
+
+            voucherScanPreviewFrame ??= FindDescendant(root, "VoucherScanPreviewFrame")?.gameObject;
+            voucherScanPreview ??= FindChildRawImage(root, "VoucherScanPreview");
+            if (voucherScanPreview == null)
+            {
+                if (voucherScanPreviewFrame == null)
+                {
+                    CreatePanelBlock(root, "VoucherScanPreviewFrame", new Vector2(0.5f, 0.62f), new Vector2(380f, 260f), new Color(0.05f, 0.05f, 0.05f, 0.8f));
+                    voucherScanPreviewFrame = FindDescendant(root, "VoucherScanPreviewFrame")?.gameObject;
+                }
+
+                voucherScanPreview = CreateRawImage(root, "VoucherScanPreview", new Vector2(0.5f, 0.62f), Vector2.zero, new Vector2(360f, 240f));
+                voucherScanPreview.gameObject.SetActive(false);
+            }
+
+            SetVoucherScanPreviewVisible(false);
+            EnsureVoucherRemoteScanUi(root);
+        }
+
+        private void EnsureVoucherRemoteScanUi(Transform root)
+        {
+            if (root == null)
+            {
+                return;
+            }
+
+            voucherRemoteScanPanel ??= FindDescendant(root, "VoucherRemoteScanPanel")?.gameObject;
+            if (voucherRemoteScanPanel == null)
+            {
+                voucherRemoteScanPanel = new GameObject("VoucherRemoteScanPanel", typeof(RectTransform), typeof(Image));
+                voucherRemoteScanPanel.transform.SetParent(root, false);
+            }
+
+            voucherRemoteScanPanel.SetActive(true);
+            voucherRemoteScanPanel.transform.SetAsLastSibling();
+            var panelRect = voucherRemoteScanPanel.GetComponent<RectTransform>();
+            if (panelRect != null)
+            {
+                panelRect.anchorMin = new Vector2(0.5f, 0.62f);
+                panelRect.anchorMax = new Vector2(0.5f, 0.62f);
+                panelRect.pivot = new Vector2(0.5f, 0.5f);
+                panelRect.anchoredPosition = Vector2.zero;
+                panelRect.sizeDelta = new Vector2(460f, 360f);
+            }
+
+            var panelBackground = voucherRemoteScanPanel.GetComponent<Image>();
+            if (panelBackground != null)
+            {
+                panelBackground.color = new Color(0.95f, 0.9f, 0.78f, 0.96f);
+                panelBackground.raycastTarget = false;
+            }
+
+            var panel = voucherRemoteScanPanel.transform;
+            voucherRemoteQrImage ??= FindChildRawImage(panel, "VoucherRemoteQrImage");
+            if (voucherRemoteQrImage == null)
+            {
+                voucherRemoteQrImage = CreateRawImage(panel, "VoucherRemoteQrImage", new Vector2(0.5f, 0.64f), Vector2.zero, new Vector2(260f, 260f));
+            }
+            voucherRemoteQrImage.gameObject.SetActive(true);
+            voucherRemoteQrImage.color = Color.white;
+            var qrRect = voucherRemoteQrImage.GetComponent<RectTransform>();
+            if (qrRect != null)
+            {
+                qrRect.anchorMin = new Vector2(0.5f, 0.64f);
+                qrRect.anchorMax = new Vector2(0.5f, 0.64f);
+                qrRect.anchoredPosition = Vector2.zero;
+                qrRect.sizeDelta = new Vector2(260f, 260f);
+            }
+
+            voucherRemoteScanStatusText ??= FindChildText(panel, "VoucherRemoteScanStatusText");
+            if (voucherRemoteScanStatusText == null)
+            {
+                voucherRemoteScanStatusText = CreateText(panel, "VoucherRemoteScanStatusText", "Preparing QR...", 22, TextAlignmentOptions.Center, new Vector2(0.5f, 0.19f), new Vector2(0.5f, 0.19f), Vector2.zero, new Vector2(400f, 74f));
+            }
+            voucherRemoteScanStatusText.color = new Color(0.08f, 0.08f, 0.08f, 1f);
+            var statusRect = voucherRemoteScanStatusText.GetComponent<RectTransform>();
+            if (statusRect != null)
+            {
+                statusRect.anchorMin = new Vector2(0.5f, 0.19f);
+                statusRect.anchorMax = new Vector2(0.5f, 0.19f);
+                statusRect.anchoredPosition = Vector2.zero;
+                statusRect.sizeDelta = new Vector2(400f, 74f);
+            }
+
+            voucherRemoteRefreshButton ??= FindChildButton(panel, "VoucherRemoteRefreshButton");
+            if (voucherRemoteRefreshButton == null)
+            {
+                voucherRemoteRefreshButton = CreateButton(panel, "VoucherRemoteRefreshButton", "REFRESH", new Vector2(0.5f, 0.055f), Vector2.zero, new Vector2(250f, 54f));
+                StyleKeyboardButton(voucherRemoteRefreshButton);
+            }
+            var refreshRect = voucherRemoteRefreshButton.GetComponent<RectTransform>();
+            if (refreshRect != null)
+            {
+                refreshRect.anchorMin = new Vector2(0.5f, 0.055f);
+                refreshRect.anchorMax = new Vector2(0.5f, 0.055f);
+                refreshRect.anchoredPosition = Vector2.zero;
+                refreshRect.sizeDelta = new Vector2(250f, 54f);
+            }
+        }
+
+        private void EnsureVoucherModal()
+        {
+            var root = FindScreenRoot(BoothUiScreenId.VoucherEntry);
+            if (root == null)
+            {
+                return;
+            }
+
+            var existingModal = FindDescendant(root, "VoucherAlertModal");
+            if (existingModal != null)
+            {
+                voucherModalRoot = existingModal.gameObject;
+                voucherModalMessageText ??= FindChildText(existingModal, "VoucherModalMessageText");
+                voucherModalConfirmButton ??= FindChildButton(existingModal, "VoucherModalConfirmButton")
+                    ?? FindChildButton(existingModal, "ContinueButton")
+                    ?? FindChildButton(existingModal, "ConfirmButton")
+                    ?? FindChildButton(existingModal, "AgreeButton");
+                if (voucherModalConfirmButton != null)
+                {
+                    voucherModalConfirmButton.onClick = new Button.ButtonClickedEvent();
+                    voucherModalConfirmButton.onClick.AddListener(HideVoucherModal);
+                }
+
+                voucherModalRoot.SetActive(false);
+                return;
+            }
+
+            var modal = new GameObject("VoucherAlertModal", typeof(RectTransform), typeof(Image));
+            modal.transform.SetParent(root, false);
+            var modalRect = modal.GetComponent<RectTransform>();
+            modalRect.anchorMin = Vector2.zero;
+            modalRect.anchorMax = Vector2.one;
+            modalRect.offsetMin = Vector2.zero;
+            modalRect.offsetMax = Vector2.zero;
+            modal.GetComponent<Image>().color = new Color(0f, 0f, 0f, 0.62f);
+
+            var panel = new GameObject("Panel", typeof(RectTransform), typeof(Image));
+            panel.transform.SetParent(modal.transform, false);
+            var panelRect = panel.GetComponent<RectTransform>();
+            panelRect.anchorMin = new Vector2(0.5f, 0.5f);
+            panelRect.anchorMax = new Vector2(0.5f, 0.5f);
+            panelRect.anchoredPosition = Vector2.zero;
+            panelRect.sizeDelta = new Vector2(780f, 460f);
+            panel.GetComponent<Image>().color = new Color(0.95f, 0.9f, 0.78f, 1f);
+
+            voucherModalMessageText = CreateText(panel.transform, "VoucherModalMessageText", string.Empty, 48, TextAlignmentOptions.Center, new Vector2(0.5f, 0.62f), new Vector2(0.5f, 0.62f), Vector2.zero, new Vector2(680f, 190f));
+            voucherModalMessageText.color = new Color(0.08f, 0.08f, 0.08f, 1f);
+            voucherModalConfirmButton = CreateButton(panel.transform, "VoucherModalConfirmButton", "confirm", new Vector2(0.5f, 0.24f), Vector2.zero, new Vector2(420f, 110f));
+            StyleMrkremeButton(voucherModalConfirmButton);
+            voucherModalConfirmButton.onClick.AddListener(HideVoucherModal);
+
+            voucherModalRoot = modal;
+            voucherModalRoot.SetActive(false);
+        }
+
+        private void RemoveKeyboardButtons(Transform root)
+        {
+            var buttons = new List<GameObject>();
+            foreach (var button in root.GetComponentsInChildren<Button>(true))
+            {
+                if (button == null)
+                {
+                    continue;
+                }
+
+                if (button.name.StartsWith("Key_", StringComparison.Ordinal) || button.name.StartsWith("VoucherKey_", StringComparison.Ordinal))
+                {
+                    buttons.Add(button.gameObject);
+                }
+            }
+
+            foreach (var button in buttons)
+            {
+                if (button != null)
+                {
+                    if (Application.isPlaying)
+                    {
+                        Destroy(button);
+                    }
+                    else
+                    {
+                        DestroyImmediate(button);
+                    }
+                }
+            }
+        }
+
+        private void BuildVoucherKeyboard(Transform parent)
+        {
+            BuildVoucherKeyboardRow(parent, "1234567890", 0.314f, 10, 86f);
+            BuildVoucherKeyboardRow(parent, "QWERTYUIOP", 0.248f, 10, 86f);
+            BuildVoucherKeyboardRow(parent, "ASDFGHJKL", 0.182f, 9, 86f);
+            BuildVoucherKeyboardRow(parent, "ZXCVBNM-", 0.116f, 8, 92f, includeBackspace: true);
+        }
+
+        private void BuildVoucherKeyboardRow(Transform parent, string characters, float anchorY, int keyCount, float keyWidth, bool includeBackspace = false)
+        {
+            var gap = 8f;
+            var totalWidth = (keyCount * keyWidth) + ((keyCount - 1) * gap) + (includeBackspace ? keyWidth + 42f : 0f);
+            var startX = (-totalWidth / 2f) + (keyWidth / 2f);
+
+            for (var i = 0; i < characters.Length; i++)
+            {
+                var character = characters[i].ToString();
+                var button = CreateButton(parent, $"VoucherKey_{NormalizeVoucherKeyName(character)}", character, new Vector2(0.5f, anchorY), new Vector2(startX + (i * (keyWidth + gap)), 0f), new Vector2(keyWidth, 64f));
+                StyleKeyboardButton(button);
+            }
+
+            if (!includeBackspace)
+            {
+                return;
+            }
+
+            var backButton = CreateButton(parent, "VoucherKey_Back", "BACK", new Vector2(0.5f, anchorY), new Vector2(startX + (characters.Length * (keyWidth + gap)) + 21f, 0f), new Vector2(keyWidth + 42f, 64f));
+            StyleKeyboardButton(backButton);
+        }
+
+        private void WireVoucherKeyboardButtons()
+        {
+            const string keys = "1234567890QWERTYUIOPASDFGHJKLZXCVBNM";
+            foreach (var key in keys)
+            {
+                var character = key.ToString();
+                WireButton($"VoucherKey_{character}", () => AppendVoucherCharacterFromUi(character));
+            }
+
+            WireButton("VoucherKey_Dash", () => AppendVoucherCharacterFromUi("-"));
+            WireButton("VoucherKey_Back", BackspaceVoucherFromUi);
+        }
+
+        private static string NormalizeVoucherKeyName(string value)
+        {
+            return value switch
+            {
+                "-" => "Dash",
+                "." => "Dot",
+                "_" => "Underscore",
+                _ => value
+            };
+        }
+
+        private static TextMeshProUGUI FindChildText(Transform root, string name)
+        {
+            if (root == null)
+            {
+                return null;
+            }
+
+            foreach (var label in root.GetComponentsInChildren<TextMeshProUGUI>(true))
+            {
+                if (label != null && label.name == name)
+                {
+                    return label;
+                }
+            }
+
+            return null;
+        }
+
+        private static Button FindChildButton(Transform root, string name)
+        {
+            if (root == null)
+            {
+                return null;
+            }
+
+            foreach (var button in root.GetComponentsInChildren<Button>(true))
+            {
+                if (button != null && button.name == name)
+                {
+                    return button;
+                }
+            }
+
+            return null;
+        }
+
+        private static RawImage FindChildRawImage(Transform root, string name)
+        {
+            if (root == null)
+            {
+                return null;
+            }
+
+            foreach (var rawImage in root.GetComponentsInChildren<RawImage>(true))
+            {
+                if (rawImage != null && rawImage.name == name)
+                {
+                    return rawImage;
+                }
+            }
+
+            return null;
         }
 
         private void WireThemePreviewGrid(string gridName, bool useMonsterFrame)
@@ -4960,7 +7644,20 @@ namespace PhotoBooth.Booth.Frontend
                 return;
             }
 
-            button.onClick.RemoveAllListeners();
+            button.onClick = new Button.ButtonClickedEvent();
+            button.onClick.AddListener(action);
+        }
+
+        private void WireButtonInScreen(BoothUiScreenId screenId, string buttonName, UnityEngine.Events.UnityAction action)
+        {
+            var button = FindButtonInScreen(screenId, buttonName);
+            if (button == null)
+            {
+                WireButton(buttonName, action);
+                return;
+            }
+
+            button.onClick = new Button.ButtonClickedEvent();
             button.onClick.AddListener(action);
         }
 
@@ -5016,6 +7713,25 @@ namespace PhotoBooth.Booth.Frontend
             return null;
         }
 
+        private Button FindButtonInScreen(BoothUiScreenId screenId, params string[] names)
+        {
+            var root = FindScreenRoot(screenId);
+            if (root == null)
+            {
+                return null;
+            }
+
+            foreach (var button in root.GetComponentsInChildren<Button>(true))
+            {
+                if (button != null && NameMatches(button.name, names))
+                {
+                    return button;
+                }
+            }
+
+            return null;
+        }
+
         private Transform FindTransform(string objectName)
         {
             var transforms = GetComponentsInChildren<Transform>(true);
@@ -5024,6 +7740,51 @@ namespace PhotoBooth.Booth.Frontend
                 if (candidate != null && candidate.name == objectName)
                 {
                     return candidate;
+                }
+            }
+
+            return null;
+        }
+
+        private static Transform FindDescendant(Transform root, string path)
+        {
+            if (root == null || string.IsNullOrWhiteSpace(path))
+            {
+                return null;
+            }
+
+            var current = root;
+            var parts = path.Split('/');
+            foreach (var part in parts)
+            {
+                if (string.IsNullOrWhiteSpace(part))
+                {
+                    continue;
+                }
+
+                current = FindDirectChild(current, part);
+                if (current == null)
+                {
+                    return null;
+                }
+            }
+
+            return current;
+        }
+
+        private static Transform FindDirectChild(Transform parent, string childName)
+        {
+            if (parent == null)
+            {
+                return null;
+            }
+
+            for (var i = 0; i < parent.childCount; i++)
+            {
+                var child = parent.GetChild(i);
+                if (child != null && string.Equals(child.name, childName, StringComparison.Ordinal))
+                {
+                    return child;
                 }
             }
 
@@ -5359,6 +8120,30 @@ namespace PhotoBooth.Booth.Frontend
             }
         }
 
+        private static void SetButtonLabel(Button button, string text)
+        {
+            if (button == null)
+            {
+                return;
+            }
+
+            var label = button.GetComponentInChildren<TextMeshProUGUI>(true);
+            if (label == null && !string.IsNullOrWhiteSpace(text))
+            {
+                label = CreateText(button.transform, "Label", string.Empty, 26, TextAlignmentOptions.Center, Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero);
+                var rect = label.GetComponent<RectTransform>();
+                rect.offsetMin = Vector2.zero;
+                rect.offsetMax = Vector2.zero;
+                label.color = new Color(0.08f, 0.08f, 0.08f, 1f);
+                label.fontStyle = FontStyles.Bold;
+            }
+
+            if (label != null)
+            {
+                label.SetText(text ?? string.Empty);
+            }
+        }
+
         private static void StyleKeyboardButton(Button button)
         {
             if (button == null)
@@ -5476,6 +8261,9 @@ namespace PhotoBooth.Booth.Frontend
             TrackScreenExit();
             flowCancellation?.Cancel();
             flowCancellation?.Dispose();
+            StopVoucherScanner("destroy");
+            StopVoucherRemoteScanSession(null);
+            ClearVoucherRemoteQrTexture();
             cameraCaptureService?.Dispose();
             StopArPreview();
             arTrackingProvider?.Dispose();
@@ -5484,11 +8272,18 @@ namespace PhotoBooth.Booth.Frontend
             StopLivePhotoPreviewPlayback();
             StopPreviewFrameMotionPlayback();
             HideQrLoading();
+            ClearCaptureReviewImage();
             ClearPreview(composedPreview, ref composedPreviewTexture);
             ClearPreview(motionPreview, ref motionPreviewTexture);
             ClearPreviewFrameSlots();
             ClearQrPreview();
             ClearArPreviewOverlay();
+
+            if (arFrameTexture != null)
+            {
+                Destroy(arFrameTexture);
+                arFrameTexture = null;
+            }
         }
     }
 }
