@@ -1,5 +1,4 @@
 using System;
-using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Threading;
@@ -28,6 +27,7 @@ namespace PhotoBooth.Booth.Frontend
     public sealed class BoothFrontendController : MonoBehaviour
     {
         private const string MrKremeResourceRoot = "MrkremeUi/";
+        private const string PaymentBypassSceneName = "PhotoBooth-Kooky";
         private const int NoArPresetIndex = -2;
         private const int VoucherCodeMaxLength = 24;
         private const string VoucherCodePrefix = "PB-";
@@ -56,7 +56,6 @@ namespace PhotoBooth.Booth.Frontend
         private static readonly Color MetalColor = new(0.75f, 0.79f, 0.78f, 1f);
         private static readonly Color MrkremeLime = new(0.78f, 0.9f, 0.05f, 1f);
         private static readonly bool UseUnity3dAr = false;
-        private const int RequiredCapturesPerSession = 1;
         private static readonly Vector2 MonsterFrameOverlaySize = new(950.64f, 534.3f);
         private static readonly Rect PreviewFrameSpriteRectFallback = new(473f, 161f, 3150f, 3774f);
         private static readonly Rect[] PreviewFrameCaptureSlots =
@@ -86,6 +85,8 @@ namespace PhotoBooth.Booth.Frontend
         [SerializeField] private bool autoBuildUi = true;
         [SerializeField] private bool autoBootstrapInPhotoBoothScene = true;
         [SerializeField] private bool forcePortraitResolution = true;
+        [SerializeField] private bool forceNoMonsterThemeSelection;
+        [SerializeField] private bool skipPaymentScreen;
         [SerializeField] private int countdownSeconds = 3;
         [SerializeField] private int capturesPerSession = 1;
         [SerializeField] private int motionClipFramesPerSecond = 15;
@@ -164,6 +165,11 @@ namespace PhotoBooth.Booth.Frontend
         [SerializeField] private TextMeshProUGUI priceText;
         [SerializeField] private TextMeshProUGUI countdownText;
         [SerializeField] private TextMeshProUGUI captureCountText;
+        [SerializeField] private GameObject countdownRoot;
+        [SerializeField] private TextMeshProUGUI captureStartText;
+        [SerializeField] private GameObject captureShotCountRoot;
+        [SerializeField] private Image captureShotCountImage;
+        [SerializeField] private Sprite[] captureShotCountSprites = Array.Empty<Sprite>();
         [SerializeField] private TextMeshProUGUI aiStyleText;
         [SerializeField] private TextMeshProUGUI nameEntryText;
         [SerializeField] private TextMeshProUGUI voucherCodeEntryText;
@@ -189,6 +195,8 @@ namespace PhotoBooth.Booth.Frontend
         [SerializeField] private RawImage arModelOverlay;
         [SerializeField] private RawImage arPreviewOverlay;
         [SerializeField] private Image captureForegroundOverlay;
+        [SerializeField] private Sprite[] captureFrameOneOverlays = Array.Empty<Sprite>();
+        [SerializeField] private Sprite[] captureFrameTwoOverlays = Array.Empty<Sprite>();
         [SerializeField] private RawImage motionPreview;
         [SerializeField] private RawImage composedPreview;
         [SerializeField] private RawImage qrPreview;
@@ -197,8 +205,8 @@ namespace PhotoBooth.Booth.Frontend
         [SerializeField] private Sprite[] previewFrameSprites = Array.Empty<Sprite>();
         [SerializeField] private Rect[] previewFrameCaptureSlots = Array.Empty<Rect>();
         [SerializeField] private Button captureButton;
-        [SerializeField] private Button captureRetakeButton;
-        [SerializeField] private Button retakeButton;
+        // [SerializeField] private Button captureRetakeButton;
+        // [SerializeField] private Button retakeButton;
         [SerializeField] private Button continueButton;
         [SerializeField] private Button printButton;
         [SerializeField] private Button doneButton;
@@ -223,6 +231,7 @@ namespace PhotoBooth.Booth.Frontend
         private readonly List<string> capturedRawImagePaths = new();
         private readonly List<string> capturedMotionFramePaths = new();
         private int capturedPhotoCount;
+        private int captureForegroundCaptureNumber = 1;
         private int pendingArPresetIndex = -1;
         private int selectedArPresetIndex = -1;
         private int selectedArStickerIndex = -1;
@@ -255,6 +264,9 @@ namespace PhotoBooth.Booth.Frontend
         private bool previewScreenShowsFinalDownload;
         private bool printRequestStarted;
         private bool isCaptureReviewing;
+        private GameObject captureIntroLozado;
+        private GameObject captureTrainRoot;
+        private readonly GameObject[] captureTrainLevels = new GameObject[3];
         private bool captureReviewRetakeUsed;
         private bool isStartingCapturePreview;
         private ICameraDeviceController cameraDeviceController;
@@ -646,13 +658,14 @@ namespace PhotoBooth.Booth.Frontend
 
         private void NormalizeCaptureSettings()
         {
-            capturesPerSession = RequiredCapturesPerSession;
+            capturesPerSession = Mathf.Max(1, capturesPerSession);
+            countdownSeconds = Mathf.Max(1, countdownSeconds);
         }
 
         private int ResolveCapturesPerSession()
         {
             NormalizeCaptureSettings();
-            return RequiredCapturesPerSession;
+            return capturesPerSession;
         }
 
         [ContextMenu("Build Editable MRKREME UI In Scene")]
@@ -702,7 +715,7 @@ namespace PhotoBooth.Booth.Frontend
                 selectedAiStyle = null;
                 pendingThemeIndex = -1;
                 pendingImagePreviewIndex = 1;
-                pendingThemeUsesMonsterFrame = true;
+                pendingThemeUsesMonsterFrame = !ShouldForceNoMonsterThemeSelection();
                 selectedThemeUsesMonsterFrame = false;
                 selectedImagePreviewIndex = 1;
                 pendingArPresetIndex = -1;
@@ -726,8 +739,8 @@ namespace PhotoBooth.Booth.Frontend
                 ClearPreview(composedPreview, ref composedPreviewTexture);
                 ClearPreviewFrameSlots();
                 ClearQrPreview();
-                ApplyMonsterFrameSelection(true);
-                UpdateMonsterToggleSelectionVisuals(true);
+                ApplyMonsterFrameSelection(pendingThemeUsesMonsterFrame);
+                UpdateMonsterToggleSelectionVisuals(pendingThemeUsesMonsterFrame);
                 await TrackAsync("booth_frontend_session_started");
                 SwitchScreen(BoothUiScreenId.ThemeSelect, "Choose your frame.");
             }
@@ -766,6 +779,7 @@ namespace PhotoBooth.Booth.Frontend
                 return;
             }
 
+            useMonsterFrame &= !ShouldForceNoMonsterThemeSelection();
             pendingThemeIndex = themeIndex;
             pendingThemeUsesMonsterFrame = useMonsterFrame;
             var theme = ResolveTheme(themeIndex);
@@ -799,6 +813,12 @@ namespace PhotoBooth.Booth.Frontend
 
         public void SelectMonsterFrameFromUi()
         {
+            if (ShouldForceNoMonsterThemeSelection())
+            {
+                SelectNoMonsterFrameFromUi();
+                return;
+            }
+
             pendingThemeUsesMonsterFrame = true;
             ApplyMonsterFrameSelection(true);
             UpdateMonsterToggleSelectionVisuals(true);
@@ -831,7 +851,7 @@ namespace PhotoBooth.Booth.Frontend
             {
                 selectedTheme = ResolveTheme(themeIndex);
                 selectedImagePreviewIndex = ResolveImagePreviewIndex(selectedTheme, themeIndex);
-                selectedThemeUsesMonsterFrame = pendingThemeUsesMonsterFrame;
+                selectedThemeUsesMonsterFrame = pendingThemeUsesMonsterFrame && !ShouldForceNoMonsterThemeSelection();
                 ApplyMonsterFrameSelection(selectedThemeUsesMonsterFrame);
                 previewFrameLayoutIndex = -1;
                 previewFrameImage = null;
@@ -844,7 +864,19 @@ namespace PhotoBooth.Booth.Frontend
                 runtime.TrackFeatureUsed($"theme_selected:{selectedTheme.themeId}");
                 runtime.TrackFeatureUsed($"frame_overlay_selected:{ResolveMonsterFrameOverlayId(selectedThemeUsesMonsterFrame)}");
                 Debug.Log($"Selected photo booth layout: themeIndex={themeIndex}, imagePreviewIndex={selectedImagePreviewIndex}, backendFrameId={currentJob.ThemeId}, frameOverlay={ResolveMonsterFrameOverlayId(selectedThemeUsesMonsterFrame)}");
-                SwitchScreen(BoothUiScreenId.PaymentMock, $"Selected {selectedTheme.displayName}{BuildMonsterFrameStatusSuffix(selectedThemeUsesMonsterFrame)}. Choose payment.");
+                if (ShouldSkipPaymentScreen())
+                {
+                    currentJob = runtime.SessionService.BypassPayment(currentJob.JobId);
+                    ResetCaptureSequence();
+                    EnsureDefaultArStickerPresets();
+                    ApplyNoArPresetSelection(updateStatus: false, trackSelection: false);
+                    await TrackAsync("booth_frontend_payment_bypassed", metadata: BuildAiMetadata());
+                    await ShowCaptureAsync(BuildCaptureReadyMessage());
+                }
+                else
+                {
+                    SwitchScreen(BoothUiScreenId.PaymentMock, $"Selected {selectedTheme.displayName}{BuildMonsterFrameStatusSuffix(selectedThemeUsesMonsterFrame)}. Choose payment.");
+                }
             }
             catch (Exception exception)
             {
@@ -2258,31 +2290,29 @@ namespace PhotoBooth.Booth.Frontend
                 await StartArPreviewAsync(flowCancellation.Token);
 
                 var totalCaptures = ResolveCapturesPerSession();
-                var captureNumber = Mathf.Clamp(capturedPhotoCount + 1, 1, totalCaptures);
-                SetStatus(await BuildCaptureStatusMessageAsync(BuildCaptureReadyMessage(), flowCancellation.Token));
-
-                latestMotionClip = await RecordCountdownMotionClipAsync(captureNumber);
-
-                countdownText?.SetText("");
-                var rawPath = await CaptureRawImageAsync(captureNumber, flowCancellation.Token);
-                capturedRawImagePaths.Add(rawPath);
-                if (latestMotionClip?.FramePaths != null)
+                BeginAutomaticCaptureSequenceUi();
+                for (var captureNumber = capturedPhotoCount + 1; captureNumber <= totalCaptures; captureNumber += 1)
                 {
-                    capturedMotionFramePaths.AddRange(latestMotionClip.FramePaths);
-                }
+                    UpdateAutomaticCaptureProgressUi(captureNumber, capturedPhotoCount);
+                    SetStatus($"Get ready for photo {captureNumber} / {totalCaptures}.");
 
-                capturedPhotoCount = captureNumber;
-                UpdateCaptureCountText();
-                SetStatus($"Captured {capturedPhotoCount} / {totalCaptures}.");
+                    latestMotionClip = await RecordCountdownMotionClipAsync(capturedMotionFramePaths.Count);
+                    if (latestMotionClip?.FramePaths != null)
+                    {
+                        capturedMotionFramePaths.AddRange(latestMotionClip.FramePaths);
+                    }
 
-                if (capturedPhotoCount < totalCaptures)
-                {
-                    await ShowCaptureAsync(BuildCaptureReadyMessage());
-                    return;
+                    SetCountdownVisible(false);
+                    var rawPath = await CaptureRawImageAsync(captureNumber, flowCancellation.Token);
+                    capturedRawImagePaths.Add(rawPath);
+                    capturedPhotoCount = captureNumber;
+                    UpdateAutomaticCaptureProgressUi(captureNumber, capturedPhotoCount);
+                    SetStatus($"Captured {capturedPhotoCount} / {totalCaptures}.");
                 }
 
                 var allMotionFramePaths = capturedMotionFramePaths.ToArray();
-                var aggregateFrameRate = latestMotionClip?.FrameRate ?? Mathf.Clamp(motionClipFramesPerSecond, 1, 15);
+                var aggregateDuration = Mathf.Max(1, countdownSeconds) * totalCaptures;
+                var aggregateFrameRate = Mathf.Max(1f, allMotionFramePaths.Length / (float)aggregateDuration);
                 var aggregateVideoPath = await EncodeMotionVideoAsync(allMotionFramePaths, aggregateFrameRate, flowCancellation.Token);
                 latestMotionClip = new BoothCaptureClip
                 {
@@ -2291,7 +2321,25 @@ namespace PhotoBooth.Booth.Frontend
                     VideoPath = aggregateVideoPath
                 };
 
-                await EnterCaptureReviewAsync();
+                currentJob = runtime.SessionService.MarkCaptured(
+                    currentJob.JobId,
+                    capturedPhotoCount,
+                    GetLatestCapturedRawImagePath(),
+                    GetCapturedRawImagePaths(),
+                    latestMotionClip.FramePaths,
+                    latestMotionClip.VideoPath);
+
+                var acceptedRawPaths = GetCapturedRawImagePaths();
+                for (var index = 0; index < acceptedRawPaths.Length; index += 1)
+                {
+                    EnqueueRawCaptureUpload(acceptedRawPaths[index], index + 1, totalCaptures);
+                    Debug.Log($"Raw capture queued for upload: job={currentJob.JobId}, capture={index + 1}/{totalCaptures}, localPath={acceptedRawPaths[index]}");
+                }
+
+                isCaptureReviewing = false;
+                ClearCaptureReviewImage();
+                await TrackAsync("booth_frontend_capture_completed", metadata: BuildAiMetadata());
+                SwitchScreen(BoothUiScreenId.ArtStyleSelect, "Type your name.");
             }
             catch (Exception exception)
             {
@@ -2301,9 +2349,27 @@ namespace PhotoBooth.Booth.Frontend
             finally
             {
                 countdownText?.SetText(string.Empty);
+                SetCountdownVisible(false);
                 EndBusy();
             }
         }
+
+#if false
+        // ponytail: Legacy one-photo-per-click flow is intentionally retained for quick rollback.
+        private async void CaptureOnePhotoPerClickFromUi()
+        {
+            var totalCaptures = ResolveCapturesPerSession();
+            var captureNumber = Mathf.Clamp(capturedPhotoCount + 1, 1, totalCaptures);
+            latestMotionClip = await RecordCountdownMotionClipAsync(capturedMotionFramePaths.Count);
+            var rawPath = await CaptureRawImageAsync(captureNumber, flowCancellation.Token);
+            capturedRawImagePaths.Add(rawPath);
+            capturedPhotoCount = captureNumber;
+            if (capturedPhotoCount < totalCaptures)
+            {
+                await ShowCaptureAsync(BuildCaptureReadyMessage());
+            }
+        }
+#endif
 
         private async Task EnterCaptureReviewAsync()
         {
@@ -2335,13 +2401,6 @@ namespace PhotoBooth.Booth.Frontend
                     EnqueueRawCaptureUpload(acceptedRawPaths[index], index + 1, totalCaptures);
                     Debug.Log($"Raw capture queued for upload: job={currentJob.JobId}, capture={index + 1}/{totalCaptures}, localPath={acceptedRawPaths[index]}");
                 }
-
-                currentJob = runtime.SessionService.MarkCaptured(
-                    currentJob.JobId,
-                    capturedPhotoCount,
-                    GetLatestCapturedRawImagePath(),
-                    latestMotionClip?.FramePaths ?? Array.Empty<string>(),
-                    latestMotionClip?.VideoPath);
 
                 isCaptureReviewing = false;
                 ClearCaptureReviewImage();
@@ -2375,22 +2434,11 @@ namespace PhotoBooth.Booth.Frontend
                     return;
                 }
 
-                captureReviewRetakeUsed = true;
                 isCaptureReviewing = false;
-                latestMotionClip = null;
-                ResetCaptureSequence(resetReviewRetake: false);
-                ApplyNoArPresetSelection(updateStatus: false, trackSelection: false);
-                ResetArSelectionVisuals();
-                StopMotionClipPlayback();
-                StopLivePhotoPreviewPlayback();
-                StopPreviewFrameMotionPlayback();
-                ClearCaptureReviewImage();
-                ClearArPreviewOverlay();
-                ClearPreview(motionPreview, ref motionPreviewTexture);
-                ClearPreview(composedPreview, ref composedPreviewTexture);
-                ClearPreviewFrameSlots();
+                captureReviewRetakeUsed = true;
+                // ponytail: legacy retake reset stays disabled; retake now just advances to art style selection.
                 await TrackAsync("booth_frontend_capture_review_retake_tapped", metadata: BuildAiMetadata());
-                await ShowCaptureAsync(BuildCaptureReadyMessage());
+                SwitchScreen(BoothUiScreenId.ArtStyleSelect, "Type your name.");
             }
             catch (Exception exception)
             {
@@ -2419,25 +2467,9 @@ namespace PhotoBooth.Booth.Frontend
             try
             {
                 EnsureCurrentJob();
-                if (rawCaptureUploadStarted)
-                {
-                    currentJob = CreateRetakeJobPreservingSessionState(currentJob);
-                }
-                else
-                {
-                    currentJob = runtime.SessionService.BeginRetake(currentJob.JobId);
-                }
-
-                latestMotionClip = null;
-                ResetCaptureSequence();
-                StopMotionClipPlayback();
-                StopLivePhotoPreviewPlayback();
-                StopPreviewFrameMotionPlayback();
-                ClearPreview(motionPreview, ref motionPreviewTexture);
-                ClearPreview(composedPreview, ref composedPreviewTexture);
-                ClearPreviewFrameSlots();
+                // ponytail: keep the old retake path commented out; the button now returns to art style selection.
                 await TrackAsync("booth_frontend_retake_tapped", metadata: BuildAiMetadata());
-                await ShowCaptureAsync(BuildCaptureReadyMessage());
+                SwitchScreen(BoothUiScreenId.ArtStyleSelect, "Type your name.");
             }
             catch (Exception exception)
             {
@@ -2856,37 +2888,53 @@ namespace PhotoBooth.Booth.Frontend
                 : Path.GetFullPath(Path.Combine(Application.dataPath, "..", trimmedPath));
         }
 
-        private async Task<BoothCaptureClip> RecordCountdownMotionClipAsync(int captureNumber)
+        private async Task<BoothCaptureClip> RecordCountdownMotionClipAsync(int startingFrameIndex)
         {
             var framePaths = new List<string>();
             var framesPerSecond = Mathf.Clamp(motionClipFramesPerSecond, 1, 15);
-            var totalFrames = Mathf.Max(1, countdownSeconds) * framesPerSecond;
-            var frameDelayMs = Mathf.RoundToInt(1000f / framesPerSecond);
-            var safeCaptureNumber = Mathf.Max(1, captureNumber);
+            var durationSeconds = Mathf.Max(1, countdownSeconds);
+            var frameInterval = 1f / framesPerSecond;
+            var countdownDeadline = Time.realtimeSinceStartup + durationSeconds;
+            var nextFrameAt = Time.realtimeSinceStartup;
+            var lastRemaining = -1;
 
-            for (var frameIndex = 0; frameIndex < totalFrames; frameIndex++)
+            SetCountdownVisible(true);
+
+            while (Time.realtimeSinceStartup < countdownDeadline)
             {
-                var remaining = Mathf.Max(1, Mathf.CeilToInt((totalFrames - frameIndex) / (float)framesPerSecond));
-                countdownText?.SetText(remaining.ToString());
-                framePaths.Add(await CapturePreviewCompositePngAsync(
-                    $"motion_{safeCaptureNumber:00}_{Math.Max(0, frameIndex):000}.png",
-                    hideCountdownText: true,
-                    cancellationToken: flowCancellation.Token));
-                await Task.Delay(frameDelayMs, flowCancellation.Token);
+                flowCancellation.Token.ThrowIfCancellationRequested();
+                var remaining = Mathf.Max(1, Mathf.CeilToInt(countdownDeadline - Time.realtimeSinceStartup));
+                if (remaining != lastRemaining)
+                {
+                    countdownText?.SetText(remaining.ToString());
+                    lastRemaining = remaining;
+                }
+
+                if (Time.realtimeSinceStartup >= nextFrameAt)
+                {
+                    var outputIndex = Mathf.Max(0, startingFrameIndex + framePaths.Count);
+                    framePaths.Add(cameraCaptureService.CaptureMotionFramePng(
+                        currentJob.Paths.RawDirectory,
+                        outputIndex,
+                        ApplyCaptureEffects));
+                    nextFrameAt = Mathf.Max(nextFrameAt + frameInterval, Time.realtimeSinceStartup + frameInterval);
+                }
+
+                await Task.Yield();
             }
 
-            var videoPath = await EncodeMotionVideoAsync(framePaths.ToArray(), framesPerSecond, flowCancellation.Token);
             return new BoothCaptureClip
             {
                 FramePaths = framePaths.ToArray(),
-                FrameRate = framesPerSecond,
-                VideoPath = videoPath
+                FrameRate = Mathf.Max(1f, framePaths.Count / (float)durationSeconds),
+                VideoPath = null
             };
         }
 
-        private async Task<string> CapturePreviewCompositePngAsync(string fileName, CancellationToken cancellationToken)
+        private void ApplyCaptureEffects(Texture2D texture)
         {
-            return await CapturePreviewCompositePngAsync(fileName, hideCountdownText: true, cancellationToken: cancellationToken);
+            ApplyArStickers(texture, latestArTrackingFrame);
+            ApplyTracked3dFaceModelToTexture(texture, latestArTrackingFrame);
         }
 
         private async Task<string> CaptureRawImageAsync(int captureNumber, CancellationToken cancellationToken)
@@ -2897,7 +2945,11 @@ namespace PhotoBooth.Booth.Frontend
 
             if (!useGPhoto2StillCapture)
             {
-                return await CapturePreviewCompositePngAsync($"capture_{safeCaptureNumber:00}.png", cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
+                return cameraCaptureService.CapturePng(
+                    currentJob.Paths.RawDirectory,
+                    $"capture_{safeCaptureNumber:00}.png",
+                    ApplyCaptureEffects);
             }
 
             if (currentJob?.Paths == null)
@@ -2940,111 +2992,6 @@ namespace PhotoBooth.Booth.Frontend
                     }
                 }
             }
-        }
-
-        private async Task<string> CapturePreviewCompositePngAsync(string fileName, bool hideCountdownText, CancellationToken cancellationToken)
-        {
-            if (cameraPreview == null)
-            {
-                throw new InvalidOperationException("Camera preview is not available.");
-            }
-
-            cancellationToken.ThrowIfCancellationRequested();
-            var outputPath = Path.Combine(currentJob.Paths.RawDirectory, fileName);
-            Directory.CreateDirectory(currentJob.Paths.RawDirectory);
-
-            var completion = new TaskCompletionSource<string>();
-            StartCoroutine(CapturePreviewCompositePngCoroutine(outputPath, hideCountdownText, completion));
-            using (cancellationToken.Register(() => completion.TrySetCanceled()))
-            {
-                return await completion.Task;
-            }
-        }
-
-        private IEnumerator CapturePreviewCompositePngCoroutine(string outputPath, bool hideCountdownText, TaskCompletionSource<string> completion)
-        {
-            var restoreCountdownEnabled = countdownText != null && countdownText.enabled;
-            var previewRect = cameraPreview != null ? cameraPreview.rectTransform : null;
-            var restorePreviewRotation = previewRect != null ? previewRect.localRotation : Quaternion.identity;
-            if (hideCountdownText && countdownText != null)
-            {
-                countdownText.enabled = false;
-                Canvas.ForceUpdateCanvases();
-            }
-
-            ApplyHd33PreviewRotation(capturing: true);
-            yield return new WaitForEndOfFrame();
-
-            Texture2D screenshot = null;
-            Texture2D cropped = null;
-            try
-            {
-                screenshot = ScreenCapture.CaptureScreenshotAsTexture();
-                var crop = GetScreenPixelRect(ResolveCaptureCropRectTransform(), screenshot.width, screenshot.height);
-                cropped = new Texture2D(Mathf.RoundToInt(crop.width), Mathf.RoundToInt(crop.height), TextureFormat.RGBA32, false);
-                cropped.SetPixels(screenshot.GetPixels(
-                    Mathf.RoundToInt(crop.x),
-                    Mathf.RoundToInt(crop.y),
-                    Mathf.RoundToInt(crop.width),
-                    Mathf.RoundToInt(crop.height)));
-                cropped.Apply(false, false);
-                File.WriteAllBytes(outputPath, ImageConversion.EncodeToPNG(cropped));
-                completion.TrySetResult(outputPath);
-            }
-            catch (Exception exception)
-            {
-                completion.TrySetException(exception);
-            }
-            finally
-            {
-                if (screenshot != null)
-                {
-                    Destroy(screenshot);
-                }
-
-                if (cropped != null)
-                {
-                    Destroy(cropped);
-                }
-
-                if (hideCountdownText && countdownText != null)
-                {
-                    countdownText.enabled = restoreCountdownEnabled;
-                    Canvas.ForceUpdateCanvases();
-                }
-
-                if (previewRect != null)
-                {
-                    previewRect.localRotation = restorePreviewRotation;
-                }
-
-                ApplyHd33PreviewRotation(capturing: false);
-            }
-        }
-
-        private static Rect GetScreenPixelRect(RectTransform rectTransform, int screenWidth, int screenHeight)
-        {
-            var corners = new Vector3[4];
-            rectTransform.GetWorldCorners(corners);
-            var minX = float.PositiveInfinity;
-            var minY = float.PositiveInfinity;
-            var maxX = float.NegativeInfinity;
-            var maxY = float.NegativeInfinity;
-
-            for (var i = 0; i < corners.Length; i++)
-            {
-                var screenPoint = RectTransformUtility.WorldToScreenPoint(null, corners[i]);
-                minX = Mathf.Min(minX, screenPoint.x);
-                minY = Mathf.Min(minY, screenPoint.y);
-                maxX = Mathf.Max(maxX, screenPoint.x);
-                maxY = Mathf.Max(maxY, screenPoint.y);
-            }
-
-            minX = Mathf.Clamp(Mathf.Floor(minX), 0, screenWidth - 1);
-            minY = Mathf.Clamp(Mathf.Floor(minY), 0, screenHeight - 1);
-            maxX = Mathf.Clamp(Mathf.Ceil(maxX), minX + 1, screenWidth);
-            maxY = Mathf.Clamp(Mathf.Ceil(maxY), minY + 1, screenHeight);
-            return new Rect(minX, minY, maxX - minX, maxY - minY);
         }
 
         private async Task ComposeCapturedPhotosAndShowPreviewAsync()
@@ -3198,6 +3145,11 @@ namespace PhotoBooth.Booth.Frontend
                 return capturedRawImagePaths.ToArray();
             }
 
+            if (currentJob?.Paths?.RawImagePaths != null && currentJob.Paths.RawImagePaths.Length > 0)
+            {
+                return currentJob.Paths.RawImagePaths;
+            }
+
             return new[] { GetLatestCapturedRawImagePath() };
         }
 
@@ -3257,55 +3209,69 @@ namespace PhotoBooth.Booth.Frontend
 
         private void UpdateCaptureReviewControls()
         {
-            EnsureCaptureRetakeButton();
-            if (captureRetakeButton != null)
-            {
-                captureRetakeButton.gameObject.SetActive(isCaptureReviewing);
-                captureRetakeButton.interactable = isCaptureReviewing && !captureReviewRetakeUsed && !isBusy;
-                SetButtonLabel(captureRetakeButton, captureReviewRetakeUsed ? "USED" : "RETAKE");
-            }
+            // EnsureCaptureRetakeButton();
+            // if (captureRetakeButton != null)
+            // {
+            //     captureRetakeButton.gameObject.SetActive(isCaptureReviewing);
+            //     captureRetakeButton.interactable = isCaptureReviewing && !captureReviewRetakeUsed && !isBusy;
+            //     SetButtonLabel(captureRetakeButton, captureReviewRetakeUsed ? "USED" : "RETAKE");
+            // }
 
-            SetButtonLabel(captureButton, isCaptureReviewing ? "NEXT" : string.Empty);
+            // SetButtonLabel(captureButton, isCaptureReviewing ? "NEXT" : string.Empty);
         }
 
-        private void EnsureCaptureRetakeButton()
-        {
-            if (captureRetakeButton != null)
-            {
-                return;
-            }
+        // private void EnsureCaptureRetakeButton()
+        // {
+        //     if (captureRetakeButton != null)
+        //     {
+        //         return;
+        //     }
 
-            captureRetakeButton = FindButtonInScreen(
-                BoothUiScreenId.Capture,
-                "CaptureRetakeButton",
-                "CaptureRefreshButton",
-                "RetakeButton",
-                "RefreshButton");
-            if (captureRetakeButton == null)
-            {
-                var captureRoot = FindScreenRoot(BoothUiScreenId.Capture);
-                if (captureRoot == null)
-                {
-                    return;
-                }
+        //     captureRetakeButton = FindButtonInScreen(
+        //         BoothUiScreenId.Capture,
+        //         "CaptureRetakeButton",
+        //         "CaptureRefreshButton",
+        //         "RetakeButton",
+        //         "RefreshButton");
+        //     if (captureRetakeButton == null)
+        //     {
+        //         var captureRoot = FindScreenRoot(BoothUiScreenId.Capture);
+        //         if (captureRoot == null)
+        //         {
+        //             return;
+        //         }
 
-                captureRetakeButton = CreateButton(
-                    captureRoot,
-                    "CaptureRetakeButton",
-                    "RETAKE",
-                    new Vector2(0.22f, 0.075f),
-                    Vector2.zero,
-                    new Vector2(220f, 72f));
-                StyleMrkremeButton(captureRetakeButton, new Color(0.94f, 0.91f, 0.82f, 1f), Color.black);
-            }
+        //         captureRetakeButton = CreateButton(
+        //             captureRoot,
+        //             "CaptureRetakeButton",
+        //             "RETAKE",
+        //             new Vector2(0.22f, 0.075f),
+        //             Vector2.zero,
+        //             new Vector2(220f, 72f));
+        //         StyleMrkremeButton(captureRetakeButton, new Color(0.94f, 0.91f, 0.82f, 1f), Color.black);
+        //     }
 
-            captureRetakeButton.onClick = new Button.ButtonClickedEvent();
-            captureRetakeButton.onClick.AddListener(RetakeFromUi);
-            captureRetakeButton.gameObject.SetActive(false);
-        }
+        //     captureRetakeButton.onClick = new Button.ButtonClickedEvent();
+        //     captureRetakeButton.onClick.AddListener(RetakeFromUi);
+        //     captureRetakeButton.gameObject.SetActive(false);
+        // }
 
         private void ResetCaptureSequence(bool resetReviewRetake = true)
         {
+            if (!string.IsNullOrWhiteSpace(currentJob?.Paths?.RawDirectory) && Directory.Exists(currentJob.Paths.RawDirectory))
+            {
+                foreach (var motionFramePath in Directory.GetFiles(currentJob.Paths.RawDirectory, "motion_*.png"))
+                {
+                    File.Delete(motionFramePath);
+                }
+
+                var motionVideoPath = Path.Combine(currentJob.Paths.RawDirectory, "motion.mp4");
+                if (File.Exists(motionVideoPath))
+                {
+                    File.Delete(motionVideoPath);
+                }
+            }
+
             capturedRawImagePaths.Clear();
             capturedMotionFramePaths.Clear();
             capturedPhotoCount = 0;
@@ -3321,10 +3287,19 @@ namespace PhotoBooth.Booth.Frontend
 
             UpdateCaptureReviewControls();
             UpdateCaptureCountText();
+            ResetAutomaticCaptureUi();
         }
 
         private void UpdateCaptureCountText()
         {
+            if (captureShotCountImage != null)
+            {
+                UpdateCaptureCountSprite(capturedPhotoCount + 1);
+                captureCountText?.gameObject.SetActive(false);
+                UpdateCaptureForegroundOverlay();
+                return;
+            }
+
             var totalCaptures = ResolveCapturesPerSession();
             var displayCount = Mathf.Clamp(capturedPhotoCount + 1, 1, totalCaptures);
             if (capturedPhotoCount >= totalCaptures)
@@ -3333,7 +3308,125 @@ namespace PhotoBooth.Booth.Frontend
             }
 
             captureCountText?.SetText(totalCaptures == 1 ? "AMOUNT 1 / 1" : $"AMOUNT {displayCount} / {totalCaptures}");
+            if (captureCountText != null)
+            {
+                captureCountText.gameObject.SetActive(true);
+            }
             UpdateCaptureForegroundOverlay();
+        }
+
+        private void BindAutomaticCaptureUi()
+        {
+            var root = FindScreenRoot(BoothUiScreenId.Capture);
+            if (root == null)
+            {
+                return;
+            }
+
+            captureStartText ??= FindTextInScreen(BoothUiScreenId.Capture, "Start Text");
+            captureShotCountRoot ??= root.Find("Count")?.gameObject;
+            captureShotCountImage ??= FindImageInScreen(BoothUiScreenId.Capture, "Count");
+            if (captureShotCountImage == null && captureShotCountRoot != null)
+            {
+                captureShotCountImage = captureShotCountRoot.GetComponent<Image>() ?? captureShotCountRoot.GetComponentInChildren<Image>(true);
+            }
+            countdownRoot ??= countdownText != null && countdownText.transform.parent != null
+                ? countdownText.transform.parent.gameObject
+                : countdownText?.gameObject;
+            captureIntroLozado ??= root.Find("TopMetalPanel/Lozado")?.gameObject;
+            captureTrainRoot ??= root.Find("TopMetalPanel/Train")?.gameObject;
+            for (var index = 0; index < captureTrainLevels.Length; index += 1)
+            {
+                captureTrainLevels[index] ??= root.Find($"TopMetalPanel/Train/Level {index + 1}")?.gameObject;
+            }
+        }
+
+        private void ResetAutomaticCaptureUi()
+        {
+            BindAutomaticCaptureUi();
+            captureForegroundCaptureNumber = 1;
+            UpdateCaptureForegroundOverlay();
+            captureIntroLozado?.SetActive(true);
+            captureTrainRoot?.SetActive(false);
+            captureStartText?.SetText("TAKE A PHOTO");
+            captureStartText?.gameObject.SetActive(true);
+            if (captureShotCountImage != null)
+            {
+                captureShotCountImage.gameObject.SetActive(false);
+            }
+            if (captureCountText != null)
+            {
+                captureCountText.gameObject.SetActive(captureShotCountImage == null);
+            }
+            SetCountdownVisible(false);
+            foreach (var level in captureTrainLevels)
+            {
+                level?.SetActive(false);
+            }
+        }
+
+        private void BeginAutomaticCaptureSequenceUi()
+        {
+            BindAutomaticCaptureUi();
+            captureIntroLozado?.SetActive(false);
+            captureTrainRoot?.SetActive(true);
+            captureStartText?.gameObject.SetActive(false);
+            if (captureShotCountImage != null)
+            {
+                captureShotCountImage.gameObject.SetActive(true);
+            }
+            if (captureCountText != null)
+            {
+                captureCountText.gameObject.SetActive(captureShotCountImage == null);
+            }
+        }
+
+        private void UpdateAutomaticCaptureProgressUi(int captureNumber, int completedCount)
+        {
+            captureForegroundCaptureNumber = Mathf.Clamp(captureNumber, 1, ResolveCapturesPerSession());
+            UpdateCaptureForegroundOverlay();
+            UpdateCaptureCountSprite(captureNumber);
+
+            for (var index = 0; index < captureTrainLevels.Length; index += 1)
+            {
+                captureTrainLevels[index]?.SetActive(index == completedCount - 1);
+            }
+        }
+
+        private void UpdateCaptureCountSprite(int captureNumber)
+        {
+            if (captureShotCountImage == null)
+            {
+                return;
+            }
+
+            captureShotCountImage.gameObject.SetActive(true);
+            if (captureShotCountSprites != null && captureShotCountSprites.Length > 0)
+            {
+                var spriteIndex = Mathf.Clamp(captureNumber - 1, 0, captureShotCountSprites.Length - 1);
+                var nextSprite = captureShotCountSprites[spriteIndex];
+                if (nextSprite != null)
+                {
+                    captureShotCountImage.sprite = nextSprite;
+                }
+            }
+        }
+
+        private void SetCountdownVisible(bool visible)
+        {
+            if (countdownRoot != null)
+            {
+                countdownRoot.SetActive(visible);
+            }
+            else if (countdownText != null)
+            {
+                countdownText.gameObject.SetActive(visible);
+            }
+
+            if (!visible)
+            {
+                countdownText?.SetText(string.Empty);
+            }
         }
 
         private void UpdateCaptureForegroundOverlay()
@@ -3343,10 +3436,32 @@ namespace PhotoBooth.Booth.Frontend
                 return;
             }
 
-            var sprite = selectedThemeUsesMonsterFrame ? monsterFrameOverlaySprite : null;
+            Sprite sprite = null;
+            if (selectedThemeUsesMonsterFrame)
+            {
+                sprite = monsterFrameOverlaySprite;
+            }
+            else
+            {
+                var overlays = ResolveSelectedCaptureFrameOverlays();
+                if (overlays != null && overlays.Length > 0)
+                {
+                    var spriteIndex = Mathf.Clamp(captureForegroundCaptureNumber - 1, 0, overlays.Length - 1);
+                    sprite = overlays[spriteIndex];
+                }
+            }
+
             captureForegroundOverlay.sprite = sprite;
+            captureForegroundOverlay.type = Image.Type.Simple;
             captureForegroundOverlay.preserveAspect = false;
             captureForegroundOverlay.color = sprite != null ? Color.white : Color.clear;
+        }
+
+        private Sprite[] ResolveSelectedCaptureFrameOverlays()
+        {
+            return ResolveSelectedImagePreviewIndex() == 2
+                ? captureFrameTwoOverlays
+                : captureFrameOneOverlays;
         }
 
         private int GetCaptureForegroundIndex()
@@ -4017,10 +4132,14 @@ namespace PhotoBooth.Booth.Frontend
             }
 
             previewFrameMotionPlaybackCancellation = new CancellationTokenSource();
-            _ = PlayPreviewFrameMotionLoopAsync(BuildMotionFrameSlotPaths(clip.FramePaths), Mathf.Max(1f, clip.FrameRate), previewFrameMotionPlaybackCancellation.Token);
+            var captureCount = Mathf.Clamp(ResolveCapturesPerSession(), 1, previewFrameSlotImages.Length);
+            _ = PlayPreviewFrameMotionLoopAsync(
+                BuildMotionFrameSlotPaths(clip.FramePaths, captureCount),
+                Mathf.Max(1f, clip.FrameRate),
+                previewFrameMotionPlaybackCancellation.Token);
         }
 
-        private static string[][] BuildMotionFrameSlotPaths(IReadOnlyList<string> framePaths)
+        private static string[][] BuildMotionFrameSlotPaths(IReadOnlyList<string> framePaths, int captureCount)
         {
             var slots = new List<string>[4];
             for (var i = 0; i < slots.Length; i++)
@@ -4033,28 +4152,16 @@ namespace PhotoBooth.Booth.Frontend
                 return Array.ConvertAll(slots, slot => slot.ToArray());
             }
 
-            foreach (var framePath in framePaths)
+            var activeSlotCount = Mathf.Clamp(captureCount, 1, slots.Length);
+            for (var frameIndex = 0; frameIndex < framePaths.Count; frameIndex += 1)
             {
-                var slotIndex = ResolveMotionCaptureSlotIndex(framePath);
-                if (slotIndex >= 0 && slotIndex < slots.Length)
-                {
-                    slots[slotIndex].Add(framePath);
-                }
+                // Motion files are numbered continuously across all captures, so split the
+                // ordered sequence into one five-second segment per preview slot.
+                var slotIndex = Mathf.Min(activeSlotCount - 1, frameIndex * activeSlotCount / framePaths.Count);
+                slots[slotIndex].Add(framePaths[frameIndex]);
             }
 
             return Array.ConvertAll(slots, slot => slot.ToArray());
-        }
-
-        private static int ResolveMotionCaptureSlotIndex(string framePath)
-        {
-            var fileName = Path.GetFileNameWithoutExtension(framePath ?? string.Empty);
-            var match = System.Text.RegularExpressions.Regex.Match(fileName, @"motion[_-]?(\d+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-            if (!match.Success || !int.TryParse(match.Groups[1].Value, out var captureIndex))
-            {
-                return -1;
-            }
-
-            return captureIndex - 1;
         }
 
         private async Task PlayPreviewFrameMotionLoopAsync(string[][] slotFrames, float frameRate, CancellationToken cancellationToken)
@@ -4099,30 +4206,39 @@ namespace PhotoBooth.Booth.Frontend
         private void ApplySelectedThemePreviewFrame()
         {
             previewFrameImage = ResolvePreviewFrameImageForSelectedLayout();
-            if (previewFrameImage == null || selectedTheme == null)
+            if (previewFrameImage == null)
             {
                 return;
             }
 
             SetPreviewFrameImageVisibility(previewFrameImage);
-            var sprite = ResolveSelectedPreviewFrameSprite()
-                ?? selectedTheme.frameTemplateSprite
-                ?? LoadSelectedLabelPreviewSprite()
-                ?? selectedTheme.previewSprite;
-            if (sprite == null && selectedTheme.frameTemplateTexture != null)
+            var sprite = ResolveSelectedPreviewFrameSprite();
+            if (sprite == null && selectedTheme != null)
             {
-                if (previewFrameRuntimeSprite != null)
-                {
-                    Destroy(previewFrameRuntimeSprite);
-                    previewFrameRuntimeSprite = null;
-                }
+                sprite = selectedTheme.frameTemplateSprite
+                    ?? LoadSelectedLabelPreviewSprite()
+                    ?? selectedTheme.previewSprite;
 
-                var texture = selectedTheme.frameTemplateTexture;
-                previewFrameRuntimeSprite = Sprite.Create(
-                    texture,
-                    new Rect(0f, 0f, texture.width, texture.height),
-                    Vector2.one * 0.5f);
-                sprite = previewFrameRuntimeSprite;
+                if (sprite == null && selectedTheme.frameTemplateTexture != null)
+                {
+                    if (previewFrameRuntimeSprite != null)
+                    {
+                        Destroy(previewFrameRuntimeSprite);
+                        previewFrameRuntimeSprite = null;
+                    }
+
+                    var texture = selectedTheme.frameTemplateTexture;
+                    previewFrameRuntimeSprite = Sprite.Create(
+                        texture,
+                        new Rect(0f, 0f, texture.width, texture.height),
+                        Vector2.one * 0.5f);
+                    sprite = previewFrameRuntimeSprite;
+                }
+            }
+
+            if (sprite == null)
+            {
+                sprite = previewFrameImage.sprite;
             }
 
             if (sprite == null)
@@ -4235,6 +4351,41 @@ namespace PhotoBooth.Booth.Frontend
 
                 previewFrameSlotImages[i].transform.SetAsLastSibling();
             }
+
+            UpdatePreviewFrameSlotOverlays();
+        }
+
+        private void UpdatePreviewFrameSlotOverlays()
+        {
+            var overlays = ResolveSelectedCaptureFrameOverlays();
+            for (var index = 0; index < previewFrameSlotImages.Length; index += 1)
+            {
+                var slot = previewFrameSlotImages[index];
+                if (slot == null)
+                {
+                    continue;
+                }
+
+                var overlayName = $"PreviewFrameOverlay_{index + 1:00}";
+                var overlayTransform = slot.transform.Find(overlayName);
+                var overlay = overlayTransform != null ? overlayTransform.GetComponent<Image>() : null;
+                if (overlay == null)
+                {
+                    var overlayObject = new GameObject(overlayName, typeof(RectTransform), typeof(CanvasRenderer), typeof(Image));
+                    overlayObject.transform.SetParent(slot.transform, false);
+                    overlay = overlayObject.GetComponent<Image>();
+                }
+
+                var sprite = overlays != null && index < overlays.Length ? overlays[index] : null;
+                overlay.sprite = sprite;
+                overlay.type = Image.Type.Simple;
+                overlay.preserveAspect = false;
+                overlay.raycastTarget = false;
+                overlay.color = sprite != null ? Color.white : Color.clear;
+                StretchGraphicToParent(overlay);
+                overlay.gameObject.SetActive(sprite != null);
+                overlay.transform.SetAsLastSibling();
+            }
         }
 
         private Rect[] ResolveSelectedPreviewCaptureSlots()
@@ -4247,10 +4398,20 @@ namespace PhotoBooth.Booth.Frontend
                 && previewFrameCaptureSlots[slotIndex].width > 0f
                 && previewFrameCaptureSlots[slotIndex].height > 0f)
             {
-                return new[] { previewFrameCaptureSlots[slotIndex] };
+                return new[]
+                {
+                    previewFrameCaptureSlots[slotIndex],
+                    previewFrameCaptureSlots[slotIndex],
+                    previewFrameCaptureSlots[slotIndex]
+                };
             }
 
-            return layoutIndex == 1 ? ImagePreview1CaptureSlots : ImagePreview2CaptureSlots;
+            return new[]
+            {
+                new Rect(0f, 0f, 1f, 1f),
+                new Rect(0f, 0f, 1f, 1f),
+                new Rect(0f, 0f, 1f, 1f)
+            };
         }
 
         private void ApplyPreviewFramePassengerName()
@@ -4488,9 +4649,10 @@ namespace PhotoBooth.Booth.Frontend
                 $"ImagePreview{layoutIndex}Slot{slotNumber:00}",
                 $"Image Preview {layoutIndex} Slot {slotNumber:00}",
                 $"PreviewFrameSlot_{layoutIndex}_{slotNumber:00}",
-                $"PreviewFrameSlot_{slotNumber:00}_Layout{layoutIndex}"
+                $"PreviewFrameSlot_{slotNumber:00}_Layout{layoutIndex}",
+                $"PreviewFrameSlot_{slotNumber:00}",
+                $"PreviewFrameSlot_{slotNumber}"
             };
-            var fallbackSlotName = $"PreviewFrameSlot_{slotNumber:00}";
             var rawImages = root.GetComponentsInChildren<RawImage>(true);
             foreach (var rawImage in rawImages)
             {
@@ -4508,20 +4670,6 @@ namespace PhotoBooth.Booth.Frontend
                     }
                 }
             }
-
-            if (layoutIndex != 1)
-            {
-                return null;
-            }
-
-            foreach (var rawImage in rawImages)
-            {
-                if (rawImage != null && string.Equals(rawImage.name, fallbackSlotName, StringComparison.OrdinalIgnoreCase))
-                {
-                    return rawImage;
-                }
-            }
-
             return null;
         }
 
@@ -4822,8 +4970,8 @@ namespace PhotoBooth.Booth.Frontend
         private void SetInteractable(bool interactable)
         {
             if (captureButton != null) captureButton.interactable = interactable;
-            if (captureRetakeButton != null) captureRetakeButton.interactable = interactable && isCaptureReviewing && !captureReviewRetakeUsed;
-            if (retakeButton != null) retakeButton.interactable = interactable;
+            // if (captureRetakeButton != null) captureRetakeButton.interactable = interactable && isCaptureReviewing && !captureReviewRetakeUsed;
+            // if (retakeButton != null) retakeButton.interactable = interactable;
             if (continueButton != null) continueButton.interactable = interactable;
             if (printButton != null) printButton.interactable = interactable;
             if (doneButton != null) doneButton.interactable = interactable;
@@ -5452,8 +5600,45 @@ namespace PhotoBooth.Booth.Frontend
 
         private void SetMonsterFramePreviewMode(bool useMonsterFrame)
         {
+            useMonsterFrame &= !ShouldForceNoMonsterThemeSelection();
             SetObjectActive("Grid - No Monster", !useMonsterFrame);
             SetObjectActive("Grid - Monster", useMonsterFrame);
+        }
+
+        private bool ShouldForceNoMonsterThemeSelection()
+        {
+            if (forceNoMonsterThemeSelection)
+            {
+                return true;
+            }
+
+            var root = FindScreenRoot(BoothUiScreenId.ThemeSelect);
+            if (root == null)
+            {
+                return false;
+            }
+
+            var hasNoMonsterGrid = false;
+            var hasMonsterGrid = false;
+            foreach (var candidate in root.GetComponentsInChildren<Transform>(true))
+            {
+                if (candidate == null)
+                {
+                    continue;
+                }
+
+                hasNoMonsterGrid |= string.Equals(candidate.name, "Grid - No Monster", StringComparison.Ordinal);
+                hasMonsterGrid |= string.Equals(candidate.name, "Grid - Monster", StringComparison.Ordinal);
+            }
+
+            return hasNoMonsterGrid && !hasMonsterGrid;
+        }
+
+        private bool ShouldSkipPaymentScreen()
+        {
+            return skipPaymentScreen
+                || ShouldForceNoMonsterThemeSelection()
+                || string.Equals(SceneManager.GetActiveScene().name, PaymentBypassSceneName, StringComparison.Ordinal);
         }
 
         private void ResetSessionSelectionVisuals()
@@ -6079,6 +6264,10 @@ namespace PhotoBooth.Booth.Frontend
                 {
                     ApplyMonsterFrameOverlayRect(captureForegroundOverlay);
                 }
+                else if (ResolveSelectedCaptureFrameOverlays()?.Length > 0)
+                {
+                    StretchGraphicToParent(captureForegroundOverlay);
+                }
                 else
                 {
                     CopyCameraPreviewRect(captureForegroundOverlay);
@@ -6111,13 +6300,6 @@ namespace PhotoBooth.Booth.Frontend
             overlayRect.localRotation = Quaternion.identity;
             overlayRect.localScale = Vector3.one;
             overlayRect.localPosition = new Vector3(overlayRect.localPosition.x, overlayRect.localPosition.y, cameraRect.localPosition.z);
-        }
-
-        private RectTransform ResolveCaptureCropRectTransform()
-        {
-            return selectedThemeUsesMonsterFrame && captureForegroundOverlay != null
-                ? captureForegroundOverlay.rectTransform
-                : cameraPreview.rectTransform;
         }
 
         private void ApplyCaptureFrameRect(bool useMonsterFrame)
@@ -6969,10 +7151,10 @@ namespace PhotoBooth.Booth.Frontend
             captureButton = CreateButton(capture.transform, "CaptureButton", string.Empty, new Vector2(0.5f, 0.075f), Vector2.zero, new Vector2(150f, 150f));
             StyleCaptureButton(captureButton);
             captureButton.onClick.AddListener(CaptureFromUi);
-            captureRetakeButton = CreateButton(capture.transform, "CaptureRetakeButton", "RETAKE", new Vector2(0.22f, 0.075f), Vector2.zero, new Vector2(220f, 72f));
-            StyleMrkremeButton(captureRetakeButton, new Color(0.94f, 0.91f, 0.82f, 1f), Color.black);
-            captureRetakeButton.onClick.AddListener(RetakeFromUi);
-            captureRetakeButton.gameObject.SetActive(false);
+            // captureRetakeButton = CreateButton(capture.transform, "CaptureRetakeButton", "RETAKE", new Vector2(0.22f, 0.075f), Vector2.zero, new Vector2(220f, 72f));
+            // StyleMrkremeButton(captureRetakeButton, new Color(0.94f, 0.91f, 0.82f, 1f), Color.black);
+            // captureRetakeButton.onClick.AddListener(RetakeFromUi);
+            // captureRetakeButton.gameObject.SetActive(false);
 
             var preview = CreateScreen(background.transform, BoothUiScreenId.Preview, builtScreens);
             CreateBackgroundImage(preview.transform, "CreamPatternBackground", "piece_06");
@@ -6985,12 +7167,12 @@ namespace PhotoBooth.Booth.Frontend
             composedPreview = CreateRawImage(preview.transform, "ComposedPreview", new Vector2(0.71f, 0.63f), Vector2.zero, new Vector2(360f, 280f));
             CreateText(preview.transform, "MotionLabel", "COUNTDOWN CLIP", 20, TextAlignmentOptions.Center, new Vector2(0.29f, 0.81f), new Vector2(0.29f, 0.81f), Vector2.zero, new Vector2(360f, 40f)).color = new Color(0.08f, 0.08f, 0.08f, 1f);
             CreateText(preview.transform, "ComposedLabel", "PHOTO PREVIEW", 20, TextAlignmentOptions.Center, new Vector2(0.71f, 0.81f), new Vector2(0.71f, 0.81f), Vector2.zero, new Vector2(360f, 40f)).color = new Color(0.08f, 0.08f, 0.08f, 1f);
-            retakeButton = CreateButton(preview.transform, "RetakeButton", "BACK", new Vector2(0.25f, 0.1f), Vector2.zero, new Vector2(260f, 84f));
-            continueButton = CreateButton(preview.transform, "ContinueButton", "CONFIRM", new Vector2(0.75f, 0.1f), Vector2.zero, new Vector2(260f, 84f));
-            StyleMrkremeButton(retakeButton);
-            StyleMrkremeButton(continueButton);
-            retakeButton.onClick.AddListener(RetakeFromUi);
-            continueButton.onClick.AddListener(FinishPreviewAndReturnHomeFromUi);
+            // retakeButton = CreateButton(preview.transform, "RetakeButton", "BACK", new Vector2(0.25f, 0.1f), Vector2.zero, new Vector2(260f, 84f));
+            // continueButton = CreateButton(preview.transform, "ContinueButton", "CONFIRM", new Vector2(0.75f, 0.1f), Vector2.zero, new Vector2(260f, 84f));
+            // StyleMrkremeButton(retakeButton);
+            // StyleMrkremeButton(continueButton);
+            // retakeButton.onClick.AddListener(RetakeFromUi);
+            // continueButton.onClick.AddListener(FinishPreviewAndReturnHomeFromUi);
 
             var fulfillment = CreateScreen(background.transform, BoothUiScreenId.Fulfillment, builtScreens);
             CreateBackgroundImage(fulfillment.transform, "CreamPatternBackground", "piece_06");
@@ -7060,6 +7242,7 @@ namespace PhotoBooth.Booth.Frontend
             previewFrameImage ??= FindPreviewFrameImage();
             voucherCodeEntryText ??= FindTextInScreen(BoothUiScreenId.VoucherEntry, "VoucherCodeText");
             voucherCodeCountText ??= FindTextInScreen(BoothUiScreenId.VoucherEntry, "VoucherCodeCountText");
+            BindAutomaticCaptureUi();
             EnsureVoucherModal();
             EnsureVoucherScanUi(FindScreenRoot(BoothUiScreenId.VoucherEntry));
             if (captureForegroundOverlay != null)
@@ -7110,7 +7293,7 @@ namespace PhotoBooth.Booth.Frontend
             WireButton("VoucherCameraOffButton", TurnVoucherCameraOffFromUi);
             WireButton("VoucherRemoteRefreshButton", RefreshVoucherRemoteScanFromUi);
             WireButton("CaptureButton", CaptureFromUi);
-            WireButtonInScreen(BoothUiScreenId.Capture, "CaptureRetakeButton", RetakeFromUi);
+            // WireButtonInScreen(BoothUiScreenId.Capture, "CaptureRetakeButton", RetakeFromUi);
             WireButtonInScreen(BoothUiScreenId.Capture, "CaptureRefreshButton", RetakeFromUi);
             WireButtonInScreen(BoothUiScreenId.Preview, "RetakeButton", RetakeFromUi);
             WireButtonInScreen(BoothUiScreenId.Preview, "ContinueButton", FinishPreviewAndReturnHomeFromUi);
@@ -7126,7 +7309,15 @@ namespace PhotoBooth.Booth.Frontend
                 WireButton($"Key_{character}", () => AppendNameCharacterFromUi(character));
             }
 
+            const string digits = "1234567890";
+            foreach (var digit in digits)
+            {
+                var character = digit.ToString();
+                WireButton($"Key_{character}", () => AppendNameCharacterFromUi(character));
+            }
+
             WireButton("Key_Back", BackspaceNameFromUi);
+            WireButton("Key_Delete", BackspaceNameFromUi);
             WireVoucherKeyboardButtons();
         }
 
@@ -7503,7 +7694,7 @@ namespace PhotoBooth.Booth.Frontend
                 return;
             }
 
-            var backButton = CreateButton(parent, "VoucherKey_Back", "BACK", new Vector2(0.5f, anchorY), new Vector2(startX + (characters.Length * (keyWidth + gap)) + 21f, 0f), new Vector2(keyWidth + 42f, 64f));
+            var backButton = CreateButton(parent, "VoucherKey_Back", "⌫", new Vector2(0.5f, anchorY), new Vector2(startX + (characters.Length * (keyWidth + gap)) + 21f, 0f), new Vector2(keyWidth + 42f, 64f));
             StyleKeyboardButton(backButton);
         }
 
@@ -8049,6 +8240,7 @@ namespace PhotoBooth.Booth.Frontend
 
         private void BuildNameKeyboard(Transform parent)
         {
+            BuildKeyboardRow(parent, "1234567890", 0.38f, 10, 64f);
             BuildKeyboardRow(parent, "QWERTYUIOP", 0.314f, 10, 86f);
             BuildKeyboardRow(parent, "ASDFGHJKL", 0.248f, 9, 86f);
             BuildKeyboardRow(parent, "ZXCVBNM", 0.182f, 7, 98f, includeBackspace: true);
@@ -8065,7 +8257,10 @@ namespace PhotoBooth.Booth.Frontend
                 var character = characters[i].ToString();
                 var button = CreateButton(parent, $"Key_{character}", character, new Vector2(0.5f, anchorY), new Vector2(startX + (i * (keyWidth + gap)), 0f), new Vector2(keyWidth, 64f));
                 StyleKeyboardButton(button);
-                button.onClick.AddListener(() => AppendNameCharacterFromUi(character));
+                if (character == "0" || char.IsDigit(character[0]) || char.IsLetter(character[0]))
+                {
+                    button.onClick.AddListener(() => AppendNameCharacterFromUi(character));
+                }
             }
 
             if (!includeBackspace)
@@ -8073,7 +8268,7 @@ namespace PhotoBooth.Booth.Frontend
                 return;
             }
 
-            var backButton = CreateButton(parent, "Key_Back", "BACK", new Vector2(0.5f, anchorY), new Vector2(startX + (characters.Length * (keyWidth + gap)) + 21f, 0f), new Vector2(keyWidth + 42f, 64f));
+            var backButton = CreateButton(parent, "Key_Back", "⌫", new Vector2(0.5f, anchorY), new Vector2(startX + (characters.Length * (keyWidth + gap)) + 21f, 0f), new Vector2(keyWidth + 42f, 64f));
             StyleKeyboardButton(backButton);
             backButton.onClick.AddListener(BackspaceNameFromUi);
         }

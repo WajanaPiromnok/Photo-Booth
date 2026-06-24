@@ -1,0 +1,8 @@
+{
+    "name": "spine-csharp-duplicate-sources-disabled",
+    "references": [],
+    "defineConstraints": [
+        "SPINE_COMPILE_DUPLICATE_CSHARP_SOURCES"
+    ],
+    "autoReferenced": false
+}

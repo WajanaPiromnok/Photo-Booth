@@ -18,7 +18,8 @@
     "UnityEngine.UIModule",
     "Unity.InputSystem",
     "Mediapipe.Runtime",
-    "EnoxSoftware.OpenCVForUnity"
+    "EnoxSoftware.OpenCVForUnity",
+    "LeanTween"
   ],
   "includePlatforms": [],
   "excludePlatforms": [],

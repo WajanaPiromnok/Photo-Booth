@@ -1,10 +1,11 @@
 {
   "dependencies": {
+    "com.esotericsoftware.spine.spine-csharp": "https://github.com/EsotericSoftware/spine-runtimes.git?path=spine-csharp/src#4.3",
+    "com.github.homuler.mediapipe": "file:com.github.homuler.mediapipe",
     "com.unity.2d.sprite": "1.0.0",
     "com.unity.2d.tilemap": "1.0.0",
     "com.unity.ads": "4.16.4",
     "com.unity.ai.navigation": "2.0.11",
-    "com.github.homuler.mediapipe": "file:com.github.homuler.mediapipe",
     "com.unity.analytics": "3.8.2",
     "com.unity.asset-manager-for-unity": "1.10.0",
     "com.unity.collab-proxy": "2.11.4",
@@ -13,6 +14,7 @@
     "com.unity.inputsystem": "1.19.0",
     "com.unity.multiplayer.center": "1.0.1",
     "com.unity.purchasing": "4.14.2",
+    "com.unity.recorder": "5.1.6",
     "com.unity.remote-config": "4.2.5",
     "com.unity.render-pipelines.universal": "17.3.0",
     "com.unity.services.apis": "1.1.1",

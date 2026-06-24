@@ -106,6 +106,7 @@ namespace PhotoBooth.Booth.Services
             job.MotionVideoUrl = null;
             job.MotionClipUrl = null;
             job.Paths.RawImagePath = null;
+            job.Paths.RawImagePaths = null;
             job.Paths.ComposedImagePath = null;
             job.Paths.PrintImagePath = null;
             job.Paths.ThumbnailPath = null;

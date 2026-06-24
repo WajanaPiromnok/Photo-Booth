@@ -11,7 +11,8 @@ CREATE TABLE IF NOT EXISTS projects (
 INSERT INTO projects (id, code, name, result_route_prefix, status)
 VALUES
     ('prj_main', 'MAIN', 'Main Photo Booth', 'd', 'ACTIVE'),
-    ('prj_world_tour', 'WORLD_TOUR', 'World Tour Photo Booth', 'world-tour', 'ACTIVE')
+    ('prj_world_tour', 'WORLD_TOUR', 'World Tour Photo Booth', 'world-tour', 'ACTIVE'),
+    ('prj_kooky_world', 'KOOKY_WORLD', 'Kooky World Photo Booth', 'kooky-world', 'ACTIVE')
 ON CONFLICT (id) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS booth_jobs (
@@ -74,6 +75,11 @@ CREATE TABLE IF NOT EXISTS project_devices (
 );
 
 CREATE INDEX IF NOT EXISTS idx_project_devices_project_id ON project_devices(project_id);
+
+INSERT INTO project_devices (project_id, device_id, active)
+VALUES ('prj_kooky_world', 'booth-kooky-01', TRUE)
+ON CONFLICT (device_id)
+DO UPDATE SET project_id = EXCLUDED.project_id, active = TRUE, updated_at = NOW();
 
 CREATE TABLE IF NOT EXISTS user_devices (
     id BIGSERIAL PRIMARY KEY,

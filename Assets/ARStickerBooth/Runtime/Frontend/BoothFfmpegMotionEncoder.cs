@@ -44,7 +44,7 @@ namespace PhotoBooth.Booth.Frontend
 
             var inputPattern = Path.Combine(Path.GetDirectoryName(firstFrame), "motion_%03d.png");
             var fps = Math.Max(1f, frameRate).ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
-            var arguments = $"-y -framerate {fps} -i {Quote(inputPattern)} -vf format=yuv420p -c:v libx264 -movflags +faststart {Quote(outputPath)}";
+            var arguments = $"-y -framerate {fps} -i {Quote(inputPattern)} -vf \"scale=1280:-2:force_original_aspect_ratio=decrease,format=yuv420p\" -c:v libx264 -preset veryfast -crf 23 -movflags +faststart {Quote(outputPath)}";
 
             try
             {

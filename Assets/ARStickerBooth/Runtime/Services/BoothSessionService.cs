@@ -123,9 +123,21 @@ namespace PhotoBooth.Booth.Services
 
         public BoothJob MarkCaptured(string jobId, int rawCaptureCount, string rawImagePath, string[] motionClipFramePaths, string motionVideoPath)
         {
+            return MarkCaptured(jobId, rawCaptureCount, rawImagePath, null, motionClipFramePaths, motionVideoPath);
+        }
+
+        public BoothJob MarkCaptured(
+            string jobId,
+            int rawCaptureCount,
+            string rawImagePath,
+            string[] rawImagePaths,
+            string[] motionClipFramePaths,
+            string motionVideoPath)
+        {
             var job = repository.Get(jobId);
             stateMachine.MarkCaptured(job, rawCaptureCount);
             job.Paths.RawImagePath = rawImagePath;
+            job.Paths.RawImagePaths = rawImagePaths;
             job.MotionClipFramePaths = motionClipFramePaths;
             job.MotionVideoPath = motionVideoPath;
             return Save(job, saved => telemetry?.OnCaptureCompleted(saved));

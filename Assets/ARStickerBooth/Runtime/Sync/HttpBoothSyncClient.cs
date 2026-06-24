@@ -709,7 +709,8 @@ namespace PhotoBooth.Booth.Sync
 
         private static IEnumerable<string> EnumerateExistingMotionFrames(SyncJobRequest request)
         {
-            if (request?.MotionClipFramePaths == null)
+            // ponytail: MP4 already contains the clip; keep PNG frames only as the fallback transport.
+            if (HasMotionVideo(request) || request?.MotionClipFramePaths == null)
             {
                 yield break;
             }

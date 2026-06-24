@@ -1,0 +1,33 @@
+skeleton.png
+size:2682,2312
+filter:Linear,Linear
+pma:true
+Eye 1
+bounds:2364,1432,155,118
+offsets:356,411,2114,811
+Eye 2
+bounds:2521,1459,91,121
+offsets:559,435,2114,811
+rotate:90
+Eye 3
+bounds:2,40,2270,1703
+offsets:7506,3286,17732,6800
+rotate:90
+Layer 0
+bounds:1707,524,1786,655
+offsets:152,77,2114,811
+rotate:90
+Layer 2
+bounds:1707,10,512,490
+offsets:190,233,2114,811
+rotate:90
+Layer 3
+bounds:2199,2,520,448
+offsets:819,263,2114,811
+rotate:90
+Layer 4
+bounds:2364,1944,316,366
+offsets:1646,215,2114,811
+Layer 5
+bounds:2364,1552,264,390
+offsets:1421,238,2114,811

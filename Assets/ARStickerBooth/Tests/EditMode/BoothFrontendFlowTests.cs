@@ -134,6 +134,29 @@ namespace PhotoBooth.Booth.Tests.EditMode
         }
 
         [Test]
+        public void Capture_PersistsAllThreeRawImagePaths()
+        {
+            var sessions = CreateSessionService();
+            var job = sessions.CreateJob(12000, "THB");
+            job = sessions.SelectTheme(job.JobId, "classic");
+            job = sessions.BypassPayment(job.JobId);
+            job = sessions.BeginCapture(job.JobId);
+            var rawPaths = new[]
+            {
+                Path.Combine(job.Paths.RawDirectory, "capture_01.png"),
+                Path.Combine(job.Paths.RawDirectory, "capture_02.png"),
+                Path.Combine(job.Paths.RawDirectory, "capture_03.png")
+            };
+
+            job = sessions.MarkCaptured(job.JobId, 3, rawPaths[2], rawPaths, Array.Empty<string>(), null);
+            var restored = sessions.GetJob(job.JobId);
+
+            Assert.That(restored.RawCaptureCount, Is.EqualTo(3));
+            Assert.That(restored.Paths.RawImagePath, Is.EqualTo(rawPaths[2]));
+            Assert.That(restored.Paths.RawImagePaths, Is.EqualTo(rawPaths));
+        }
+
+        [Test]
         public void BeginRetake_ResetsCaptureArtifactsBeforeUpload()
         {
             var sessions = CreateSessionService();
@@ -144,7 +167,7 @@ namespace PhotoBooth.Booth.Tests.EditMode
 
             var rawPath = Path.Combine(job.Paths.RawDirectory, "capture.png");
             WriteTestPng(rawPath, 64, 48);
-            job = sessions.MarkCaptured(job.JobId, 1, rawPath);
+            job = sessions.MarkCaptured(job.JobId, 1, rawPath, new[] { rawPath }, Array.Empty<string>(), null);
             job = sessions.BeginComposing(job.JobId);
             var result = new BoothImageComposer().Compose(job, rawPath, new Vector2Int(32, 24));
             job = sessions.MarkComposed(job.JobId, result.ComposedImagePath, result.ThumbnailPath);
@@ -154,6 +177,7 @@ namespace PhotoBooth.Booth.Tests.EditMode
             Assert.That(retakeJob.Status, Is.EqualTo(BoothJobStatus.Capturing));
             Assert.That(retakeJob.RawCaptureCount, Is.EqualTo(0));
             Assert.That(retakeJob.Paths.RawImagePath, Is.Null);
+            Assert.That(retakeJob.Paths.RawImagePaths, Is.Null);
             Assert.That(retakeJob.Paths.ComposedImagePath, Is.Null);
             Assert.That(retakeJob.Paths.ThumbnailPath, Is.Null);
             Assert.That(retakeJob.MotionClipFramePaths, Is.Null);
