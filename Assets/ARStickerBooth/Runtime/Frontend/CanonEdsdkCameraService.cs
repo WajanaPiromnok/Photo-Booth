@@ -61,6 +61,7 @@ namespace PhotoBooth.Booth.Frontend
         private IntPtr pendingCapturedItem;
 
         private DateTime lastAutofocusUtc = DateTime.MinValue;
+        private bool useNonAfForNextCapture;
 
         public CanonEdsdkCameraService(int captureTimeoutMs = 20000)
         {
@@ -132,9 +133,13 @@ namespace PhotoBooth.Booth.Frontend
                 PumpCameraEvents(900);
 
                 lastAutofocusUtc = DateTime.UtcNow;
+                useNonAfForNextCapture = false;
             }
             catch (CanonEdsdkException exception) when (exception.ErrorCode == EdsErrTakePictureAfNg)
             {
+                // Preserve the autofocus error for the caller's UI, but make the next shutter
+                // use Canon's Non-AF command so a dark/low-contrast scene does not abort the job.
+                useNonAfForNextCapture = true;
                 throw new InvalidOperationException(
                     "Canon autofocus failed. Please increase light, improve contrast, or move the subject into focus area.",
                     exception
@@ -226,8 +231,10 @@ namespace PhotoBooth.Booth.Frontend
                     }
 
                     var hasFreshFocus = (DateTime.UtcNow - lastAutofocusUtc).TotalSeconds <= 7;
+                    var bypassAutoFocus = useNonAfForNextCapture;
+                    useNonAfForNextCapture = false;
 
-                    if (hasFreshFocus)
+                    if (hasFreshFocus || bypassAutoFocus)
                     {
                         TakePictureWithoutAutoFocus();
                     }
@@ -457,11 +464,8 @@ namespace PhotoBooth.Booth.Frontend
                 // AF ไม่เข้า ต้องปล่อยปุ่ม ไม่งั้นกล้องบางรุ่นจะค้าง busy
                 EdsSendCommand(camera, CameraCommandPressShutterButton, ShutterButtonOff);
                 PumpCameraEvents(500);
-
-                throw new InvalidOperationException(
-                    "Canon autofocus failed. Please increase light, improve contrast, or move the subject into focus area.",
-                    exception
-                );
+                Debug.LogWarning($"Canon autofocus failed (0x{exception.ErrorCode:X8}); capturing with Non-AF shutter instead.");
+                TakePictureWithoutAutoFocus();
             }
             finally
             {

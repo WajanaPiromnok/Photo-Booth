@@ -276,6 +276,12 @@ namespace PhotoBooth.Booth.Frontend
         private GameObject captureIntroLozado;
         private GameObject captureTrainRoot;
         private readonly GameObject[] captureTrainLevels = new GameObject[3];
+        private readonly GameObject[] captureTrainInnerCircles = new GameObject[3];
+        private CanvasGroup captureIntroLozadoCanvasGroup;
+        private RectTransform captureTrainMover;
+        private Vector2 captureTrainInitialPosition;
+        private bool hasCaptureTrainInitialPosition;
+        private CancellationTokenSource captureTrainAnimationCancellation;
         private bool captureReviewRetakeUsed;
         private bool isStartingCapturePreview;
         private Exception cameraPreviewFailureException;
@@ -2423,11 +2429,14 @@ namespace PhotoBooth.Booth.Frontend
                 await cameraCaptureService.AutoFocusCanonAsync(cancellationToken);
                 SetStatus($"Focus locked. Get ready for photo {captureNumber}.");
             }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
             catch (Exception exception)
             {
                 Debug.LogWarning($"Canon autofocus before countdown failed: {exception.Message}");
-                SetStatus("Autofocus failed. Please move into frame.");
-                throw;
+                SetStatus($"Autofocus unavailable. Continuing with photo {captureNumber}.");
             }
         }
 
@@ -3452,19 +3461,44 @@ namespace PhotoBooth.Booth.Frontend
                 : countdownText?.gameObject;
             captureIntroLozado ??= root.Find("TopMetalPanel/Lozado")?.gameObject;
             captureTrainRoot ??= root.Find("TopMetalPanel/Train")?.gameObject;
+            captureTrainMover ??= root.Find("TopMetalPanel/Train/Train") as RectTransform;
+            if (captureTrainMover != null && !hasCaptureTrainInitialPosition)
+            {
+                captureTrainInitialPosition = captureTrainMover.anchoredPosition;
+                hasCaptureTrainInitialPosition = true;
+            }
+
             for (var index = 0; index < captureTrainLevels.Length; index += 1)
             {
                 captureTrainLevels[index] ??= root.Find($"TopMetalPanel/Train/Level {index + 1}")?.gameObject;
+                captureTrainInnerCircles[index] ??=
+                    root.Find($"TopMetalPanel/Train/Line/Circle - {index + 1}/Circle - inside")?.gameObject
+                    ?? root.Find($"TopMetalPanel/Train/Train/Line/Circle - {index + 1}/Circle - inside")?.gameObject;
             }
         }
 
         private void ResetAutomaticCaptureUi()
         {
             BindAutomaticCaptureUi();
+            CancelCaptureTrainAnimation();
             captureForegroundCaptureNumber = 1;
             UpdateCaptureForegroundOverlay();
-            captureIntroLozado?.SetActive(true);
+            if (captureIntroLozado != null)
+            {
+                captureIntroLozado.SetActive(true);
+                var lozadoCanvasGroup = ResolveCaptureIntroCanvasGroup();
+                if (lozadoCanvasGroup != null)
+                {
+                    lozadoCanvasGroup.alpha = 1f;
+                }
+            }
+
             captureTrainRoot?.SetActive(false);
+            if (captureTrainMover != null && hasCaptureTrainInitialPosition)
+            {
+                captureTrainMover.anchoredPosition = captureTrainInitialPosition;
+            }
+
             captureStartText?.SetText("TAKE A PHOTO");
             captureStartText?.gameObject.SetActive(true);
             if (captureShotCountImage != null)
@@ -3480,13 +3514,19 @@ namespace PhotoBooth.Booth.Frontend
             {
                 level?.SetActive(false);
             }
+
+            foreach (var innerCircle in captureTrainInnerCircles)
+            {
+                innerCircle?.SetActive(false);
+            }
         }
 
         private void BeginAutomaticCaptureSequenceUi()
         {
             BindAutomaticCaptureUi();
-            captureIntroLozado?.SetActive(false);
-            captureTrainRoot?.SetActive(true);
+            CancelCaptureTrainAnimation();
+            captureTrainAnimationCancellation = new CancellationTokenSource();
+            _ = FadeLozadoThenShowTrainAsync(captureTrainAnimationCancellation.Token);
             captureStartText?.gameObject.SetActive(false);
             if (captureShotCountImage != null)
             {
@@ -3506,8 +3546,145 @@ namespace PhotoBooth.Booth.Frontend
 
             for (var index = 0; index < captureTrainLevels.Length; index += 1)
             {
-                captureTrainLevels[index]?.SetActive(index == completedCount - 1);
+                captureTrainLevels[index]?.SetActive(false);
             }
+
+            if (completedCount > 0)
+            {
+                captureTrainRoot?.SetActive(true);
+                _ = AnimateCaptureTrainToLevelAsync(
+                    Mathf.Clamp(completedCount, 1, captureTrainInnerCircles.Length),
+                    captureTrainAnimationCancellation?.Token ?? CancellationToken.None);
+            }
+        }
+
+        private async Task FadeLozadoThenShowTrainAsync(CancellationToken cancellationToken)
+        {
+            if (captureIntroLozado == null)
+            {
+                captureTrainRoot?.SetActive(true);
+                return;
+            }
+
+            captureIntroLozado.SetActive(true);
+            var lozadoCanvasGroup = ResolveCaptureIntroCanvasGroup();
+            if (lozadoCanvasGroup == null)
+            {
+                captureIntroLozado.SetActive(false);
+                captureTrainRoot?.SetActive(true);
+                return;
+            }
+
+            lozadoCanvasGroup.alpha = 1f;
+            captureTrainRoot?.SetActive(false);
+
+            const float duration = 0.45f;
+            var elapsed = 0f;
+            while (elapsed < duration)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                elapsed += Time.unscaledDeltaTime;
+                lozadoCanvasGroup.alpha = 1f - Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(elapsed / duration));
+                await Task.Yield();
+            }
+
+            lozadoCanvasGroup.alpha = 0f;
+            captureIntroLozado.SetActive(false);
+            captureTrainRoot?.SetActive(true);
+        }
+
+        private CanvasGroup ResolveCaptureIntroCanvasGroup()
+        {
+            if (captureIntroLozado == null)
+            {
+                captureIntroLozadoCanvasGroup = null;
+                return null;
+            }
+
+            // UnityEngine.Object has its own null semantics. Avoid ??/??= here because a
+            // destroyed native component can still have a non-null managed reference.
+            if (captureIntroLozadoCanvasGroup != null
+                && captureIntroLozadoCanvasGroup.gameObject == captureIntroLozado)
+            {
+                return captureIntroLozadoCanvasGroup;
+            }
+
+            captureIntroLozadoCanvasGroup = captureIntroLozado.GetComponent<CanvasGroup>();
+            if (captureIntroLozadoCanvasGroup == null)
+            {
+                captureIntroLozadoCanvasGroup = captureIntroLozado.AddComponent<CanvasGroup>();
+            }
+
+            return captureIntroLozadoCanvasGroup;
+        }
+
+        private async Task AnimateCaptureTrainToLevelAsync(int level, CancellationToken cancellationToken)
+        {
+            if (captureTrainMover == null || level < 1 || level > captureTrainLevels.Length)
+            {
+                return;
+            }
+
+            var levelTransform = captureTrainLevels[level - 1]?.transform as RectTransform;
+            var trainParent = captureTrainMover.parent as RectTransform;
+            if (levelTransform == null || trainParent == null)
+            {
+                SetActiveCaptureTrainCircle(level);
+                return;
+            }
+
+            // The legacy Level sprites remain useful as editable waypoints. Their left edge is
+            // the nose of the train, so offset by half the dynamic train width to get its centre.
+            var targetWorldPosition = levelTransform.TransformPoint(new Vector3(
+                levelTransform.rect.xMin + (captureTrainMover.rect.width * 0.5f),
+                0f,
+                0f));
+            var targetLocalPosition = trainParent.InverseTransformPoint(targetWorldPosition);
+            var startPosition = captureTrainMover.anchoredPosition;
+            var targetPosition = new Vector2(targetLocalPosition.x, startPosition.y);
+
+            // The first completed photo establishes the progress indicator. Show the train at
+            // station 1 immediately; only subsequent station changes travel across the line.
+            if (level == 1)
+            {
+                captureTrainMover.anchoredPosition = targetPosition;
+                SetActiveCaptureTrainCircle(level);
+                return;
+            }
+
+            const float duration = 0.65f;
+            var elapsed = 0f;
+            while (elapsed < duration)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                elapsed += Time.unscaledDeltaTime;
+                var t = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(elapsed / duration));
+                captureTrainMover.anchoredPosition = Vector2.LerpUnclamped(startPosition, targetPosition, t);
+                await Task.Yield();
+            }
+
+            captureTrainMover.anchoredPosition = targetPosition;
+            SetActiveCaptureTrainCircle(level);
+        }
+
+        private void SetActiveCaptureTrainCircle(int level)
+        {
+            for (var index = 0; index < captureTrainInnerCircles.Length; index += 1)
+            {
+                captureTrainInnerCircles[index]?.SetActive(index == level - 1);
+            }
+        }
+
+        private void CancelCaptureTrainAnimation()
+        {
+            if (captureTrainAnimationCancellation == null)
+            {
+                return;
+            }
+
+            captureTrainAnimationCancellation.Cancel();
+            captureTrainAnimationCancellation.Dispose();
+            captureTrainAnimationCancellation = null;
         }
 
         private void UpdateCaptureCountSprite(int captureNumber)
@@ -3934,6 +4111,11 @@ namespace PhotoBooth.Booth.Frontend
             TrackScreenExit();
             var wasCaptureScreen = currentScreen == BoothUiScreenId.Capture;
             var wasVoucherEntryScreen = currentScreen == BoothUiScreenId.VoucherEntry;
+
+            if (screenId == BoothUiScreenId.Preview)
+            {
+                SetQrReadyHomeButtonVisible(false);
+            }
 
             foreach (var binding in screens)
             {
@@ -5030,30 +5212,45 @@ namespace PhotoBooth.Booth.Frontend
                 return;
             }
 
+            var applied = false;
             if (rawTarget != null)
             {
                 rawTarget.texture = texture;
                 rawTarget.color = Color.white;
+                applied = true;
             }
 
-            if (imageTarget == null)
+            if (imageTarget != null)
             {
-                return;
+                if (qrPreviewSprite != null)
+                {
+                    Destroy(qrPreviewSprite);
+                    qrPreviewSprite = null;
+                }
+
+                qrPreviewSprite = Sprite.Create(
+                    texture,
+                    new Rect(0f, 0f, texture.width, texture.height),
+                    Vector2.one * 0.5f);
+                imageTarget.sprite = qrPreviewSprite;
+                imageTarget.preserveAspect = true;
+                imageTarget.color = Color.white;
+                applied = true;
             }
 
-            if (qrPreviewSprite != null)
+            SetQrReadyHomeButtonVisible(applied);
+        }
+
+        private void SetQrReadyHomeButtonVisible(bool visible)
+        {
+            doneButton ??= FindButtonInScreen(BoothUiScreenId.Preview, "DoneButton")
+                ?? FindButtonInScreen(BoothUiScreenId.Fulfillment, "DoneButton")
+                ?? FindButton("DoneButton");
+            if (doneButton != null)
             {
-                Destroy(qrPreviewSprite);
-                qrPreviewSprite = null;
+                doneButton.gameObject.SetActive(visible);
+                doneButton.interactable = visible;
             }
-
-            qrPreviewSprite = Sprite.Create(
-                texture,
-                new Rect(0f, 0f, texture.width, texture.height),
-                Vector2.one * 0.5f);
-            imageTarget.sprite = qrPreviewSprite;
-            imageTarget.preserveAspect = true;
-            imageTarget.color = Color.white;
         }
 
         private async Task<bool> BeginBusyAsync()
@@ -6981,6 +7178,7 @@ namespace PhotoBooth.Booth.Frontend
         private void ClearQrPreview(RawImage rawTarget, Image imageTarget)
         {
             HideQrLoading();
+            SetQrReadyHomeButtonVisible(false);
             if (rawTarget != null)
             {
                 rawTarget.texture = null;
@@ -7008,6 +7206,7 @@ namespace PhotoBooth.Booth.Frontend
 
         private void ShowQrLoading(RawImage rawTarget, Image imageTarget)
         {
+            SetQrReadyHomeButtonVisible(false);
             if (qrLoadingCancellation != null)
             {
                 qrLoadingCancellation.Cancel();
@@ -8698,6 +8897,7 @@ namespace PhotoBooth.Booth.Frontend
         private void OnDestroy()
         {
             TrackScreenExit();
+            CancelCaptureTrainAnimation();
             flowCancellation?.Cancel();
             flowCancellation?.Dispose();
             StopVoucherScanner("destroy");
