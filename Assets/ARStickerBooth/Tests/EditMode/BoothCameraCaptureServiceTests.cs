@@ -1,10 +1,53 @@
+using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
 using NUnit.Framework;
 using PhotoBooth.Booth.Frontend;
+using UnityEngine;
 
 namespace PhotoBooth.Booth.Tests.EditMode
 {
     public sealed class BoothCameraCaptureServiceTests
     {
+        [Test]
+        public async Task CanonBackend_StartIsIdempotentAndStopClosesSession()
+        {
+            var backend = new FakeCanonCameraBackend(CreateTestJpeg());
+            using var service = new BoothCameraCaptureService(
+                null,
+                canonCameraBackend: backend,
+                useCanonEdsdk: true,
+                allowCameraFallback: false);
+
+            await service.StartPreviewAsync();
+            await service.StartPreviewAsync();
+
+            Assert.That(service.IsUsingCanonEdsdk, Is.True);
+            Assert.That(backend.StartCount, Is.EqualTo(1));
+
+            await service.StopPreviewAsync();
+
+            Assert.That(backend.StopCount, Is.EqualTo(1));
+            Assert.That(backend.CloseCount, Is.EqualTo(1));
+        }
+
+        [Test]
+        public async Task CanonBackend_CaptureUsesRequestedFileName()
+        {
+            var backend = new FakeCanonCameraBackend(CreateTestJpeg());
+            using var service = new BoothCameraCaptureService(
+                null,
+                canonCameraBackend: backend,
+                useCanonEdsdk: true,
+                allowCameraFallback: false);
+
+            await service.StartPreviewAsync();
+            var path = await service.CaptureCanonStillAsync("captures", "capture_03.jpg");
+
+            Assert.That(path, Is.EqualTo(Path.Combine("captures", "capture_03.jpg")));
+            Assert.That(backend.CaptureCount, Is.EqualTo(1));
+        }
+
         [Test]
         public void SelectPreferredDeviceName_DefaultsToExternalCameraBeforeBuiltInAndObsbot()
         {
@@ -227,6 +270,87 @@ namespace PhotoBooth.Booth.Tests.EditMode
             Assert.That(BoothCameraCaptureService.DescribeDeviceSelection("OBSBOT Meet 2"), Is.EqualTo("camera"));
             Assert.That(BoothCameraCaptureService.DescribeDeviceSelection("FaceTime HD Camera"), Is.EqualTo("camera"));
             Assert.That(BoothCameraCaptureService.DescribeDeviceSelection(null), Is.EqualTo("none"));
+        }
+
+        private static byte[] CreateTestJpeg()
+        {
+            var texture = new Texture2D(32, 24, TextureFormat.RGB24, false);
+            try
+            {
+                texture.SetPixel(0, 0, Color.cyan);
+                texture.Apply();
+                return ImageConversion.EncodeToJPG(texture);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(texture);
+            }
+        }
+
+        private sealed class FakeCanonCameraBackend : ICanonCameraBackend
+        {
+            private readonly byte[] previewBytes;
+
+            public FakeCanonCameraBackend(byte[] previewBytes)
+            {
+                this.previewBytes = previewBytes;
+            }
+
+            public bool IsSessionOpen { get; private set; }
+            public bool IsLiveViewRunning { get; private set; }
+            public string CameraName => "Fake Canon";
+            public int StartCount { get; private set; }
+            public int StopCount { get; private set; }
+            public int CloseCount { get; private set; }
+            public int CaptureCount { get; private set; }
+            public int AutoFocusCount { get; private set; }
+
+
+            public Task StartLiveViewAsync(CancellationToken cancellationToken = default)
+            {
+                StartCount++;
+                IsSessionOpen = true;
+                IsLiveViewRunning = true;
+                return Task.CompletedTask;
+            }
+
+            public Task AutoFocusAsync(CancellationToken cancellationToken = default)
+            {
+                AutoFocusCount++;
+                IsSessionOpen = true;
+                return Task.CompletedTask;
+            }
+
+            public Task<byte[]> DownloadLiveViewFrameAsync(CancellationToken cancellationToken = default)
+            {
+                return Task.FromResult(previewBytes);
+            }
+
+            public Task<string> CaptureStillAsync(string outputDirectory, string fileName, CancellationToken cancellationToken = default)
+            {
+                CaptureCount++;
+                return Task.FromResult(Path.Combine(outputDirectory, fileName));
+            }
+
+            public Task StopLiveViewAsync(CancellationToken cancellationToken = default)
+            {
+                StopCount++;
+                IsLiveViewRunning = false;
+                return Task.CompletedTask;
+            }
+
+            public Task CloseSessionAsync(CancellationToken cancellationToken = default)
+            {
+                CloseCount++;
+                IsSessionOpen = false;
+                return Task.CompletedTask;
+            }
+
+            public void Dispose()
+            {
+                IsSessionOpen = false;
+                IsLiveViewRunning = false;
+            }
         }
     }
 }

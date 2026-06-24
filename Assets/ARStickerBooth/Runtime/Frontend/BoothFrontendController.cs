@@ -136,6 +136,11 @@ namespace PhotoBooth.Booth.Frontend
         [SerializeField] private string gPhoto2ExecutablePath = "/opt/homebrew/bin/gphoto2";
         [SerializeField] private int gPhoto2CaptureTimeoutMs = 20000;
         [SerializeField] private bool gPhoto2KillPtpcameraBeforeCommand = true;
+        [SerializeField] private bool useCanonEdsdk;
+        [SerializeField] private bool allowCanonCameraFallback = true;
+        [SerializeField] private int canonEdsdkCaptureTimeoutMs = 20000;
+        [SerializeField] private int canonEdsdkPreviewFramesPerSecond = 15;
+        [SerializeField] private int canonEdsdkPreviewUiFramesPerSecond = 10;
         [SerializeField] private Vector2Int cameraCaptureSize = new(1280, 720);
         [SerializeField] private Vector2Int thumbnailSize = new(320, 180);
         [SerializeField] private Sprite[] captureForegroundTextures;
@@ -189,6 +194,7 @@ namespace PhotoBooth.Booth.Frontend
         [SerializeField] private Button voucherRemoteRefreshButton;
         [SerializeField] private TextMeshProUGUI downloadUrlText;
         [SerializeField] private TextMeshProUGUI printStatusText;
+        [SerializeField] private TextMeshProUGUI errorMessageText;
         [SerializeField] private TextMeshProUGUI arDebugText;
         [SerializeField] private TextMeshProUGUI qrLoadingText;
         [SerializeField] private RawImage cameraPreview;
@@ -213,10 +219,13 @@ namespace PhotoBooth.Booth.Frontend
 
         private readonly BoothImageComposer composer = new();
         private readonly BoothFfmpegMotionEncoder motionEncoder = new();
+        private readonly BoothJpegMotionRecorder jpegMotionRecorder = new();
         private readonly ArStickerRenderer arStickerRenderer = new();
         private readonly ArTrackingStabilizer arTrackingStabilizer = new();
         private BoothCameraCaptureService cameraCaptureService;
         private GPhoto2CameraCaptureService gPhoto2CaptureService;
+        private ICanonCameraBackend canonCameraBackend;
+        private bool cameraBackendsDisposed;
         private BoothCameraCaptureService voucherScannerCameraService;
         private IArTrackingProvider arTrackingProvider;
         private ArTrackingFrame latestArTrackingFrame = ArTrackingFrame.Empty;
@@ -269,6 +278,7 @@ namespace PhotoBooth.Booth.Frontend
         private readonly GameObject[] captureTrainLevels = new GameObject[3];
         private bool captureReviewRetakeUsed;
         private bool isStartingCapturePreview;
+        private Exception cameraPreviewFailureException;
         private ICameraDeviceController cameraDeviceController;
         private string cameraDeviceControllerSignature = string.Empty;
         private bool hasDefaultCameraPreviewRect;
@@ -691,6 +701,7 @@ namespace PhotoBooth.Booth.Frontend
 
         private void Update()
         {
+            cameraCaptureService?.UpdateCanonPreviewTexture();
             if (currentScreen != BoothUiScreenId.VoucherEntry)
             {
                 return;
@@ -1024,6 +1035,7 @@ namespace PhotoBooth.Booth.Frontend
 
             try
             {
+                cameraPreviewFailureException = null;
                 EnsureCurrentJobOrCreateQuickDemo(paymentConfirmed: true);
                 ChooseArPresetCandidateFromUi(presetIndex);
                 runtime.TrackFeatureUsed($"ar_preset_selected:{selectedArPreset?.presetId ?? "none"}");
@@ -2284,8 +2296,13 @@ namespace PhotoBooth.Booth.Frontend
                 }
 
                 cameraCaptureService ??= CreateCameraCaptureService();
-                await WakeCameraDeviceAsync(flowCancellation.Token);
-                await cameraCaptureService.StartPreviewAsync(flowCancellation.Token);
+
+                if (!cameraCaptureService.IsPreviewing)
+                {
+                    await WakeCameraDeviceAsync(flowCancellation.Token);
+                    await cameraCaptureService.StartPreviewAsync(flowCancellation.Token);
+                }
+
                 ApplyHd33PreviewRotation(capturing: false);
                 await StartArPreviewAsync(flowCancellation.Token);
 
@@ -2296,7 +2313,10 @@ namespace PhotoBooth.Booth.Frontend
                     UpdateAutomaticCaptureProgressUi(captureNumber, capturedPhotoCount);
                     SetStatus($"Get ready for photo {captureNumber} / {totalCaptures}.");
 
+                    await TryAutoFocusBeforeCountdownAsync(captureNumber, flowCancellation.Token);
+
                     latestMotionClip = await RecordCountdownMotionClipAsync(capturedMotionFramePaths.Count);
+                    
                     if (latestMotionClip?.FramePaths != null)
                     {
                         capturedMotionFramePaths.AddRange(latestMotionClip.FramePaths);
@@ -2308,6 +2328,12 @@ namespace PhotoBooth.Booth.Frontend
                     capturedPhotoCount = captureNumber;
                     UpdateAutomaticCaptureProgressUi(captureNumber, capturedPhotoCount);
                     SetStatus($"Captured {capturedPhotoCount} / {totalCaptures}.");
+                }
+
+                if (cameraCaptureService != null && cameraCaptureService.IsUsingCanonEdsdk)
+                {
+                    await cameraCaptureService.StopPreviewAsync(flowCancellation.Token);
+                    await jpegMotionRecorder.WaitForWritesAsync(flowCancellation.Token);
                 }
 
                 var allMotionFramePaths = capturedMotionFramePaths.ToArray();
@@ -2344,7 +2370,7 @@ namespace PhotoBooth.Booth.Frontend
             catch (Exception exception)
             {
                 Debug.LogError($"Capture failed: {exception}");
-                ShowError(exception.Message);
+                ShowError((cameraPreviewFailureException ?? exception).Message);
             }
             finally
             {
@@ -2382,6 +2408,27 @@ namespace PhotoBooth.Booth.Frontend
             UpdateCaptureReviewControls();
             SetStatus("Review your photo. Tap capture to continue or refresh to retake.");
             await TrackAsync("booth_frontend_capture_review_shown", metadata: BuildAiMetadata());
+        }
+
+        private async Task TryAutoFocusBeforeCountdownAsync(int captureNumber, CancellationToken cancellationToken)
+        {
+            if (cameraCaptureService == null || !cameraCaptureService.IsUsingCanonEdsdk)
+            {
+                return;
+            }
+
+            try
+            {
+                SetStatus($"Focusing photo {captureNumber}...");
+                await cameraCaptureService.AutoFocusCanonAsync(cancellationToken);
+                SetStatus($"Focus locked. Get ready for photo {captureNumber}.");
+            }
+            catch (Exception exception)
+            {
+                Debug.LogWarning($"Canon autofocus before countdown failed: {exception.Message}");
+                SetStatus("Autofocus failed. Please move into frame.");
+                throw;
+            }
         }
 
         private async Task ContinueCaptureReviewAsync()
@@ -2732,12 +2779,7 @@ namespace PhotoBooth.Booth.Frontend
         private async Task ShowCaptureAsync(string message)
         {
             SwitchScreen(BoothUiScreenId.Capture, message);
-            cameraCaptureService ??= CreateCameraCaptureService();
-            await WakeCameraDeviceAsync(flowCancellation.Token);
-            await cameraCaptureService.StartPreviewAsync(flowCancellation.Token);
-            ApplyHd33PreviewRotation(capturing: false);
-            SetStatus(await BuildCaptureStatusMessageAsync(message, flowCancellation.Token));
-            await StartArPreviewAsync(flowCancellation.Token);
+
             EnsureCaptureForegroundOverlay();
             ApplyMonsterFrameSelection(selectedThemeUsesMonsterFrame);
             countdownText?.SetText(string.Empty);
@@ -2745,21 +2787,58 @@ namespace PhotoBooth.Booth.Frontend
             isCaptureReviewing = false;
             UpdateCaptureReviewControls();
             UpdateCaptureCountText();
+
+            await Task.CompletedTask;
         }
 
         private BoothCameraCaptureService CreateCameraCaptureService()
         {
-            var gPhoto2Capture = GetOrCreateGPhoto2CaptureService();
-            return new BoothCameraCaptureService(
+            var gPhoto2Capture = useCanonEdsdk ? null : GetOrCreateGPhoto2CaptureService();
+            if (useCanonEdsdk)
+            {
+                canonCameraBackend ??= new CanonEdsdkCameraService(canonEdsdkCaptureTimeoutMs);
+            }
+
+            var service = new BoothCameraCaptureService(
                 cameraPreview,
                 cameraCaptureSize.x,
                 cameraCaptureSize.y,
+                requestedFps: useCanonEdsdk ? Mathf.Clamp(canonEdsdkPreviewFramesPerSecond, 1, 15) : 30,
                 preferredDeviceNames: runtime?.PreferredCameraDeviceNames,
                 preferredDeviceDiscoveryTimeoutSeconds: runtime?.PreferredCameraDeviceDiscoveryTimeoutSeconds ?? 3,
                 gPhoto2CaptureService: gPhoto2Capture,
                 useGPhoto2Preview: useGPhoto2Preview,
                 gPhoto2PreviewFramesPerSecond: gPhoto2PreviewFramesPerSecond,
-                gPhoto2PreviewFailureFallbackEnabled: gPhoto2PreviewFailureFallbackEnabled);
+                gPhoto2PreviewFailureFallbackEnabled: gPhoto2PreviewFailureFallbackEnabled,
+                canonCameraBackend: canonCameraBackend,
+                useCanonEdsdk: useCanonEdsdk,
+                allowCameraFallback: allowCanonCameraFallback,
+                canonPreviewUiFramesPerSecond: canonEdsdkPreviewUiFramesPerSecond);
+            service.PreviewFailed += HandleCameraPreviewFailed;
+            service.PreviewFrameReceived += jpegMotionRecorder.AcceptFrame;
+            return service;
+        }
+
+        private void HandleCameraPreviewFailed(Exception exception)
+        {
+            if (!useCanonEdsdk || currentScreen != BoothUiScreenId.Capture)
+            {
+                return;
+            }
+
+            cameraPreviewFailureException = exception;
+            Debug.LogError($"Canon camera preview stopped unexpectedly: {exception}");
+            ShowError($"Canon camera disconnected or Live View failed: {exception.Message}");
+        }
+
+        private void ThrowIfCameraPreviewFailed()
+        {
+            if (cameraPreviewFailureException != null)
+            {
+                throw new InvalidOperationException(
+                    $"Canon camera disconnected or Live View failed: {cameraPreviewFailureException.Message}",
+                    cameraPreviewFailureException);
+            }
         }
 
         private GPhoto2CameraCaptureService GetOrCreateGPhoto2CaptureService()
@@ -2799,7 +2878,8 @@ namespace PhotoBooth.Booth.Frontend
 
         private bool ShouldAttemptGPhoto2StillCapture()
         {
-            return useGPhoto2RawCapture
+            return !useCanonEdsdk
+                   && useGPhoto2RawCapture
                    && cameraCaptureService != null
                    && !IsBlockedGPhoto2StillCaptureDevice(cameraCaptureService.CurrentDeviceName);
         }
@@ -2893,6 +2973,12 @@ namespace PhotoBooth.Booth.Frontend
             var framePaths = new List<string>();
             var framesPerSecond = Mathf.Clamp(motionClipFramesPerSecond, 1, 15);
             var durationSeconds = Mathf.Max(1, countdownSeconds);
+            var useCanonJpegMotion = cameraCaptureService?.IsUsingCanonEdsdk == true;
+            if (useCanonJpegMotion)
+            {
+                jpegMotionRecorder.BeginSegment(framesPerSecond, durationSeconds);
+            }
+
             var frameInterval = 1f / framesPerSecond;
             var countdownDeadline = Time.realtimeSinceStartup + durationSeconds;
             var nextFrameAt = Time.realtimeSinceStartup;
@@ -2903,6 +2989,7 @@ namespace PhotoBooth.Booth.Frontend
             while (Time.realtimeSinceStartup < countdownDeadline)
             {
                 flowCancellation.Token.ThrowIfCancellationRequested();
+                ThrowIfCameraPreviewFailed();
                 var remaining = Mathf.Max(1, Mathf.CeilToInt(countdownDeadline - Time.realtimeSinceStartup));
                 if (remaining != lastRemaining)
                 {
@@ -2910,8 +2997,9 @@ namespace PhotoBooth.Booth.Frontend
                     lastRemaining = remaining;
                 }
 
-                if (Time.realtimeSinceStartup >= nextFrameAt)
+                if (!useCanonJpegMotion && Time.realtimeSinceStartup >= nextFrameAt)
                 {
+                    ThrowIfCameraPreviewFailed();
                     var outputIndex = Mathf.Max(0, startingFrameIndex + framePaths.Count);
                     framePaths.Add(cameraCaptureService.CaptureMotionFramePng(
                         currentJob.Paths.RawDirectory,
@@ -2921,6 +3009,20 @@ namespace PhotoBooth.Booth.Frontend
                 }
 
                 await Task.Yield();
+            }
+
+            if (useCanonJpegMotion)
+            {
+                var segment = jpegMotionRecorder.CompleteSegment(
+                    currentJob.Paths.RawDirectory,
+                    startingFrameIndex,
+                    flowCancellation.Token);
+                return new BoothCaptureClip
+                {
+                    FramePaths = segment.FramePaths,
+                    FrameRate = framesPerSecond,
+                    VideoPath = null
+                };
             }
 
             return new BoothCaptureClip
@@ -2940,6 +3042,15 @@ namespace PhotoBooth.Booth.Frontend
         private async Task<string> CaptureRawImageAsync(int captureNumber, CancellationToken cancellationToken)
         {
             var safeCaptureNumber = Mathf.Max(1, captureNumber);
+            if (cameraCaptureService != null && cameraCaptureService.IsUsingCanonEdsdk)
+            {
+                SetStatus("Capturing with Canon camera...");
+                return await cameraCaptureService.CaptureCanonStillAsync(
+                    currentJob.Paths.RawDirectory,
+                    $"capture_{safeCaptureNumber:00}.jpg",
+                    cancellationToken);
+            }
+
             var useGPhoto2StillCapture = ShouldAttemptGPhoto2StillCapture() && await CheckGPhoto2CameraReadyAsync(cancellationToken);
             Debug.Log($"PhotoBooth still capture path: source={(useGPhoto2StillCapture ? "gphoto2" : "preview")}, device={cameraCaptureService?.CurrentDeviceName ?? "(unknown)"}, previewSource={cameraCaptureService?.CurrentDeviceSource ?? "none"}");
 
@@ -3258,9 +3369,15 @@ namespace PhotoBooth.Booth.Frontend
 
         private void ResetCaptureSequence(bool resetReviewRetake = true)
         {
+            jpegMotionRecorder.Reset();
             if (!string.IsNullOrWhiteSpace(currentJob?.Paths?.RawDirectory) && Directory.Exists(currentJob.Paths.RawDirectory))
             {
                 foreach (var motionFramePath in Directory.GetFiles(currentJob.Paths.RawDirectory, "motion_*.png"))
+                {
+                    File.Delete(motionFramePath);
+                }
+
+                foreach (var motionFramePath in Directory.GetFiles(currentJob.Paths.RawDirectory, "motion_*.jpg"))
                 {
                     File.Delete(motionFramePath);
                 }
@@ -3773,13 +3890,21 @@ namespace PhotoBooth.Booth.Frontend
             }
 
             var outputPath = Path.Combine(currentJob.Paths.RawDirectory, "motion.mp4");
-            var result = await motionEncoder.EncodeAsync(ffmpegExecutablePath, framePaths, outputPath, frameRate, ffmpegTimeoutSeconds, cancellationToken);
+            var outputFrameRate = useCanonEdsdk ? 30f : frameRate;
+            var result = await motionEncoder.EncodeAsync(
+                ffmpegExecutablePath,
+                framePaths,
+                outputPath,
+                frameRate,
+                outputFrameRate,
+                ffmpegTimeoutSeconds,
+                cancellationToken);
             if (result.Success)
             {
                 return result.VideoPath;
             }
 
-            Debug.LogWarning($"Motion MP4 encoding failed; keeping PNG frame clip fallback. {result.ErrorMessage}");
+            Debug.LogWarning($"Motion MP4 encoding failed; keeping image frame clip fallback. {result.ErrorMessage}");
             SetStatus("Motion video fallback: frame clip will be used.");
             return null;
         }
@@ -4439,12 +4564,22 @@ namespace PhotoBooth.Booth.Frontend
             var labels = root.GetComponentsInChildren<TextMeshProUGUI>(true);
             foreach (var label in labels)
             {
-                if (label != null && string.Equals(label.name, "From", StringComparison.OrdinalIgnoreCase))
+                if (label != null
+                    && (string.Equals(label.name, "From", StringComparison.OrdinalIgnoreCase)
+                        || IsBoardingPassPassengerNameLabel(label)))
                 {
                     label.SetText(value);
                     label.gameObject.SetActive(!string.IsNullOrWhiteSpace(value));
                 }
             }
+        }
+
+        private static bool IsBoardingPassPassengerNameLabel(TextMeshProUGUI label)
+        {
+            return label != null
+                   && string.Equals(label.name, "Text (TMP)", StringComparison.OrdinalIgnoreCase)
+                   && label.transform.parent != null
+                   && string.Equals(label.transform.parent.name, "BoardingPassArt", StringComparison.OrdinalIgnoreCase);
         }
 
         private void SetPreviewFramePassengerNameTexts(string value)
@@ -4979,7 +5114,39 @@ namespace PhotoBooth.Booth.Frontend
 
         private void ShowError(string message)
         {
-            SwitchScreen(BoothUiScreenId.Error, $"Error: {message}");
+            var displayMessage = $"ERROR\n{message}";
+            SwitchScreen(BoothUiScreenId.Error, displayMessage);
+            EnsureErrorMessageUi();
+            errorMessageText?.SetText(displayMessage);
+        }
+
+        private void EnsureErrorMessageUi()
+        {
+            errorMessageText ??= FindTextInScreen(BoothUiScreenId.Error, "ErrorMessageText", "ErrorMessage");
+            if (errorMessageText != null)
+            {
+                return;
+            }
+
+            var errorRoot = FindScreenRoot(BoothUiScreenId.Error);
+            if (errorRoot == null)
+            {
+                return;
+            }
+
+            errorMessageText = CreateText(
+                errorRoot.transform,
+                "ErrorMessageText",
+                string.Empty,
+                28,
+                TextAlignmentOptions.Center,
+                new Vector2(0.5f, 0.54f),
+                new Vector2(0.5f, 0.54f),
+                Vector2.zero,
+                new Vector2(820f, 420f));
+            errorMessageText.color = new Color(0.08f, 0.08f, 0.08f, 0.95f);
+            errorMessageText.textWrappingMode = TextWrappingModes.Normal;
+            errorMessageText.raycastTarget = false;
         }
 
         private void SetStatus(string message)
@@ -5514,21 +5681,45 @@ namespace PhotoBooth.Booth.Frontend
         private async Task EnsureCapturePreviewStartedAsync()
         {
             ApplyMonsterFrameSelection(selectedThemeUsesMonsterFrame);
+
             if (isCaptureReviewing || isStartingCapturePreview || currentScreen != BoothUiScreenId.Capture)
             {
                 return;
             }
 
             isStartingCapturePreview = true;
+
             try
             {
                 Debug.Log("PhotoBooth capture preview start requested.");
+
                 cameraCaptureService ??= CreateCameraCaptureService();
+
+                // สำคัญ: ถ้า preview รันอยู่แล้ว ห้าม StartPreviewAsync ซ้ำ
+                if (cameraCaptureService.IsPreviewing)
+                {
+                    Debug.Log($"PhotoBooth capture preview already running: device={cameraCaptureService.CurrentDeviceName}, source={cameraCaptureService.CurrentDeviceSource}");
+                    ApplyHd33PreviewRotation(capturing: false);
+                    SetStatus(await BuildCaptureStatusMessageAsync(
+                        BuildCaptureReadyMessage(),
+                        flowCancellation?.Token ?? CancellationToken.None
+                    ));
+                    await StartArPreviewAsync(flowCancellation?.Token ?? CancellationToken.None);
+                    return;
+                }
+
                 await WakeCameraDeviceAsync(flowCancellation?.Token ?? CancellationToken.None);
                 await cameraCaptureService.StartPreviewAsync(flowCancellation?.Token ?? CancellationToken.None);
+
                 ApplyHd33PreviewRotation(capturing: false);
+
                 Debug.Log($"PhotoBooth capture preview running: {cameraCaptureService.IsPreviewing}, device={cameraCaptureService.CurrentDeviceName}, source={cameraCaptureService.CurrentDeviceSource}, texture={cameraCaptureService.CurrentWidth}x{cameraCaptureService.CurrentHeight}");
-                SetStatus(await BuildCaptureStatusMessageAsync(BuildCaptureReadyMessage(), flowCancellation?.Token ?? CancellationToken.None));
+
+                SetStatus(await BuildCaptureStatusMessageAsync(
+                    BuildCaptureReadyMessage(),
+                    flowCancellation?.Token ?? CancellationToken.None
+                ));
+
                 await StartArPreviewAsync(flowCancellation?.Token ?? CancellationToken.None);
             }
             catch (Exception exception)
@@ -7231,6 +7422,7 @@ namespace PhotoBooth.Booth.Frontend
         private void BindUiEvents()
         {
             EnsureVoucherEntryScreen();
+            EnsureErrorMessageUi();
             cameraPreview ??= FindRawImageInScreen(BoothUiScreenId.Capture, "CameraPreview") ?? FindRawImage("CameraPreview");
             captureCountText ??= FindText("CaptureCount");
             captureForegroundOverlay ??= FindImage("CaptureForegroundOverlay");
@@ -8451,6 +8643,58 @@ namespace PhotoBooth.Booth.Frontend
             return loaded;
         }
 
+        private void DisposeCameraBackends()
+        {
+            if (cameraBackendsDisposed)
+            {
+                return;
+            }
+
+            cameraBackendsDisposed = true;
+
+            try
+            {
+                cameraCaptureService?.StopPreview();
+            }
+            catch (Exception exception)
+            {
+                Debug.LogWarning($"Camera preview stop during cleanup failed: {exception.Message}");
+            }
+
+            try
+            {
+                cameraCaptureService?.Dispose();
+            }
+            catch (Exception exception)
+            {
+                Debug.LogWarning($"Camera capture service dispose failed: {exception.Message}");
+            }
+            finally
+            {
+                cameraCaptureService = null;
+            }
+
+            try
+            {
+                canonCameraBackend?.Dispose();
+            }
+            catch (Exception exception)
+            {
+                Debug.LogWarning($"Canon backend dispose failed: {exception.Message}");
+            }
+            finally
+            {
+                canonCameraBackend = null;
+            }
+
+            gPhoto2CaptureService = null;
+        }
+
+        private void OnApplicationQuit()
+        {
+            DisposeCameraBackends();
+        }
+
         private void OnDestroy()
         {
             TrackScreenExit();
@@ -8459,6 +8703,7 @@ namespace PhotoBooth.Booth.Frontend
             StopVoucherScanner("destroy");
             StopVoucherRemoteScanSession(null);
             ClearVoucherRemoteQrTexture();
+            DisposeCameraBackends();
             cameraCaptureService?.Dispose();
             StopArPreview();
             arTrackingProvider?.Dispose();

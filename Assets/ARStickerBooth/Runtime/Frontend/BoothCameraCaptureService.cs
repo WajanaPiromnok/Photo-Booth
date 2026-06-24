@@ -50,7 +50,8 @@ namespace PhotoBooth.Booth.Frontend
             None = 0,
             GPhoto2Preview = 1,
             WebCamTexture = 2,
-            Simulated = 3
+            Simulated = 3,
+            CanonEdsdk = 4
         }
 
         private readonly RawImage previewTarget;
@@ -63,14 +64,26 @@ namespace PhotoBooth.Booth.Frontend
         private readonly int gPhoto2PreviewFramesPerSecond;
         private readonly bool gPhoto2PreviewFailureFallbackEnabled;
         private readonly GPhoto2CameraCaptureService gPhoto2CaptureService;
+        private readonly ICanonCameraBackend canonCameraBackend;
+        private readonly bool useCanonEdsdk;
+        private readonly bool allowCameraFallback;
+        private readonly int canonPreviewUiFramesPerSecond;
+        private readonly SemaphoreSlim previewLifecycleLock = new(1, 1);
 
         private WebCamTexture cameraTexture;
         private Texture2D simulatedCameraTexture;
         private Texture2D gPhoto2PreviewTexture;
         private CancellationTokenSource gPhoto2PreviewLoopCancellation;
         private Task gPhoto2PreviewLoopTask;
+        private CancellationTokenSource canonPreviewLoopCancellation;
+        private Task canonPreviewLoopTask;
         private PreviewBackendKind currentPreviewBackend = PreviewBackendKind.None;
         private bool gPhoto2PreviewPaused;
+        private double lastCanonPreviewUiUpdateAt;
+        private byte[] latestCanonPreviewBytes;
+        private int latestCanonPreviewVersion;
+        private int appliedCanonPreviewVersion;
+        private Exception pendingCanonPreviewFailure;
         private string currentDeviceSource = "none";
 
         public BoothCameraCaptureService(
@@ -83,7 +96,11 @@ namespace PhotoBooth.Booth.Frontend
             GPhoto2CameraCaptureService gPhoto2CaptureService = null,
             bool useGPhoto2Preview = false,
             int gPhoto2PreviewFramesPerSecond = 3,
-            bool gPhoto2PreviewFailureFallbackEnabled = true)
+            bool gPhoto2PreviewFailureFallbackEnabled = true,
+            ICanonCameraBackend canonCameraBackend = null,
+            bool useCanonEdsdk = false,
+            bool allowCameraFallback = true,
+            int canonPreviewUiFramesPerSecond = 10)
         {
             this.previewTarget = previewTarget;
             this.requestedWidth = Math.Max(320, requestedWidth);
@@ -95,11 +112,17 @@ namespace PhotoBooth.Booth.Frontend
             this.useGPhoto2Preview = useGPhoto2Preview;
             this.gPhoto2PreviewFramesPerSecond = Mathf.Clamp(gPhoto2PreviewFramesPerSecond, 1, 30);
             this.gPhoto2PreviewFailureFallbackEnabled = gPhoto2PreviewFailureFallbackEnabled;
+            this.canonCameraBackend = canonCameraBackend;
+            this.useCanonEdsdk = useCanonEdsdk;
+            this.allowCameraFallback = allowCameraFallback;
+            this.canonPreviewUiFramesPerSecond = Mathf.Clamp(canonPreviewUiFramesPerSecond, 1, 15);
         }
 
         public bool IsPreviewing => (cameraTexture != null && cameraTexture.isPlaying) || gPhoto2PreviewTexture != null || simulatedCameraTexture != null;
 
         public bool IsUsingGPhoto2Preview => currentPreviewBackend == PreviewBackendKind.GPhoto2Preview;
+
+        public bool IsUsingCanonEdsdk => currentPreviewBackend == PreviewBackendKind.CanonEdsdk;
 
         public int CurrentWidth => cameraTexture != null && cameraTexture.width > 16
             ? cameraTexture.width
@@ -127,33 +150,58 @@ namespace PhotoBooth.Booth.Frontend
 
         public string CurrentDeviceSource => currentDeviceSource;
 
+        public event Action<Exception> PreviewFailed;
+        public event Action<CanonPreviewFrame> PreviewFrameReceived;
+
         public async Task StartPreviewAsync(CancellationToken cancellationToken = default)
         {
-            if (IsPreviewing)
+            await previewLifecycleLock.WaitAsync(cancellationToken);
+            try
             {
-                return;
-            }
-
-            if (useGPhoto2Preview)
-            {
-                try
+                if (IsPreviewing)
                 {
-                    if (await TryStartGPhoto2PreviewAsync(cancellationToken))
+                    return;
+                }
+
+                if (useCanonEdsdk)
+                {
+                    try
                     {
+                        await StartCanonPreviewAsync(cancellationToken);
                         return;
                     }
+                    catch when (allowCameraFallback)
+                    {
+                        await StopCanonPreviewAsync(CancellationToken.None);
+                        Debug.LogWarning("Canon EDSDK preview unavailable; using configured fallback camera.");
+                    }
                 }
-                catch (OperationCanceledException)
-                {
-                    throw;
-                }
-                catch (Exception exception)
-                {
-                    Debug.LogWarning($"gPhoto2 preview unavailable; falling back to webcam preview. {exception.Message}");
-                }
-            }
 
-            await StartWebCamOrSimulatedPreviewAsync(cancellationToken);
+                if (useGPhoto2Preview)
+                {
+                    try
+                    {
+                        if (await TryStartGPhoto2PreviewAsync(cancellationToken))
+                        {
+                            return;
+                        }
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
+                    }
+                    catch (Exception exception)
+                    {
+                        Debug.LogWarning($"gPhoto2 preview unavailable; falling back to webcam preview. {exception.Message}");
+                    }
+                }
+
+                await StartWebCamOrSimulatedPreviewAsync(cancellationToken);
+            }
+            finally
+            {
+                previewLifecycleLock.Release();
+            }
         }
 
         public async Task PausePreviewAsync(CancellationToken cancellationToken = default)
@@ -171,6 +219,30 @@ namespace PhotoBooth.Booth.Frontend
         {
             gPhoto2PreviewPaused = false;
         }
+
+        public Task<string> CaptureCanonStillAsync(
+            string outputDirectory,
+            string fileName,
+            CancellationToken cancellationToken = default)
+        {
+            if (!IsUsingCanonEdsdk || canonCameraBackend == null)
+            {
+                throw new InvalidOperationException("Canon EDSDK camera is not active.");
+            }
+
+            return canonCameraBackend.CaptureStillAsync(outputDirectory, fileName, cancellationToken);
+        }
+
+        public Task AutoFocusCanonAsync(CancellationToken cancellationToken = default)
+        {
+            if (!IsUsingCanonEdsdk || canonCameraBackend == null)
+            {
+                return Task.CompletedTask;
+            }
+
+            return canonCameraBackend.AutoFocusAsync(cancellationToken);
+        }
+
 
         public Texture2D CaptureCurrentFrameTexture()
         {
@@ -276,9 +348,22 @@ namespace PhotoBooth.Booth.Frontend
 
         public void StopPreview()
         {
+            StopPreviewTextures();
+            _ = CloseCanonSessionSafelyAsync();
+        }
+
+        public async Task StopPreviewAsync(CancellationToken cancellationToken = default)
+        {
+            StopPreviewTextures();
+            await StopCanonPreviewAsync(cancellationToken);
+        }
+
+        private void StopPreviewTextures()
+        {
             var stoppedDeviceName = CurrentDeviceName;
             var wasPreviewing = IsPreviewing;
             StopGPhoto2Preview();
+            StopCanonPreviewLoop();
             if (previewTarget != null)
             {
                 previewTarget.texture = null;
@@ -297,6 +382,18 @@ namespace PhotoBooth.Booth.Frontend
             if (wasPreviewing)
             {
                 Debug.Log($"PhotoBooth camera stopped: device={stoppedDeviceName ?? "(unknown)"}");
+            }
+        }
+
+        private async Task CloseCanonSessionSafelyAsync()
+        {
+            try
+            {
+                await StopCanonPreviewAsync(CancellationToken.None);
+            }
+            catch (Exception exception)
+            {
+                Debug.LogWarning($"Canon camera cleanup failed: {exception.Message}");
             }
         }
 
@@ -460,6 +557,159 @@ namespace PhotoBooth.Booth.Frontend
             }
 
             return false;
+        }
+
+        private async Task StartCanonPreviewAsync(CancellationToken cancellationToken)
+        {
+            if (canonCameraBackend == null)
+            {
+                throw new InvalidOperationException("Canon EDSDK backend is not configured.");
+            }
+
+            currentPreviewBackend = PreviewBackendKind.CanonEdsdk;
+            currentDeviceSource = "canon-edsdk";
+            gPhoto2PreviewTexture ??= CreatePreviewTexture();
+            await canonCameraBackend.StartLiveViewAsync(cancellationToken);
+            CurrentDeviceName = string.IsNullOrWhiteSpace(canonCameraBackend.CameraName)
+                ? "Canon EDSDK Camera"
+                : canonCameraBackend.CameraName;
+
+            canonPreviewLoopCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            var firstFrameReady = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            canonPreviewLoopTask = Task.Run(
+                () => RunCanonPreviewLoopAsync(firstFrameReady, canonPreviewLoopCancellation.Token),
+                CancellationToken.None);
+
+            var completed = await Task.WhenAny(firstFrameReady.Task, Task.Delay(5000, cancellationToken));
+            if (completed != firstFrameReady.Task)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                throw new InvalidOperationException(
+                    "Canon Live View did not become ready within 5 seconds.",
+                    Interlocked.Exchange(ref pendingCanonPreviewFailure, null));
+            }
+
+            await firstFrameReady.Task;
+            UpdateCanonPreviewTexture(force: true);
+            ApplyPreviewTexture(gPhoto2PreviewTexture, flipHorizontally: false);
+            Debug.Log($"PhotoBooth Canon preview ready: device={CurrentDeviceName}, texture={CurrentWidth}x{CurrentHeight}");
+        }
+
+        private async Task RunCanonPreviewLoopAsync(
+            TaskCompletionSource<bool> firstFrameReady,
+            CancellationToken cancellationToken)
+        {
+            var delayMs = Math.Max(1, (int)Math.Round(1000d / Math.Max(1, Math.Min(requestedFps, 30))));
+            var consecutiveFailures = 0;
+            while (!cancellationToken.IsCancellationRequested && currentPreviewBackend == PreviewBackendKind.CanonEdsdk)
+            {
+                try
+                {
+                    var startedAt = BoothJpegMotionRecorder.NowSeconds;
+                    var bytes = await canonCameraBackend.DownloadLiveViewFrameAsync(cancellationToken).ConfigureAwait(false);
+                    if (bytes != null
+                        && bytes.Length > 0
+                        && currentPreviewBackend == PreviewBackendKind.CanonEdsdk)
+                    {
+                        var timestamp = BoothJpegMotionRecorder.NowSeconds;
+                        Interlocked.Exchange(ref latestCanonPreviewBytes, bytes);
+                        Interlocked.Increment(ref latestCanonPreviewVersion);
+                        PreviewFrameReceived?.Invoke(new CanonPreviewFrame
+                        {
+                            JpegBytes = bytes,
+                            TimestampSeconds = timestamp
+                        });
+                        firstFrameReady.TrySetResult(true);
+                    }
+
+                    consecutiveFailures = 0;
+                    var elapsedMs = (BoothJpegMotionRecorder.NowSeconds - startedAt) * 1000d;
+                    var remainingDelayMs = Math.Max(1, delayMs - (int)Math.Round(elapsedMs));
+                    await Task.Delay(remainingDelayMs, cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    firstFrameReady.TrySetCanceled();
+                    break;
+                }
+                catch (Exception exception)
+                {
+                    consecutiveFailures++;
+                    if (consecutiveFailures >= 3)
+                    {
+                        Interlocked.Exchange(ref pendingCanonPreviewFailure, exception);
+                        firstFrameReady.TrySetException(exception);
+                        break;
+                    }
+
+                    await Task.Delay(100, cancellationToken).ConfigureAwait(false);
+                }
+            }
+        }
+
+        public void UpdateCanonPreviewTexture(bool force = false)
+        {
+            var failure = Interlocked.Exchange(ref pendingCanonPreviewFailure, null);
+            if (failure != null)
+            {
+                Debug.LogError($"Canon EDSDK Live View failed: {failure.Message}");
+                PreviewFailed?.Invoke(failure);
+            }
+
+            if (currentPreviewBackend != PreviewBackendKind.CanonEdsdk || gPhoto2PreviewTexture == null)
+            {
+                return;
+            }
+
+            var version = Volatile.Read(ref latestCanonPreviewVersion);
+            if (version == 0 || (!force && version == appliedCanonPreviewVersion))
+            {
+                return;
+            }
+
+            var timestamp = BoothJpegMotionRecorder.NowSeconds;
+            var uiInterval = 1d / canonPreviewUiFramesPerSecond;
+            if (!force && timestamp - lastCanonPreviewUiUpdateAt < uiInterval)
+            {
+                return;
+            }
+
+            var bytes = Volatile.Read(ref latestCanonPreviewBytes);
+            if (bytes == null || bytes.Length == 0)
+            {
+                return;
+            }
+
+            lastCanonPreviewUiUpdateAt = timestamp;
+            if (ImageConversion.LoadImage(gPhoto2PreviewTexture, bytes, false))
+            {
+                appliedCanonPreviewVersion = version;
+            }
+        }
+
+        private void StopCanonPreviewLoop()
+        {
+            canonPreviewLoopCancellation?.Cancel();
+            canonPreviewLoopCancellation?.Dispose();
+            canonPreviewLoopCancellation = null;
+            canonPreviewLoopTask = null;
+            Interlocked.Exchange(ref latestCanonPreviewBytes, null);
+            Interlocked.Exchange(ref pendingCanonPreviewFailure, null);
+            latestCanonPreviewVersion = 0;
+            appliedCanonPreviewVersion = 0;
+            lastCanonPreviewUiUpdateAt = 0d;
+        }
+
+        private async Task StopCanonPreviewAsync(CancellationToken cancellationToken)
+        {
+            StopCanonPreviewLoop();
+            if (canonCameraBackend == null)
+            {
+                return;
+            }
+
+            await canonCameraBackend.StopLiveViewAsync(cancellationToken);
+            await canonCameraBackend.CloseSessionAsync(cancellationToken);
         }
 
         private async Task RunGPhoto2PreviewLoopAsync(CancellationToken cancellationToken)
@@ -862,7 +1112,30 @@ namespace PhotoBooth.Booth.Frontend
 
         public void Dispose()
         {
-            StopPreview();
+            StopPreviewTextures();
+            _ = DisposeCanonBackendSafelyAsync();
+        }
+
+        private async Task DisposeCanonBackendSafelyAsync()
+        {
+            if (canonCameraBackend == null)
+            {
+                return;
+            }
+
+            try
+            {
+                await canonCameraBackend.StopLiveViewAsync(CancellationToken.None);
+                await canonCameraBackend.CloseSessionAsync(CancellationToken.None);
+            }
+            catch (Exception exception)
+            {
+                Debug.LogWarning($"Canon camera disposal cleanup failed: {exception.Message}");
+            }
+            finally
+            {
+                canonCameraBackend.Dispose();
+            }
         }
     }
 }

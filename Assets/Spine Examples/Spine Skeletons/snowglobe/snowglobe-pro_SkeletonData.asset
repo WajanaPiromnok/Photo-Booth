@@ -3,8 +3,9 @@
 --- !u!114 &11400000
 MonoBehaviour:
   m_ObjectHideFlags: 0
-  m_PrefabParentObject: {fileID: 0}
-  m_PrefabInternal: {fileID: 0}
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 0}
   m_Enabled: 1
   m_EditorHideFlags: 0
@@ -23,6 +24,8 @@ MonoBehaviour:
     multiplyMaterials:
     - pageName: snowglobe.png
       material: {fileID: 2100000, guid: 8fe6588f222e36643befb8dc4dd42d31, type: 2}
+    - pageName: snowglobe_2.png
+      material: {fileID: 2100000, guid: e85ae0548a0fe0041a1b7d9c9d92a41e, type: 2}
     screenMaterials: []
   skeletonDataModifiers: []
   fromAnimation: []

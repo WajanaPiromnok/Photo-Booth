@@ -13,18 +13,20 @@ namespace PhotoBooth.Booth.Frontend
             string ffmpegPath,
             string[] framePaths,
             string outputPath,
-            float frameRate,
+            float sourceFrameRate,
+            float outputFrameRate,
             int timeoutSeconds,
             CancellationToken cancellationToken = default)
         {
-            return Task.Run(() => Encode(ffmpegPath, framePaths, outputPath, frameRate, timeoutSeconds, cancellationToken), cancellationToken);
+            return Task.Run(() => Encode(ffmpegPath, framePaths, outputPath, sourceFrameRate, outputFrameRate, timeoutSeconds, cancellationToken), cancellationToken);
         }
 
         private static BoothMotionVideoResult Encode(
             string ffmpegPath,
             string[] framePaths,
             string outputPath,
-            float frameRate,
+            float sourceFrameRate,
+            float outputFrameRate,
             int timeoutSeconds,
             CancellationToken cancellationToken)
         {
@@ -42,9 +44,11 @@ namespace PhotoBooth.Booth.Frontend
             var executable = string.IsNullOrWhiteSpace(ffmpegPath) ? "ffmpeg" : ffmpegPath.Trim();
             Directory.CreateDirectory(Path.GetDirectoryName(outputPath) ?? Path.GetDirectoryName(firstFrame));
 
-            var inputPattern = Path.Combine(Path.GetDirectoryName(firstFrame), "motion_%03d.png");
-            var fps = Math.Max(1f, frameRate).ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
-            var arguments = $"-y -framerate {fps} -i {Quote(inputPattern)} -vf \"scale=1280:-2:force_original_aspect_ratio=decrease,format=yuv420p\" -c:v libx264 -preset veryfast -crf 23 -movflags +faststart {Quote(outputPath)}";
+            var extension = Path.GetExtension(firstFrame);
+            var inputPattern = Path.Combine(Path.GetDirectoryName(firstFrame), $"motion_%03d{extension}");
+            var sourceFps = Math.Max(1f, sourceFrameRate).ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
+            var outputFps = Math.Max(1f, outputFrameRate).ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
+            var arguments = $"-y -framerate {sourceFps} -i {Quote(inputPattern)} -vf \"fps={outputFps},scale=1280:-2:force_original_aspect_ratio=decrease,format=yuv420p\" -r {outputFps} -c:v libx264 -preset veryfast -crf 23 -movflags +faststart {Quote(outputPath)}";
 
             try
             {
