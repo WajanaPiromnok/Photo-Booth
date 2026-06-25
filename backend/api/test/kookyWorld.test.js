@@ -29,24 +29,24 @@ test("livephoto rotates 123, 231, 312 for two rounds", () => {
 
 test("aggregate Unity motion frames split into three capture segments", () => {
   const frames = Array.from({ length: 9 }, (_, index) => ({
-    original_file_name: `motion_${String(index).padStart(3, "0")}.png`,
-    remote_key: `motion_${String(index).padStart(3, "0")}.png`
+    original_file_name: `motion_${String(index).padStart(3, "0")}.jpg`,
+    remote_key: `motion_${String(index).padStart(3, "0")}.jpg`
   }));
   const groups = buildCountdownSlotFrameAssets(frames);
   assert.deepEqual(groups.slice(0, 3).map((group) => group.map((frame) => frame.original_file_name)), [
-    ["motion_000.png", "motion_001.png", "motion_002.png"],
-    ["motion_003.png", "motion_004.png", "motion_005.png"],
-    ["motion_006.png", "motion_007.png", "motion_008.png"]
+    ["motion_000.jpg", "motion_001.jpg", "motion_002.jpg"],
+    ["motion_003.jpg", "motion_004.jpg", "motion_005.jpg"],
+    ["motion_006.jpg", "motion_007.jpg", "motion_008.jpg"]
   ]);
 });
 
 test("Kooky countdown video infers frame duration from uploaded motion frame count", () => {
-  const frames = Array.from({ length: 450 }, (_, index) => ({
+  const frames = Array.from({ length: 360 }, (_, index) => ({
     original_file_name: `motion_${String(index).padStart(3, "0")}.png`,
     remote_key: `motion_${String(index).padStart(3, "0")}.png`
   }));
 
-  assert.equal(resolveKookyWorldCountdownFrameDurationSeconds(frames), 1 / 30);
+  assert.equal(resolveKookyWorldCountdownFrameDurationSeconds(frames), 1 / 24);
 });
 
 test("Kooky countdown video keeps old 4fps motion uploads at real speed", () => {

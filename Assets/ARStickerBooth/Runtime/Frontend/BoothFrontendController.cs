@@ -3012,7 +3012,7 @@ namespace PhotoBooth.Booth.Frontend
                 {
                     ThrowIfCameraPreviewFailed();
                     var outputIndex = Mathf.Max(0, startingFrameIndex + framePaths.Count);
-                    framePaths.Add(cameraCaptureService.CaptureMotionFramePng(
+                    framePaths.Add(cameraCaptureService.CaptureMotionFrameJpeg(
                         currentJob.Paths.RawDirectory,
                         outputIndex,
                         ApplyCaptureEffects));

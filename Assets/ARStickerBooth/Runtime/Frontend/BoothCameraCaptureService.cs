@@ -12,6 +12,10 @@ namespace PhotoBooth.Booth.Frontend
     public sealed class BoothCameraCaptureService : IDisposable
     {
         private const int GPhoto2PreviewFailureThreshold = 3;
+        private const int MotionFrameJpegTargetBytes = 100 * 1024;
+        private const int MotionFrameJpegMaxWidth = 960;
+        private const int MotionFrameJpegMaxQuality = 72;
+        private const int MotionFrameJpegMinQuality = 45;
         private const string ObsbotDeviceName = "OBSBOT";
         private static readonly string[] CaptureCardNameParts =
         {
@@ -319,6 +323,11 @@ namespace PhotoBooth.Booth.Frontend
             return CaptureCurrentFramePng(outputDirectory, $"motion_{Math.Max(0, frameIndex):000}.png", beforeEncode);
         }
 
+        public string CaptureMotionFrameJpeg(string outputDirectory, int frameIndex, Action<Texture2D> beforeEncode)
+        {
+            return CaptureCurrentFrameJpeg(outputDirectory, $"motion_{Math.Max(0, frameIndex):000}.jpg", beforeEncode);
+        }
+
         private string CaptureCurrentFramePng(string outputDirectory, string fileName, Action<Texture2D> beforeEncode)
         {
             EnsureReady();
@@ -336,6 +345,79 @@ namespace PhotoBooth.Booth.Frontend
             {
                 UnityEngine.Object.Destroy(texture);
             }
+        }
+
+        private string CaptureCurrentFrameJpeg(string outputDirectory, string fileName, Action<Texture2D> beforeEncode)
+        {
+            EnsureReady();
+
+            Directory.CreateDirectory(outputDirectory);
+            var outputPath = Path.Combine(outputDirectory, fileName);
+            var texture = CaptureCurrentFrameTexture();
+            Texture2D encodedTexture = null;
+            try
+            {
+                beforeEncode?.Invoke(texture);
+                encodedTexture = ResizeMotionFrameForUpload(texture);
+                File.WriteAllBytes(outputPath, EncodeMotionFrameJpeg(encodedTexture));
+                return outputPath;
+            }
+            finally
+            {
+                if (encodedTexture != null && encodedTexture != texture)
+                {
+                    UnityEngine.Object.Destroy(encodedTexture);
+                }
+
+                UnityEngine.Object.Destroy(texture);
+            }
+        }
+
+        private static Texture2D ResizeMotionFrameForUpload(Texture2D source)
+        {
+            if (source == null || source.width <= MotionFrameJpegMaxWidth)
+            {
+                return source;
+            }
+
+            var targetWidth = MotionFrameJpegMaxWidth;
+            var targetHeight = Mathf.Max(1, Mathf.RoundToInt(source.height * (targetWidth / (float)source.width)));
+            var previousActive = RenderTexture.active;
+            var renderTexture = RenderTexture.GetTemporary(targetWidth, targetHeight, 0, RenderTextureFormat.ARGB32);
+            try
+            {
+                Graphics.Blit(source, renderTexture);
+                RenderTexture.active = renderTexture;
+                var resized = new Texture2D(targetWidth, targetHeight, TextureFormat.RGB24, false);
+                resized.ReadPixels(new Rect(0, 0, targetWidth, targetHeight), 0, 0);
+                resized.Apply(false, false);
+                return resized;
+            }
+            finally
+            {
+                RenderTexture.active = previousActive;
+                RenderTexture.ReleaseTemporary(renderTexture);
+            }
+        }
+
+        private static byte[] EncodeMotionFrameJpeg(Texture2D texture)
+        {
+            byte[] smallest = null;
+            for (var quality = MotionFrameJpegMaxQuality; quality >= MotionFrameJpegMinQuality; quality -= 6)
+            {
+                var bytes = ImageConversion.EncodeToJPG(texture, quality);
+                if (smallest == null || bytes.Length < smallest.Length)
+                {
+                    smallest = bytes;
+                }
+
+                if (bytes.Length <= MotionFrameJpegTargetBytes)
+                {
+                    return bytes;
+                }
+            }
+
+            return smallest ?? ImageConversion.EncodeToJPG(texture, MotionFrameJpegMinQuality);
         }
 
         private void EnsureReady()
