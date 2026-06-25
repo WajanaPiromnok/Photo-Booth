@@ -146,10 +146,11 @@ test("all mapped overlays exist and the download page pairs them with captures i
       })),
       motionFrames: []
     });
-    assert.match(html, /liveview\.mp4\?v=frame-[12]-name-[a-f0-9]+-v6/);
+    assert.match(html, /liveview\.mp4\?v=frame-[12]-name-[a-f0-9]+-v7/);
     assert.match(html, /font-family: "Franie", Impact/);
-    assert.match(html, /\.label-stage-1 \.label-passenger-name \{[\s\S]*?left: 45\.5%;[\s\S]*?top: 23\.1%;[\s\S]*?font-size: 1\.2cqw;/);
-    assert.match(html, /\.label-stage-2 \.label-passenger-name \{[\s\S]*?left: 33\.0%;[\s\S]*?top: 29\.4%;[\s\S]*?font-size: 1\.2cqw;/);
+    assert.match(html, /font-weight: 600;/);
+    assert.match(html, /\.label-stage-1 \.label-passenger-name \{[\s\S]*?left: 45\.5%;[\s\S]*?top: 20\.6%;[\s\S]*?font-size: 0\.8cqw;[\s\S]*?color: #231F20;/);
+    assert.match(html, /\.label-stage-2 \.label-passenger-name \{[\s\S]*?left: 33\.0%;[\s\S]*?top: 24\.0%;[\s\S]*?font-size: 0\.8cqw;[\s\S]*?color: #FFFFFF;/);
 
     let previousCaptureOffset = -1;
     for (let index = 0; index < 3; index += 1) {

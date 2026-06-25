@@ -2909,7 +2909,7 @@ async function ensureKookyWorldNamedTemplate(job, labelTemplateId, templatePath)
   }
 
   const nameKey = passengerNameCacheKey(passengerName);
-  const outputPath = path.join(generatedDirectory(job), `label_kooky-world_frame-${labelTemplateId}_name-${nameKey}_franie-v1.png`);
+  const outputPath = path.join(generatedDirectory(job), `label_kooky-world_frame-${labelTemplateId}_name-${nameKey}_franie-v2.png`);
   if (fs.existsSync(outputPath)) {
     return outputPath;
   }
@@ -2922,14 +2922,14 @@ async function ensureKookyWorldNamedTemplate(job, labelTemplateId, templatePath)
     width = 12640;
     height = 8399;
     x = Math.round(width * 0.330);
-    y = Math.round(height * 0.294);
-    fontSize = Math.round(width * 0.012);
+    y = Math.round(height * 0.240);
+    fontSize = Math.round(width * 0.008);
   } else {
     width = 12657;
     height = 8445;
     x = Math.round(width * 0.455);
-    y = Math.round(height * 0.231);
-    fontSize = Math.round(width * 0.012);
+    y = Math.round(height * 0.206);
+    fontSize = Math.round(width * 0.008);
   }
 
   const textPath = font.getPath(passengerName, 0, 0, fontSize);
@@ -2940,26 +2940,12 @@ async function ensureKookyWorldNamedTemplate(job, labelTemplateId, templatePath)
   const pathData = textPath.toPathData(2);
   const svg = `<?xml version="1.0" encoding="UTF-8"?>
 <svg width="${textWidth}" height="${textHeight}" viewBox="${bounds.x1 - padding} ${bounds.y1 - padding} ${textWidth} ${textHeight}" xmlns="http://www.w3.org/2000/svg">
-  <path d="${pathData}" fill="#d92027"/>
+  <path d="${pathData}" fill="${labelTemplateId === "2" ? "#FFFFFF" : "#231F20"}"/>
 </svg>`;
   const textOverlay = await sharp(Buffer.from(svg), { density: 72 }).png().toBuffer();
-  const placeholderWidth = Math.round(width * 0.060);
-  const placeholderHeight = Math.round(height * 0.024);
-  const placeholderColor = labelTemplateId === "2" ? "#21201b" : "#e7e3d6";
-  const placeholderOverlay = await sharp({
-    create: {
-      width: placeholderWidth,
-      height: placeholderHeight,
-      channels: 4,
-      background: placeholderColor
-    }
-  }).png().toBuffer();
 
   await sharp(templatePath)
-    .composite([
-      { input: placeholderOverlay, top: y, left: x },
-      { input: textOverlay, top: Math.max(0, y - padding), left: Math.max(0, x - padding) }
-    ])
+    .composite([{ input: textOverlay, top: Math.max(0, y - padding), left: Math.max(0, x - padding) }])
     .png()
     .toFile(outputPath);
   return outputPath;
@@ -2968,7 +2954,7 @@ async function ensureKookyWorldNamedTemplate(job, labelTemplateId, templatePath)
 async function ensureKookyWorldPhotoImage(job, rawCaptures) {
   const labelTemplateId = resolveLabelTemplateId(job.image_preview_id || job.theme_id);
   const nameKey = passengerNameCacheKey(job.passenger_name);
-  const outputPath = path.join(generatedDirectory(job), `photo_kooky-world_frame-${labelTemplateId}_name-${nameKey}_v6_3072_q86.jpg`);
+  const outputPath = path.join(generatedDirectory(job), `photo_kooky-world_frame-${labelTemplateId}_name-${nameKey}_v7_3072_q86.jpg`);
   if (fs.existsSync(outputPath)) {
     return outputPath;
   }
@@ -2979,7 +2965,7 @@ async function ensureKookyWorldPhotoImage(job, rawCaptures) {
   }
 
   const namedTemplatePath = await ensureKookyWorldNamedTemplate(job, labelTemplateId, templatePath);
-  const sourcePath = path.join(generatedDirectory(job), `photo_kooky-world_frame-${labelTemplateId}_name-${nameKey}_v6_source.png`);
+  const sourcePath = path.join(generatedDirectory(job), `photo_kooky-world_frame-${labelTemplateId}_name-${nameKey}_v7_source.png`);
   if (!fs.existsSync(sourcePath)) {
     await renderKookyWorldFramedPng(rawCaptures, sourcePath, namedTemplatePath, labelTemplateId);
   }
@@ -3119,7 +3105,7 @@ async function ensureKookyWorldCountdownVideo(job, motionFrames) {
   const labelTemplateId = resolveLabelTemplateId(job.image_preview_id || job.theme_id);
   const nameKey = passengerNameCacheKey(job.passenger_name);
   const frameDurationSeconds = resolveKookyWorldCountdownFrameDurationSeconds(motionFrames);
-  const outputPath = path.join(generatedDirectory(job), `framed-countdown_kooky-world_frame-${labelTemplateId}_name-${nameKey}_fps-${frameDurationCacheKey(frameDurationSeconds)}_v7.mp4`);
+  const outputPath = path.join(generatedDirectory(job), `framed-countdown_kooky-world_frame-${labelTemplateId}_name-${nameKey}_fps-${frameDurationCacheKey(frameDurationSeconds)}_v8.mp4`);
   if (isNonEmptyFile(outputPath)) {
     return outputPath;
   }
@@ -3140,7 +3126,7 @@ async function ensureKookyWorldCountdownVideo(job, motionFrames) {
       frameSets,
       frameDurationSeconds,
       outputPath,
-      path.join(generatedDirectory(job), `countdown_kooky-world_frame-${labelTemplateId}_name-${nameKey}_fps-${frameDurationCacheKey(frameDurationSeconds)}_v7_frames`)
+      path.join(generatedDirectory(job), `countdown_kooky-world_frame-${labelTemplateId}_name-${nameKey}_fps-${frameDurationCacheKey(frameDurationSeconds)}_v8_frames`)
     );
   });
 }
@@ -3169,7 +3155,7 @@ function frameDurationCacheKey(frameDurationSeconds) {
 async function ensureKookyWorldLiveviewVideo(job, rawCaptures) {
   const labelTemplateId = resolveLabelTemplateId(job.image_preview_id || job.theme_id);
   const nameKey = passengerNameCacheKey(job.passenger_name);
-  const outputPath = path.join(generatedDirectory(job), `liveview_kooky-world_frame-${labelTemplateId}_name-${nameKey}_v6.mp4`);
+  const outputPath = path.join(generatedDirectory(job), `liveview_kooky-world_frame-${labelTemplateId}_name-${nameKey}_v7.mp4`);
   if (isNonEmptyFile(outputPath)) {
     return outputPath;
   }
@@ -3182,7 +3168,7 @@ async function ensureKookyWorldLiveviewVideo(job, rawCaptures) {
       frameSets,
       0.25,
       outputPath,
-      path.join(generatedDirectory(job), `liveview_kooky-world_frame-${labelTemplateId}_name-${nameKey}_v6_frames`)
+      path.join(generatedDirectory(job), `liveview_kooky-world_frame-${labelTemplateId}_name-${nameKey}_v7_frames`)
     );
   });
 }
@@ -3237,7 +3223,7 @@ async function renderKookyWorldFramedVideo(job, frameSets, frameDurationSeconds,
   const namedTemplatePath = await ensureKookyWorldNamedTemplate(job, labelTemplateId, templatePath);
   const videoTemplatePath = path.join(
     generatedDirectory(job),
-    `label_kooky-world_frame-${labelTemplateId}_name-${passengerNameCacheKey(job.passenger_name)}_franie-v1_video-1800.png`
+    `label_kooky-world_frame-${labelTemplateId}_name-${passengerNameCacheKey(job.passenger_name)}_franie-v2_video-1800.png`
   );
   if (!fs.existsSync(videoTemplatePath)) {
     await sharp(namedTemplatePath)
@@ -3328,7 +3314,7 @@ function worldTourLabelFontPath() {
 }
 
 function kookyWorldLabelFontPath() {
-  return path.join(config.publicRoot, "kooky-world", "Franie-XBold.otf");
+  return path.join(config.publicRoot, "kooky-world", "Franie-SBold.otf");
 }
 
 async function ensureWorldTourNamedTemplate(job, labelTemplateId, templatePath, fromName) {
@@ -6914,7 +6900,7 @@ function renderKookyWorldDownloadPage({ job, composed, thumbnail, liveImage, mot
   const motionVideoDownloadUrl = motionVideo ? `/kooky-world/${encodeURIComponent(jobId)}/clip-download.mp4?v=frame-${labelTemplateId}-name-${passengerNameVersion}-v4` : "";
   const rawCaptureUrls = rawCaptures.map(assetUrl).filter(Boolean);
   const hasCountdownPreview = motionFrames.length > 0;
-  const framedCountdownVideoUrl = hasCountdownPreview ? `/kooky-world/${encodeURIComponent(jobId)}/framed-countdown.mp4?v=frame-${labelTemplateId}-name-${passengerNameVersion}-v7` : "";
+  const framedCountdownVideoUrl = hasCountdownPreview ? `/kooky-world/${encodeURIComponent(jobId)}/framed-countdown.mp4?v=frame-${labelTemplateId}-name-${passengerNameVersion}-v8` : "";
   const rawMotionVideoUrl = assetUrl(motionVideo);
 
   const passengerNameMarkup = passengerName
@@ -6950,8 +6936,8 @@ function renderKookyWorldDownloadPage({ job, composed, thumbnail, liveImage, mot
     : motionVideoDownloadUrl;
 
   const hasLiveview = rawCaptureUrls.length > 0;
-  const liveviewVideoUrl = `/kooky-world/${encodeURIComponent(jobId)}/liveview.mp4?v=frame-${labelTemplateId}-name-${passengerNameVersion}-v6`;
-  const liveviewVideoDownloadUrl = `/kooky-world/${encodeURIComponent(jobId)}/liveview-download.mp4?v=frame-${labelTemplateId}-name-${passengerNameVersion}-v6`;
+  const liveviewVideoUrl = `/kooky-world/${encodeURIComponent(jobId)}/liveview.mp4?v=frame-${labelTemplateId}-name-${passengerNameVersion}-v7`;
+  const liveviewVideoDownloadUrl = `/kooky-world/${encodeURIComponent(jobId)}/liveview-download.mp4?v=frame-${labelTemplateId}-name-${passengerNameVersion}-v7`;
 
   return `<!doctype html>
 <html lang="en">
@@ -7188,7 +7174,7 @@ function renderKookyWorldDownloadPage({ job, composed, thumbnail, liveImage, mot
       position: absolute;
       z-index: 3;
       font-family: "Franie", Impact, "Arial Black", sans-serif;
-      font-weight: 800;
+      font-weight: 600;
       line-height: 1;
       letter-spacing: 0;
       text-transform: uppercase;
@@ -7197,15 +7183,15 @@ function renderKookyWorldDownloadPage({ job, composed, thumbnail, liveImage, mot
     }
     .label-stage-1 .label-passenger-name {
       left: 45.5%;
-      top: 23.1%;
-      font-size: 1.2cqw;
-      color: #d92027;
+      top: 20.6%;
+      font-size: 0.8cqw;
+      color: #231F20;
     }
     .label-stage-2 .label-passenger-name {
       left: 33.0%;
-      top: 29.4%;
-      font-size: 1.2cqw;
-      color: #d92027;
+      top: 24.0%;
+      font-size: 0.8cqw;
+      color: #FFFFFF;
     }
     .video-label-stage {
       position: relative;
