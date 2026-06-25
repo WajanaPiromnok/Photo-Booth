@@ -281,6 +281,8 @@ namespace PhotoBooth.Booth.Frontend
         private RectTransform captureTrainMover;
         private Vector2 captureTrainInitialPosition;
         private bool hasCaptureTrainInitialPosition;
+        private int lastAnimatedCaptureTrainLevel;
+        private int captureTrainAnimationSerial;
         private CancellationTokenSource captureTrainAnimationCancellation;
         private bool captureReviewRetakeUsed;
         private bool isStartingCapturePreview;
@@ -3481,6 +3483,8 @@ namespace PhotoBooth.Booth.Frontend
         {
             BindAutomaticCaptureUi();
             CancelCaptureTrainAnimation();
+            lastAnimatedCaptureTrainLevel = 0;
+            captureTrainAnimationSerial += 1;
             captureForegroundCaptureNumber = 1;
             UpdateCaptureForegroundOverlay();
             if (captureIntroLozado != null)
@@ -3552,9 +3556,20 @@ namespace PhotoBooth.Booth.Frontend
             if (completedCount > 0)
             {
                 captureTrainRoot?.SetActive(true);
-                _ = AnimateCaptureTrainToLevelAsync(
-                    Mathf.Clamp(completedCount, 1, captureTrainInnerCircles.Length),
-                    captureTrainAnimationCancellation?.Token ?? CancellationToken.None);
+                var trainLevel = Mathf.Clamp(completedCount, 1, captureTrainInnerCircles.Length);
+                if (trainLevel != lastAnimatedCaptureTrainLevel)
+                {
+                    lastAnimatedCaptureTrainLevel = trainLevel;
+                    var animationSerial = ++captureTrainAnimationSerial;
+                    _ = AnimateCaptureTrainToLevelAsync(
+                        trainLevel,
+                        animationSerial,
+                        captureTrainAnimationCancellation?.Token ?? CancellationToken.None);
+                }
+                else
+                {
+                    SetActiveCaptureTrainCircle(trainLevel);
+                }
             }
         }
 
@@ -3618,9 +3633,14 @@ namespace PhotoBooth.Booth.Frontend
             return captureIntroLozadoCanvasGroup;
         }
 
-        private async Task AnimateCaptureTrainToLevelAsync(int level, CancellationToken cancellationToken)
+        private async Task AnimateCaptureTrainToLevelAsync(int level, int animationSerial, CancellationToken cancellationToken)
         {
             if (captureTrainMover == null || level < 1 || level > captureTrainLevels.Length)
+            {
+                return;
+            }
+
+            if (animationSerial != captureTrainAnimationSerial)
             {
                 return;
             }
@@ -3629,7 +3649,11 @@ namespace PhotoBooth.Booth.Frontend
             var trainParent = captureTrainMover.parent as RectTransform;
             if (levelTransform == null || trainParent == null)
             {
-                SetActiveCaptureTrainCircle(level);
+                if (animationSerial == captureTrainAnimationSerial)
+                {
+                    SetActiveCaptureTrainCircle(level);
+                }
+
                 return;
             }
 
@@ -3640,16 +3664,17 @@ namespace PhotoBooth.Booth.Frontend
                 0f,
                 0f));
             var targetLocalPosition = trainParent.InverseTransformPoint(targetWorldPosition);
-            var startPosition = captureTrainMover.anchoredPosition;
+            var currentPosition = captureTrainMover.anchoredPosition;
+            var startPosition = currentPosition;
             var targetPosition = new Vector2(targetLocalPosition.x, startPosition.y);
 
-            // The first completed photo establishes the progress indicator. Show the train at
-            // station 1 immediately; only subsequent station changes travel across the line.
+            // The first completed photo introduces the progress indicator by driving the train
+            // in from outside the frame. Subsequent station changes continue from the current
+            // train position.
             if (level == 1)
             {
-                captureTrainMover.anchoredPosition = targetPosition;
-                SetActiveCaptureTrainCircle(level);
-                return;
+                startPosition = new Vector2(718f, currentPosition.y);
+                captureTrainMover.anchoredPosition = startPosition;
             }
 
             const float duration = 0.65f;
@@ -3657,10 +3682,20 @@ namespace PhotoBooth.Booth.Frontend
             while (elapsed < duration)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                if (animationSerial != captureTrainAnimationSerial)
+                {
+                    return;
+                }
+
                 elapsed += Time.unscaledDeltaTime;
                 var t = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(elapsed / duration));
                 captureTrainMover.anchoredPosition = Vector2.LerpUnclamped(startPosition, targetPosition, t);
                 await Task.Yield();
+            }
+
+            if (animationSerial != captureTrainAnimationSerial)
+            {
+                return;
             }
 
             captureTrainMover.anchoredPosition = targetPosition;

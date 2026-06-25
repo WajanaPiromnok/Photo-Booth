@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Net.Sockets;
 using System.Threading.Tasks;
 using PhotoBooth.Booth.Content;
 using PhotoBooth.Booth.Persistence;
@@ -47,6 +48,14 @@ namespace PhotoBooth.Booth.Services
         [SerializeField] private bool forceSimulatedPrint = false;
         [SerializeField] private string printBridgeBaseUrl = "http://127.0.0.1:18080";
         [SerializeField] private int printBridgeRequestTimeoutSeconds = 10;
+        [SerializeField] private bool autoStartLocalPrintBridgeOnWindows = true;
+        [SerializeField] private string localPrintBridgeScriptPath = "scripts/run-print-bridge.ps1";
+        [SerializeField] private string[] localPrintBridgePrinterPreference =
+        {
+            "DS-RX1 4x6 Cut",
+            "DS-RX1",
+            "Xprinter XP-420B"
+        };
         [SerializeField] private string[] preferredCameraDeviceNames = Array.Empty<string>();
         [SerializeField] private int preferredCameraDeviceDiscoveryTimeoutSeconds = 0;
         [SerializeField] private string demoThemeId = "demo_theme";
@@ -128,6 +137,7 @@ namespace PhotoBooth.Booth.Services
             AnalyticsService = new BoothAnalyticsService(boothId, () => ContentManagementService.GetInstalledVersion());
             SessionService = new BoothSessionService(repository, stateMachine, AnalyticsService);
             SessionService.Initialize();
+            TryStartLocalPrintBridgeForWindows();
             PrintService = new BoothPrintService(SessionService, CreatePrintClient());
             var backendConfig = CreateBackendScaffoldConfig();
             SyncService = new BoothSyncService(SessionService, CreateSyncClient(backendConfig), backendConfig);
@@ -443,6 +453,131 @@ namespace PhotoBooth.Booth.Services
             }
 
             return new ScaffoldBoothSyncClient(config);
+        }
+
+        private void TryStartLocalPrintBridgeForWindows()
+        {
+            if (!usePrintBridge
+                || forceSimulatedPrint
+                || !autoStartLocalPrintBridgeOnWindows
+                || (Application.platform != RuntimePlatform.WindowsPlayer && Application.platform != RuntimePlatform.WindowsEditor))
+            {
+                return;
+            }
+
+            if (!TryGetLocalPrintBridgeEndpoint(out var host, out var port))
+            {
+                Debug.LogWarning($"PhotoBooth PrintBridge auto-start skipped; baseUrl is not local: {printBridgeBaseUrl}");
+                return;
+            }
+
+            if (CanConnectToLocalPort(host, port, 250))
+            {
+                Debug.Log($"PhotoBooth PrintBridge already listening at {host}:{port}.");
+                return;
+            }
+
+            var scriptPath = ResolveLocalPrintBridgeScriptPath();
+            if (string.IsNullOrWhiteSpace(scriptPath) || !File.Exists(scriptPath))
+            {
+                Debug.LogWarning($"PhotoBooth PrintBridge auto-start skipped; script not found: {localPrintBridgeScriptPath}");
+                return;
+            }
+
+            try
+            {
+                var startInfo = new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = "powershell.exe",
+                    Arguments = $"-ExecutionPolicy Bypass -File {QuoteProcessArgument(scriptPath)}",
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden,
+                    WorkingDirectory = Path.GetDirectoryName(scriptPath) ?? Directory.GetCurrentDirectory()
+                };
+                startInfo.EnvironmentVariables["PORT"] = port.ToString();
+                startInfo.EnvironmentVariables["PRINT_PLATFORM"] = "win32";
+                startInfo.EnvironmentVariables["PRINT_COMMAND"] = "powershell.exe";
+                startInfo.EnvironmentVariables["OVERRIDE_REQUESTED_PRINTER"] = "true";
+                startInfo.EnvironmentVariables["PRINT_BRIDGE_PRINTER_PREFERENCE"] = string.Join(",", localPrintBridgePrinterPreference ?? Array.Empty<string>());
+
+                System.Diagnostics.Process.Start(startInfo);
+                Debug.Log($"PhotoBooth PrintBridge auto-start requested: {scriptPath}");
+            }
+            catch (Exception exception)
+            {
+                Debug.LogWarning($"PhotoBooth PrintBridge auto-start failed: {exception.Message}");
+            }
+        }
+
+        private bool TryGetLocalPrintBridgeEndpoint(out string host, out int port)
+        {
+            host = "127.0.0.1";
+            port = 18080;
+
+            if (!Uri.TryCreate(string.IsNullOrWhiteSpace(printBridgeBaseUrl) ? "http://127.0.0.1:18080" : printBridgeBaseUrl.Trim(), UriKind.Absolute, out var uri))
+            {
+                return false;
+            }
+
+            host = string.IsNullOrWhiteSpace(uri.Host) ? "127.0.0.1" : uri.Host;
+            port = uri.IsDefaultPort ? 80 : uri.Port;
+            return string.Equals(host, "127.0.0.1", StringComparison.OrdinalIgnoreCase)
+                   || string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool CanConnectToLocalPort(string host, int port, int timeoutMs)
+        {
+            using var client = new TcpClient();
+            try
+            {
+                var connect = client.BeginConnect(host, port, null, null);
+                if (!connect.AsyncWaitHandle.WaitOne(Math.Max(50, timeoutMs)))
+                {
+                    return false;
+                }
+
+                client.EndConnect(connect);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private string ResolveLocalPrintBridgeScriptPath()
+        {
+            if (Path.IsPathRooted(localPrintBridgeScriptPath) && File.Exists(localPrintBridgeScriptPath))
+            {
+                return localPrintBridgeScriptPath;
+            }
+
+            var relativePath = string.IsNullOrWhiteSpace(localPrintBridgeScriptPath)
+                ? "scripts/run-print-bridge.ps1"
+                : localPrintBridgeScriptPath.Trim();
+            var appRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
+            var candidates = new[]
+            {
+                Path.Combine(appRoot, relativePath),
+                Path.Combine(Directory.GetCurrentDirectory(), relativePath),
+                Path.Combine(Application.dataPath, relativePath)
+            };
+
+            foreach (var candidate in candidates)
+            {
+                if (File.Exists(candidate))
+                {
+                    return candidate;
+                }
+            }
+
+            return candidates[0];
+        }
+
+        private static string QuoteProcessArgument(string value)
+        {
+            return $"\"{(value ?? string.Empty).Replace("\"", "\\\"")}\"";
         }
 
         private IPrintHelperClient CreatePrintClient()

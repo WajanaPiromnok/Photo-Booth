@@ -1,17 +1,22 @@
 const crypto = require("node:crypto");
 const fs = require("node:fs");
+const path = require("node:path");
 const { execFile } = require("node:child_process");
 
 function buildConfig(env = process.env) {
   const defaultPrinterName = normalizeOptional(env.DEFAULT_PRINTER_NAME);
   const allowedPrinterNames = parseAllowedPrinters(env.ALLOWED_PRINTER_NAMES, defaultPrinterName);
+  const platform = normalizeOptional(env.PRINT_PLATFORM) || process.platform;
   return {
     port: Number.parseInt(env.PORT || "18080", 10),
     defaultPrinterName,
     allowedPrinterNames,
     overrideRequestedPrinter: parseBoolean(env.OVERRIDE_REQUESTED_PRINTER, true),
     printOptions: parsePrintOptions(env.PRINT_OPTIONS),
-    printCommand: normalizeOptional(env.PRINT_COMMAND) || "lp"
+    printCommand: normalizeOptional(env.PRINT_COMMAND) || defaultPrintCommand(platform),
+    printPlatform: platform,
+    dryRun: parseBoolean(env.PRINT_BRIDGE_DRY_RUN, false),
+    openPreview: parseBoolean(env.PRINT_BRIDGE_OPEN_PREVIEW, false)
   };
 }
 
@@ -47,7 +52,27 @@ async function handlePrintJob(body, config = buildConfig(), deps = {}) {
 
   console.log("print_job_requested", { jobId, imagePath, requestedPrinterName, printerName, copies });
   try {
-    await runPrintCommand(config.printCommand, buildPrintArgs(printerName, copies, imagePath, config.printOptions));
+    if (config.dryRun) {
+      if (config.openPreview) {
+        await openPreviewImage(imagePath, config.printPlatform, deps.execFile || execFilePromise);
+      }
+
+      console.log("print_job_previewed", { jobId, imagePath, printerName, openPreview: config.openPreview });
+      return {
+        statusCode: 200,
+        body: {
+          success: true,
+          retryable: false,
+          message: "Print preview generated. Dry-run mode did not send anything to the printer.",
+          printer_name: printerName,
+          operation_id: crypto.randomUUID()
+        }
+      };
+    }
+
+    for (let copy = 0; copy < copies; copy += 1) {
+      await runPrintCommand(config.printCommand, buildPrintArgs(printerName, 1, imagePath, config.printOptions, config.printPlatform));
+    }
     console.log("print_job_submitted", { jobId, printerName, copies });
     return {
       statusCode: 200,
@@ -88,7 +113,37 @@ function execFilePromise(command, args) {
   });
 }
 
-function buildPrintArgs(printerName, copies, imagePath, printOptions = defaultPrintOptions()) {
+async function openPreviewImage(imagePath, platform = process.platform, runCommand = execFilePromise) {
+  if (isWindowsPlatform(platform)) {
+    await runCommand("powershell.exe", ["-NoProfile", "-Command", "Start-Process -LiteralPath $args[0]", imagePath]);
+    return;
+  }
+
+  if (String(platform || "").toLowerCase() === "darwin") {
+    await runCommand("open", [imagePath]);
+    return;
+  }
+
+  await runCommand("xdg-open", [imagePath]);
+}
+
+function buildPrintArgs(printerName, copies, imagePath, printOptions = defaultPrintOptions(), platform = process.platform) {
+  if (isWindowsPlatform(platform)) {
+    return [
+      "-NoProfile",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      path.join(__dirname, "print-image.ps1"),
+      "-ImagePath",
+      imagePath,
+      "-PrinterName",
+      printerName,
+      "-Copies",
+      String(copies)
+    ];
+  }
+
   const args = ["-d", printerName, "-n", String(copies)];
   for (const option of printOptions) {
     args.push("-o", option);
@@ -96,6 +151,14 @@ function buildPrintArgs(printerName, copies, imagePath, printOptions = defaultPr
 
   args.push(imagePath);
   return args;
+}
+
+function defaultPrintCommand(platform = process.platform) {
+  return isWindowsPlatform(platform) ? "powershell.exe" : "lp";
+}
+
+function isWindowsPlatform(platform) {
+  return String(platform || "").toLowerCase().startsWith("win");
 }
 
 function defaultPrintOptions() {
@@ -180,5 +243,6 @@ module.exports = {
   buildPrintArgs,
   buildConfig,
   handlePrintJob,
+  openPreviewImage,
   parseAllowedPrinters
 };

@@ -14,14 +14,17 @@ namespace PhotoBooth.Booth.Frontend
     public sealed class BoothImageComposer
     {
         private const string DefaultFrameTemplateResourcePath = "MrkremeUi/piece_03";
-        private const string PassengerNameTmpFontAssetPath = "Assets/UI/Font/BatteryPark SDF.asset";
-        private const string PassengerNameFontAssetPath = "Assets/UI/Font/BatteryPark.ttf";
-        private const string PassengerNameFontPath = "UI/Font/BatteryPark.ttf";
+        private const string PassengerNameTmpFontAssetPath = "Assets/UI/Kooky/Fonts/Franie-SBold SDF.asset";
+        private const string PassengerNameFontAssetPath = "Assets/UI/Kooky/Fonts/Franie-SBold.otf";
+        private const string PassengerNameFontPath = "UI/Kooky/Fonts/Franie-SBold.otf";
+        private const string KookyPhotoBoothDirectory = "UI/Kooky/Separate pieces/Photo booth";
         private const int FinalJpegQuality = 86;
         private const int ThumbnailJpegQuality = 82;
-        private const float PrintCaptureBrightenAmount = 0.9f;
-        private const int PassengerNameFontSize = 108;
-        private static readonly Color PassengerNameColor = new Color32(0x28, 0x5A, 0x8D, 0xFF);
+        private const int KookyPrintWidth = 1800;
+        private const int KookyPrintHeight = 1200;
+        private const int PassengerNameFontSize = 20;
+        private static readonly Color PassengerNameFrame1Color = new Color32(0x23, 0x1F, 0x20, 0xFF);
+        private static readonly Color PassengerNameFrame2Color = new Color32(0xFF, 0xFF, 0xFF, 0xFF);
         private static readonly RectInt[] DefaultFrameSlots =
         {
             new(680, 1619, 1267, 912),
@@ -31,14 +34,42 @@ namespace PhotoBooth.Booth.Frontend
         };
         private static readonly RectInt[] ImagePreview1FrameSlots =
         {
-            new(62, 234, 2014, 1128)
+            new(840, 1010, 3510, 3255),
+            new(4555, 1010, 3510, 3255),
+            new(8275, 1010, 3510, 3255)
         };
         private static readonly RectInt[] ImagePreview2FrameSlots =
         {
-            new(121, 1425, 1896, 1084)
+            new(840, 1010, 3510, 3255),
+            new(4555, 1010, 3510, 3255),
+            new(8275, 1010, 3510, 3255)
         };
-        private static readonly RectInt ImagePreview1FromNameSlot = new(155, 2500, 620, 92);
-        private static readonly RectInt ImagePreview2FromNameSlot = new(205, 1145, 720, 100);
+        private static readonly RectInt[] ImagePreview1OverlaySlots =
+        {
+            new(840, 1010, 3510, 3255),
+            new(4555, 1010, 3510, 3255),
+            new(8275, 1010, 3510, 3255)
+        };
+        private static readonly string[] ImagePreview1OverlayFileNames =
+        {
+            "frame01_01.png",
+            "frame01_02.png",
+            "frame01_03.png"
+        };
+        private static readonly RectInt[] ImagePreview2OverlaySlots =
+        {
+            new(840, 1010, 3510, 3255),
+            new(4555, 1010, 3510, 3255),
+            new(8275, 1010, 3510, 3255)
+        };
+        private static readonly string[] ImagePreview2OverlayFileNames =
+        {
+            "frame02_01.png",
+            "frame02_02.png",
+            "frame02_03.png"
+        };
+        private static readonly RectInt ImagePreview1FromNameSlot = new(5750, 6620, 2200, 280);
+        private static readonly RectInt ImagePreview2FromNameSlot = new(4175, 6140, 1950, 280);
 
         public BoothCompositionResult Compose(BoothJob job, string rawImagePath, Vector2Int thumbnailSize, BoothAiStyleOption aiStyle = null, Action<Texture2D> preStyleProcessor = null)
         {
@@ -96,7 +127,7 @@ namespace PhotoBooth.Booth.Frontend
             var printPath = Path.Combine(job.Paths.ComposedDirectory, "print.jpg");
             var thumbnailPath = Path.Combine(job.Paths.ThumbsDirectory, "thumbnail.jpg");
             var composedBytes = ComposePhotoTemplateBytes(rawImagePaths, theme, aiStyle, job.PassengerName);
-            var printBytes = ComposePhotoTemplateBytes(rawImagePaths, theme, aiStyle, job.PassengerName, PrintCaptureBrightenAmount);
+            var printBytes = composedBytes;
             File.WriteAllBytes(composedPath, composedBytes);
             File.WriteAllBytes(printPath, printBytes);
 
@@ -153,18 +184,18 @@ namespace PhotoBooth.Booth.Frontend
             try
             {
                 LoadCaptures(rawImagePaths, captures);
-                canvas = new Texture2D(template.width, template.height, TextureFormat.RGBA32, false);
-                canvas.SetPixels(template.GetPixels());
+                canvas = CreateTemplateCanvas(template, theme, out var scaleX, out var scaleY);
 
                 var frameSlots = ResolveFrameSlots(theme);
                 var slotCount = Mathf.Min(captures.Count, frameSlots.Length);
                 for (var i = 0; i < slotCount; i++)
                 {
-                    var slot = frameSlots[i];
+                    var slot = ScaleRect(frameSlots[i], scaleX, scaleY);
                     DrawAspectFill(captures[i], canvas, slot.x, slot.y, slot.width, slot.height, captureBrightenAmount);
                 }
 
-                DrawPassengerName(canvas, ResolveFromNameSlot(theme), passengerName);
+                DrawFrameOverlays(canvas, theme, scaleX, scaleY);
+                DrawPassengerName(canvas, ScaleRect(ResolveFromNameSlot(theme), scaleX, scaleY), passengerName, ResolvePassengerNameColor(theme));
                 canvas.Apply(false, false);
                 return ImageConversion.EncodeToJPG(canvas, FinalJpegQuality);
             }
@@ -216,17 +247,22 @@ namespace PhotoBooth.Booth.Frontend
         private static Texture2D LoadLabelFrameTemplate(BoothThemeOption theme)
         {
             var previewId = ResolveImagePreviewId(theme);
-            var fileName = previewId == "2" || previewId == "image_preview_2" || previewId == "theme_02"
-                ? "2.png"
-                : previewId == "1" || previewId == "image_preview_1" || previewId == "theme_01"
-                    ? "1.png"
-                    : null;
-            if (string.IsNullOrWhiteSpace(fileName))
+            if (previewId == "1" || previewId == "image_preview_1" || previewId == "theme_01")
             {
-                return null;
+                return LoadTextureFromAssets(KookyPhotoBoothDirectory, "ticket_1.png");
             }
 
-            var path = Path.Combine(Application.dataPath, "UI", "Label", fileName);
+            if (previewId == "2" || previewId == "image_preview_2" || previewId == "theme_02")
+            {
+                return LoadTextureFromAssets(KookyPhotoBoothDirectory, "ticket_2.png");
+            }
+
+            return null;
+        }
+
+        private static Texture2D LoadTextureFromAssets(string relativeDirectory, string fileName)
+        {
+            var path = Path.Combine(Application.dataPath, relativeDirectory, fileName);
             if (!File.Exists(path))
             {
                 return null;
@@ -283,12 +319,34 @@ namespace PhotoBooth.Booth.Frontend
             return DefaultFrameSlots;
         }
 
+        private static bool IsImagePreview1(BoothThemeOption theme)
+        {
+            var previewId = ResolveImagePreviewId(theme);
+            return previewId == "1" || previewId == "image_preview_1" || previewId == "theme_01";
+        }
+
+        private static bool IsImagePreview2(BoothThemeOption theme)
+        {
+            var previewId = ResolveImagePreviewId(theme);
+            return previewId == "2" || previewId == "image_preview_2" || previewId == "theme_02";
+        }
+
+        private static bool IsKookyPrintTemplate(BoothThemeOption theme)
+        {
+            return IsImagePreview1(theme) || IsImagePreview2(theme);
+        }
+
         private static RectInt ResolveFromNameSlot(BoothThemeOption theme)
         {
             var previewId = ResolveImagePreviewId(theme);
             return previewId == "2" || previewId == "image_preview_2" || previewId == "theme_02"
                 ? ImagePreview2FromNameSlot
                 : ImagePreview1FromNameSlot;
+        }
+
+        private static Color ResolvePassengerNameColor(BoothThemeOption theme)
+        {
+            return IsImagePreview2(theme) ? PassengerNameFrame2Color : PassengerNameFrame1Color;
         }
 
         private static string ResolveImagePreviewId(BoothThemeOption theme)
@@ -366,6 +424,96 @@ namespace PhotoBooth.Booth.Frontend
             }
         }
 
+        private static Texture2D CreateTemplateCanvas(Texture2D template, BoothThemeOption theme, out float scaleX, out float scaleY)
+        {
+            if (IsKookyPrintTemplate(theme))
+            {
+                scaleX = KookyPrintWidth / (float)template.width;
+                scaleY = KookyPrintHeight / (float)template.height;
+                var scaled = new Texture2D(KookyPrintWidth, KookyPrintHeight, TextureFormat.RGBA32, false);
+                DrawTextureScaledAlpha(template, scaled, 0, 0, scaled.width, scaled.height);
+                return scaled;
+            }
+
+            scaleX = 1f;
+            scaleY = 1f;
+            var canvas = new Texture2D(template.width, template.height, TextureFormat.RGBA32, false);
+            canvas.SetPixels(template.GetPixels());
+            return canvas;
+        }
+
+        private static RectInt ScaleRect(RectInt source, float scaleX, float scaleY)
+        {
+            return new RectInt(
+                Mathf.RoundToInt(source.x * scaleX),
+                Mathf.RoundToInt(source.y * scaleY),
+                Mathf.Max(1, Mathf.RoundToInt(source.width * scaleX)),
+                Mathf.Max(1, Mathf.RoundToInt(source.height * scaleY)));
+        }
+
+        private static void DrawFrameOverlays(Texture2D canvas, BoothThemeOption theme, float scaleX, float scaleY)
+        {
+            if (canvas == null || !IsKookyPrintTemplate(theme))
+            {
+                return;
+            }
+
+            var overlayFileNames = IsImagePreview2(theme) ? ImagePreview2OverlayFileNames : ImagePreview1OverlayFileNames;
+            var overlaySlots = IsImagePreview2(theme) ? ImagePreview2OverlaySlots : ImagePreview1OverlaySlots;
+            var overlays = new List<Texture2D>();
+            try
+            {
+                for (var i = 0; i < overlayFileNames.Length && i < overlaySlots.Length; i++)
+                {
+                    var overlay = LoadTextureFromAssets(KookyPhotoBoothDirectory, overlayFileNames[i]);
+                    if (overlay == null)
+                    {
+                        Debug.LogWarning($"Kooky photo overlay not found: {overlayFileNames[i]}");
+                        continue;
+                    }
+
+                    overlays.Add(overlay);
+                    var slot = ScaleRect(overlaySlots[i], scaleX, scaleY);
+                    DrawTextureScaledAlpha(overlay, canvas, slot.x, slot.y, slot.width, slot.height);
+                }
+            }
+            finally
+            {
+                DestroyTextures(overlays);
+            }
+        }
+
+        private static void DrawTextureScaledAlpha(Texture2D source, Texture2D target, int targetX, int targetY, int targetWidth, int targetHeight)
+        {
+            if (source == null || target == null || targetWidth <= 0 || targetHeight <= 0)
+            {
+                return;
+            }
+
+            for (var y = 0; y < targetHeight; y++)
+            {
+                var v = targetHeight <= 1 ? 0f : y / (float)(targetHeight - 1);
+                for (var x = 0; x < targetWidth; x++)
+                {
+                    var u = targetWidth <= 1 ? 0f : x / (float)(targetWidth - 1);
+                    var overlay = source.GetPixelBilinear(u, v);
+                    if (overlay.a <= 0.001f)
+                    {
+                        continue;
+                    }
+
+                    var px = targetX + x;
+                    var py = targetY + y;
+                    if (px < 0 || py < 0 || px >= target.width || py >= target.height)
+                    {
+                        continue;
+                    }
+
+                    target.SetPixel(px, py, Color.Lerp(target.GetPixel(px, py), overlay, overlay.a));
+                }
+            }
+        }
+
         private static void DrawAspectFill(Texture2D source, Texture2D target, int targetX, int targetY, int targetWidth, int targetHeight, float brightenAmount = 0f)
         {
             var sourceAspect = source.width / (float)source.height;
@@ -420,7 +568,7 @@ namespace PhotoBooth.Booth.Frontend
             return Mathf.Clamp01(((lifted - 0.5f) * contrast) + 0.5f);
         }
 
-        private static void DrawPassengerName(Texture2D target, RectInt slot, string passengerName)
+        private static void DrawPassengerName(Texture2D target, RectInt slot, string passengerName, Color color)
         {
             if (target == null || slot.width <= 0 || slot.height <= 0 || string.IsNullOrWhiteSpace(passengerName))
             {
@@ -433,12 +581,12 @@ namespace PhotoBooth.Booth.Frontend
                 return;
             }
 
-            if (DrawPassengerNameWithUiFont(target, slot, value))
+            if (DrawPassengerNameWithUiFont(target, slot, value, color))
             {
                 return;
             }
 
-            if (DrawPassengerNameWithFont(target, slot, value))
+            if (DrawPassengerNameWithFont(target, slot, value, color))
             {
                 return;
             }
@@ -450,8 +598,8 @@ namespace PhotoBooth.Booth.Frontend
             for (var i = 0; i < value.Length; i++)
             {
                 var glyphX = startX + (i * 6 * scale);
-                DrawGlyph(target, value[i], glyphX, startY, scale, PassengerNameColor);
-                DrawGlyph(target, value[i], glyphX + Mathf.Max(1, scale / 4), startY, scale, PassengerNameColor);
+                DrawGlyph(target, value[i], glyphX, startY, scale, color);
+                DrawGlyph(target, value[i], glyphX + Mathf.Max(1, scale / 4), startY, scale, color);
             }
         }
 
@@ -466,7 +614,7 @@ namespace PhotoBooth.Booth.Frontend
             return value == "-" ? string.Empty : value;
         }
 
-        private static bool DrawPassengerNameWithTmpFont(Texture2D target, RectInt slot, string value)
+        private static bool DrawPassengerNameWithTmpFont(Texture2D target, RectInt slot, string value, Color color)
         {
             var fontAsset = LoadPassengerNameTmpFont();
             if (fontAsset == null)
@@ -476,7 +624,7 @@ namespace PhotoBooth.Booth.Frontend
 
             try
             {
-                var renderedText = RenderTmpTextToTexture(fontAsset, value, slot.width, slot.height);
+                var renderedText = RenderTmpTextToTexture(fontAsset, value, slot.width, slot.height, color);
                 if (renderedText == null)
                 {
                     return false;
@@ -486,11 +634,11 @@ namespace PhotoBooth.Booth.Frontend
                 {
                     if (!HasVisibleTextPixels(renderedText))
                     {
-                        Debug.LogWarning("BatteryPark TMP font rendered no visible pixels; falling back to dynamic font label text.");
+                        Debug.LogWarning("Franie TMP font rendered no visible pixels; falling back to dynamic font label text.");
                         return false;
                     }
 
-                    CompositeTextTexture(target, renderedText, slot.x, slot.y, PassengerNameColor);
+                    CompositeTextTexture(target, renderedText, slot.x, slot.y, color);
                 }
                 finally
                 {
@@ -501,7 +649,7 @@ namespace PhotoBooth.Booth.Frontend
             }
             catch (Exception exception)
             {
-                Debug.LogWarning($"BatteryPark TMP font rendering failed; falling back to dynamic font label text. {exception.Message}");
+                Debug.LogWarning($"Franie TMP font rendering failed; falling back to dynamic font label text. {exception.Message}");
                 return false;
             }
         }
@@ -515,7 +663,7 @@ namespace PhotoBooth.Booth.Frontend
 #endif
         }
 
-        private static Texture2D RenderTmpTextToTexture(TMP_FontAsset fontAsset, string value, int width, int height)
+        private static Texture2D RenderTmpTextToTexture(TMP_FontAsset fontAsset, string value, int width, int height, Color color)
         {
             width = Mathf.Max(16, width);
             height = Mathf.Max(16, height);
@@ -548,7 +696,7 @@ namespace PhotoBooth.Booth.Frontend
                 var label = textHost.GetComponent<TextMeshPro>();
                 label.font = fontAsset;
                 label.text = value;
-                label.color = PassengerNameColor;
+                label.color = color;
                 label.alignment = TextAlignmentOptions.Center;
                 label.enableWordWrapping = false;
                 label.enableAutoSizing = true;
@@ -649,7 +797,7 @@ namespace PhotoBooth.Booth.Frontend
             return false;
         }
 
-        private static bool DrawPassengerNameWithFont(Texture2D target, RectInt slot, string value)
+        private static bool DrawPassengerNameWithFont(Texture2D target, RectInt slot, string value, Color color)
         {
             Font font = null;
             var shouldDestroyFont = false;
@@ -675,10 +823,10 @@ namespace PhotoBooth.Booth.Frontend
 
                 var startX = slot.x;
                 var baselineY = slot.y + ((slot.height - (maxY - minY)) * 0.5f) - minY;
-                var drawnPixels = DrawFontText(target, font, value, fontSize, startX, baselineY, PassengerNameColor);
+                var drawnPixels = DrawFontText(target, font, value, fontSize, startX, baselineY, color);
                 if (drawnPixels <= 8)
                 {
-                    Debug.LogWarning("BatteryPark font rendered no visible pixels; falling back to bitmap label text.");
+                    Debug.LogWarning("Franie font rendered no visible pixels; falling back to bitmap label text.");
                     return false;
                 }
 
@@ -686,7 +834,7 @@ namespace PhotoBooth.Booth.Frontend
             }
             catch (Exception exception)
             {
-                Debug.LogWarning($"BatteryPark font rendering failed; falling back to bitmap label text. {exception.Message}");
+                Debug.LogWarning($"Franie font rendering failed; falling back to bitmap label text. {exception.Message}");
                 return false;
             }
             finally
@@ -698,7 +846,7 @@ namespace PhotoBooth.Booth.Frontend
             }
         }
 
-        private static bool DrawPassengerNameWithUiFont(Texture2D target, RectInt slot, string value)
+        private static bool DrawPassengerNameWithUiFont(Texture2D target, RectInt slot, string value, Color color)
         {
             Font font = null;
             var shouldDestroyFont = false;
@@ -710,7 +858,7 @@ namespace PhotoBooth.Booth.Frontend
                     return false;
                 }
 
-                var renderedText = RenderUiTextToTexture(font, value, slot.width, slot.height);
+                var renderedText = RenderUiTextToTexture(font, value, slot.width, slot.height, color);
                 if (renderedText == null)
                 {
                     return false;
@@ -720,11 +868,11 @@ namespace PhotoBooth.Booth.Frontend
                 {
                     if (!HasVisibleTextPixels(renderedText))
                     {
-                        Debug.LogWarning("BatteryPark UI font rendered no visible pixels; falling back to bitmap label text.");
+                        Debug.LogWarning("Franie UI font rendered no visible pixels; falling back to bitmap label text.");
                         return false;
                     }
 
-                    CompositeTextTexture(target, renderedText, slot.x, slot.y, PassengerNameColor);
+                    CompositeTextTexture(target, renderedText, slot.x, slot.y, color);
                     return true;
                 }
                 finally
@@ -734,7 +882,7 @@ namespace PhotoBooth.Booth.Frontend
             }
             catch (Exception exception)
             {
-                Debug.LogWarning($"BatteryPark UI font rendering failed; falling back to bitmap label text. {exception.Message}");
+                Debug.LogWarning($"Franie UI font rendering failed; falling back to bitmap label text. {exception.Message}");
                 return false;
             }
             finally
@@ -746,7 +894,7 @@ namespace PhotoBooth.Booth.Frontend
             }
         }
 
-        private static Texture2D RenderUiTextToTexture(Font font, string value, int width, int height)
+        private static Texture2D RenderUiTextToTexture(Font font, string value, int width, int height, Color color)
         {
             width = Mathf.Max(16, width);
             height = Mathf.Max(16, height);
@@ -799,9 +947,9 @@ namespace PhotoBooth.Booth.Frontend
                 var label = textHost.GetComponent<Text>();
                 label.font = font;
                 label.text = value;
-                label.color = PassengerNameColor;
+                label.color = color;
                 label.alignment = TextAnchor.MiddleLeft;
-                label.fontSize = Mathf.Max(PassengerNameFontSize, height);
+                label.fontSize = Mathf.Min(PassengerNameFontSize, Mathf.Max(18, height));
                 label.resizeTextForBestFit = false;
                 label.horizontalOverflow = HorizontalWrapMode.Overflow;
                 label.verticalOverflow = VerticalWrapMode.Overflow;

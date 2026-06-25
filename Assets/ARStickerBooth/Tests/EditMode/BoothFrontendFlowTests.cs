@@ -85,46 +85,33 @@ namespace PhotoBooth.Booth.Tests.EditMode
         }
 
         [Test]
-        public void Composer_PhotoTemplateUsesAllCapturedImages()
+        public void Composer_FirstKookyPhotoTemplateUsesThreeCapturedImages()
         {
-            var sessions = CreateSessionService();
-            var job = sessions.CreateJob(12000, "THB");
-            job = sessions.SelectTheme(job.JobId, "classic");
-            job = sessions.BypassPayment(job.JobId);
-            job = sessions.BeginCapture(job.JobId);
-
-            var rawPaths = new[]
-            {
-                Path.Combine(job.Paths.RawDirectory, "capture_01.png"),
-                Path.Combine(job.Paths.RawDirectory, "capture_02.png"),
-                Path.Combine(job.Paths.RawDirectory, "capture_03.png"),
-                Path.Combine(job.Paths.RawDirectory, "capture_04.png")
-            };
-
-            WriteTestPng(rawPaths[0], 64, 48, Color.red);
-            WriteTestPng(rawPaths[1], 64, 48, Color.green);
-            WriteTestPng(rawPaths[2], 64, 48, Color.blue);
-            WriteTestPng(rawPaths[3], 64, 48, Color.yellow);
-            job = sessions.MarkCaptured(job.JobId, 4, rawPaths[3], rawPaths);
-            job = sessions.BeginComposing(job.JobId);
-
-            var result = new BoothImageComposer().ComposePhotoGrid(job, rawPaths, new Vector2Int(32, 24));
-
-            Assert.That(File.Exists(result.ComposedImagePath), Is.True);
-            Assert.That(File.Exists(result.PrintImagePath), Is.True);
-            Assert.That(File.Exists(result.ThumbnailPath), Is.True);
-
-            var composed = LoadPng(result.ComposedImagePath);
-            var print = LoadPng(result.PrintImagePath);
+            var result = ComposeKookyTemplate("theme_01", "image_preview_1", out var composed, out var print);
             try
             {
-                Assert.That(composed.width, Is.EqualTo(4096));
-                Assert.That(composed.height, Is.EqualTo(4096));
-                Assert.That(composed.GetPixel(1313, 2075).r, Is.GreaterThan(0.8f));
-                Assert.That(composed.GetPixel(2776, 2075).g, Is.GreaterThan(0.4f));
-                Assert.That(composed.GetPixel(1313, 911).b, Is.GreaterThan(0.8f));
-                Assert.That(composed.GetPixel(2776, 911).r, Is.GreaterThan(0.8f));
-                Assert.That(print.GetPixel(1313, 2075).g, Is.GreaterThan(composed.GetPixel(1313, 2075).g));
+                Assert.That(File.Exists(result.ComposedImagePath), Is.True);
+                Assert.That(File.Exists(result.PrintImagePath), Is.True);
+                Assert.That(File.Exists(result.ThumbnailPath), Is.True);
+                AssertKookyThreePhotoLayout(composed, print);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(composed);
+                UnityEngine.Object.DestroyImmediate(print);
+            }
+        }
+
+        [Test]
+        public void Composer_SecondKookyPhotoTemplateUsesThreeCapturedImages()
+        {
+            var result = ComposeKookyTemplate("theme_02", "image_preview_2", out var composed, out var print);
+            try
+            {
+                Assert.That(File.Exists(result.ComposedImagePath), Is.True);
+                Assert.That(File.Exists(result.PrintImagePath), Is.True);
+                Assert.That(File.Exists(result.ThumbnailPath), Is.True);
+                AssertKookyThreePhotoLayout(composed, print);
             }
             finally
             {
@@ -183,6 +170,48 @@ namespace PhotoBooth.Booth.Tests.EditMode
             Assert.That(retakeJob.MotionClipFramePaths, Is.Null);
             Assert.That(retakeJob.MotionVideoPath, Is.Null);
             Assert.That(retakeJob.MotionVideoUrl, Is.Null);
+        }
+
+        private BoothCompositionResult ComposeKookyTemplate(string themeId, string imagePreviewId, out Texture2D composed, out Texture2D print)
+        {
+            var sessions = CreateSessionService();
+            var job = sessions.CreateJob(12000, "THB");
+            job = sessions.SelectTheme(job.JobId, themeId);
+            job = sessions.BypassPayment(job.JobId);
+            job = sessions.BeginCapture(job.JobId);
+
+            var rawPaths = new[]
+            {
+                Path.Combine(job.Paths.RawDirectory, "capture_01.png"),
+                Path.Combine(job.Paths.RawDirectory, "capture_02.png"),
+                Path.Combine(job.Paths.RawDirectory, "capture_03.png")
+            };
+
+            WriteTestPng(rawPaths[0], 64, 48, Color.red);
+            WriteTestPng(rawPaths[1], 64, 48, Color.green);
+            WriteTestPng(rawPaths[2], 64, 48, Color.blue);
+            job = sessions.MarkCaptured(job.JobId, 3, rawPaths[2], rawPaths);
+            job = sessions.BeginComposing(job.JobId);
+
+            var result = new BoothImageComposer().ComposePhotoGrid(
+                job,
+                rawPaths,
+                new Vector2Int(32, 24),
+                new BoothThemeOption { themeId = themeId, backendFrameId = themeId, imagePreviewId = imagePreviewId });
+
+            composed = LoadPng(result.ComposedImagePath);
+            print = LoadPng(result.PrintImagePath);
+            return result;
+        }
+
+        private static void AssertKookyThreePhotoLayout(Texture2D composed, Texture2D print)
+        {
+            Assert.That(composed.width, Is.EqualTo(1800));
+            Assert.That(composed.height, Is.EqualTo(1200));
+            Assert.That(composed.GetPixel(368, 375).r, Is.GreaterThan(0.8f));
+            Assert.That(composed.GetPixel(897, 375).g, Is.GreaterThan(0.4f));
+            Assert.That(composed.GetPixel(1426, 375).b, Is.GreaterThan(0.8f));
+            Assert.That(print.GetPixel(368, 375), Is.EqualTo(composed.GetPixel(368, 375)));
         }
 
         private BoothSessionService CreateSessionService()
