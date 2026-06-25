@@ -2980,7 +2980,7 @@ namespace PhotoBooth.Booth.Frontend
         private async Task<BoothCaptureClip> RecordCountdownMotionClipAsync(int startingFrameIndex)
         {
             var framePaths = new List<string>();
-            var framesPerSecond = Mathf.Clamp(motionClipFramesPerSecond, 1, 15);
+            var framesPerSecond = Mathf.Clamp(motionClipFramesPerSecond, 1, 30);
             var durationSeconds = Mathf.Max(1, countdownSeconds);
             var useCanonJpegMotion = cameraCaptureService?.IsUsingCanonEdsdk == true;
             if (useCanonJpegMotion)

@@ -709,8 +709,9 @@ namespace PhotoBooth.Booth.Sync
 
         private static IEnumerable<string> EnumerateExistingMotionFrames(SyncJobRequest request)
         {
-            // ponytail: MP4 already contains the clip; keep PNG frames only as the fallback transport.
-            if (HasMotionVideo(request) || request?.MotionClipFramePaths == null)
+            // Kooky World needs the sampled frames as well as the MP4 so the backend can
+            // place each capture's five-second pre-roll into its matching ticket slot.
+            if (request?.MotionClipFramePaths == null)
             {
                 yield break;
             }

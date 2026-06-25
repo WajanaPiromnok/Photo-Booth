@@ -17360,7 +17360,7 @@ MonoBehaviour:
   skipPaymentScreen: 0
   countdownSeconds: 5
   capturesPerSession: 3
-  motionClipFramesPerSecond: 15
+  motionClipFramesPerSecond: 30
   enableArTracking: 0
   maxArFaces: 4
   arPreviewUpdateIntervalMs: 100

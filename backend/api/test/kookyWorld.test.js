@@ -8,6 +8,7 @@ const {
   buildRotatingFrameSets,
   generateMediaOnce,
   kookyWorldStickerFileNames,
+  resolveKookyWorldCountdownFrameDurationSeconds,
   requiredRawCaptureCount,
   requiredRawCaptureTotalForRoute,
   renderKookyWorldDownloadPage,
@@ -37,6 +38,24 @@ test("aggregate Unity motion frames split into three capture segments", () => {
     ["motion_003.png", "motion_004.png", "motion_005.png"],
     ["motion_006.png", "motion_007.png", "motion_008.png"]
   ]);
+});
+
+test("Kooky countdown video infers frame duration from uploaded motion frame count", () => {
+  const frames = Array.from({ length: 450 }, (_, index) => ({
+    original_file_name: `motion_${String(index).padStart(3, "0")}.png`,
+    remote_key: `motion_${String(index).padStart(3, "0")}.png`
+  }));
+
+  assert.equal(resolveKookyWorldCountdownFrameDurationSeconds(frames), 1 / 30);
+});
+
+test("Kooky countdown video keeps old 4fps motion uploads at real speed", () => {
+  const frames = Array.from({ length: 60 }, (_, index) => ({
+    original_file_name: `motion_${String(index).padStart(3, "0")}.png`,
+    remote_key: `motion_${String(index).padStart(3, "0")}.png`
+  }));
+
+  assert.equal(resolveKookyWorldCountdownFrameDurationSeconds(frames), 0.25);
 });
 
 test("concurrent media requests share one generation", async () => {
@@ -127,7 +146,10 @@ test("all mapped overlays exist and the download page pairs them with captures i
       })),
       motionFrames: []
     });
-    assert.match(html, /liveview\.mp4\?v=frame-[12]-name-[a-f0-9]+-v5/);
+    assert.match(html, /liveview\.mp4\?v=frame-[12]-name-[a-f0-9]+-v6/);
+    assert.match(html, /font-family: "Franie", Impact/);
+    assert.match(html, /\.label-stage-1 \.label-passenger-name \{[\s\S]*?left: 45\.5%;[\s\S]*?top: 23\.1%;[\s\S]*?font-size: 1\.2cqw;/);
+    assert.match(html, /\.label-stage-2 \.label-passenger-name \{[\s\S]*?left: 33\.0%;[\s\S]*?top: 29\.4%;[\s\S]*?font-size: 1\.2cqw;/);
 
     let previousCaptureOffset = -1;
     for (let index = 0; index < 3; index += 1) {
@@ -138,5 +160,14 @@ test("all mapped overlays exist and the download page pairs them with captures i
       assert.ok(overlayOffset > captureOffset, `${overlayNames[index]} must overlay capture ${slotNumber}`);
       previousCaptureOffset = captureOffset;
     }
+  }
+});
+
+test("backend Kooky fonts are exact copies of the Unity source fonts", () => {
+  const projectRoot = path.join(__dirname, "..", "..", "..");
+  for (const fontName of ["Franie-SBold.otf", "Franie-XBold.otf"]) {
+    const unityFont = fs.readFileSync(path.join(projectRoot, "Assets", "UI", "Kooky", "Fonts", fontName));
+    const backendFont = fs.readFileSync(path.join(projectRoot, "backend", "api", "public", "kooky-world", fontName));
+    assert.deepEqual(backendFont, unityFont, `${fontName} must match the Unity source font`);
   }
 });
