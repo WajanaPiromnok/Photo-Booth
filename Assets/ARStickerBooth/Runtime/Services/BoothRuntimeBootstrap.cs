@@ -560,8 +560,10 @@ namespace PhotoBooth.Booth.Services
             var candidates = new[]
             {
                 Path.Combine(appRoot, relativePath),
+                Path.Combine(Path.GetDirectoryName(Application.dataPath) ?? appRoot, relativePath),
                 Path.Combine(Directory.GetCurrentDirectory(), relativePath),
-                Path.Combine(Application.dataPath, relativePath)
+                Path.Combine(Application.dataPath, relativePath),
+                Path.Combine(Path.GetFullPath(Path.Combine(Application.dataPath, "..", "..")), relativePath)
             };
 
             foreach (var candidate in candidates)

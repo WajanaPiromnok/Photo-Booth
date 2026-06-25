@@ -59,12 +59,15 @@ if (-not $env:DEFAULT_PRINTER_NAME) {
         }
     }
 
-    if (-not $selectedPrinter -and $printers.Count -gt 0) {
+    $allowAnyPrinterFallback = $env:PRINT_BRIDGE_ALLOW_ANY_PRINTER_FALLBACK -and
+        $env:PRINT_BRIDGE_ALLOW_ANY_PRINTER_FALLBACK -notin @("0", "false", "False", "no", "off")
+
+    if (-not $selectedPrinter -and $allowAnyPrinterFallback -and $printers.Count -gt 0) {
         $selectedPrinter = $printers | Select-Object -First 1
     }
 
     if (-not $selectedPrinter) {
-        throw "No usable local printer was found. Set DEFAULT_PRINTER_NAME manually."
+        throw "No preferred photo printer was found. Connect DS-RX1, set DEFAULT_PRINTER_NAME manually, or set PRINT_BRIDGE_ALLOW_ANY_PRINTER_FALLBACK=true for testing."
     }
 
     $env:DEFAULT_PRINTER_NAME = $selectedPrinter.Name

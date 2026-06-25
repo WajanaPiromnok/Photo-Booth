@@ -276,8 +276,16 @@ namespace PhotoBooth.Booth.Frontend
         private GameObject captureIntroLozado;
         private GameObject captureTrainRoot;
         private readonly GameObject[] captureTrainLevels = new GameObject[3];
+        private readonly GameObject[] captureTrainCircles = new GameObject[3];
         private readonly GameObject[] captureTrainInnerCircles = new GameObject[3];
         private CanvasGroup captureIntroLozadoCanvasGroup;
+        private RectTransform captureTrainLine;
+        private RectTransform captureTrainLineFill;
+        private Image captureTrainLineImage;
+        private Image captureTrainLineFillImage;
+        private Vector2 captureTrainLineInitialPosition;
+        private Vector2 captureTrainLineInitialSize;
+        private bool hasCaptureTrainLineInitialRect;
         private RectTransform captureTrainMover;
         private Vector2 captureTrainInitialPosition;
         private bool hasCaptureTrainInitialPosition;
@@ -3464,6 +3472,23 @@ namespace PhotoBooth.Booth.Frontend
             captureIntroLozado ??= root.Find("TopMetalPanel/Lozado")?.gameObject;
             captureTrainRoot ??= root.Find("TopMetalPanel/Train")?.gameObject;
             captureTrainMover ??= root.Find("TopMetalPanel/Train/Train") as RectTransform;
+            captureTrainLine ??=
+                root.Find("TopMetalPanel/Train/Line") as RectTransform
+                ?? root.Find("TopMetalPanel/Train/Train/Line") as RectTransform
+                ?? FindNamedDescendant(captureTrainRoot?.transform, "Line") as RectTransform;
+            if (captureTrainLine != null)
+            {
+                captureTrainLineImage ??= captureTrainLine.GetComponent<Image>();
+                if (!hasCaptureTrainLineInitialRect)
+                {
+                    captureTrainLineInitialPosition = captureTrainLine.anchoredPosition;
+                    captureTrainLineInitialSize = captureTrainLine.sizeDelta;
+                    hasCaptureTrainLineInitialRect = true;
+                }
+
+                EnsureCaptureTrainLineFill();
+            }
+
             if (captureTrainMover != null && !hasCaptureTrainInitialPosition)
             {
                 captureTrainInitialPosition = captureTrainMover.anchoredPosition;
@@ -3473,9 +3498,19 @@ namespace PhotoBooth.Booth.Frontend
             for (var index = 0; index < captureTrainLevels.Length; index += 1)
             {
                 captureTrainLevels[index] ??= root.Find($"TopMetalPanel/Train/Level {index + 1}")?.gameObject;
-                captureTrainInnerCircles[index] ??=
-                    root.Find($"TopMetalPanel/Train/Line/Circle - {index + 1}/Circle - inside")?.gameObject
-                    ?? root.Find($"TopMetalPanel/Train/Train/Line/Circle - {index + 1}/Circle - inside")?.gameObject;
+                var circle = root.Find($"TopMetalPanel/Train/Line/Circle - {index + 1}")
+                    ?? root.Find($"TopMetalPanel/Train/Train/Line/Circle - {index + 1}")
+                    ?? FindNamedDescendant(captureTrainRoot?.transform, $"Circle - {index + 1}");
+                if (circle != null)
+                {
+                    captureTrainCircles[index] = circle.gameObject;
+                    var innerCircle = FindDirectChild(circle, "Circle - inside")
+                        ?? FindNamedDescendant(circle, "Circle - inside");
+                    if (innerCircle != null)
+                    {
+                        captureTrainInnerCircles[index] = innerCircle.gameObject;
+                    }
+                }
             }
         }
 
@@ -3502,6 +3537,7 @@ namespace PhotoBooth.Booth.Frontend
             {
                 captureTrainMover.anchoredPosition = captureTrainInitialPosition;
             }
+            ResetCaptureTrainLineFill();
 
             captureStartText?.SetText("TAKE A PHOTO");
             captureStartText?.gameObject.SetActive(true);
@@ -3519,9 +3555,14 @@ namespace PhotoBooth.Booth.Frontend
                 level?.SetActive(false);
             }
 
-            foreach (var innerCircle in captureTrainInnerCircles)
+            foreach (var circle in captureTrainCircles)
             {
-                innerCircle?.SetActive(false);
+                circle?.SetActive(false);
+            }
+
+            for (var index = 0; index < captureTrainInnerCircles.Length; index += 1)
+            {
+                SetCaptureTrainInnerCircleVisible(index, false);
             }
         }
 
@@ -3530,6 +3571,7 @@ namespace PhotoBooth.Booth.Frontend
             BindAutomaticCaptureUi();
             CancelCaptureTrainAnimation();
             captureTrainAnimationCancellation = new CancellationTokenSource();
+            SetActiveCaptureTrainCircle(0);
             _ = FadeLozadoThenShowTrainAsync(captureTrainAnimationCancellation.Token);
             captureStartText?.gameObject.SetActive(false);
             if (captureShotCountImage != null)
@@ -3568,6 +3610,7 @@ namespace PhotoBooth.Booth.Frontend
                 }
                 else
                 {
+                    SetCaptureTrainLineLevel(trainLevel);
                     SetActiveCaptureTrainCircle(trainLevel);
                 }
             }
@@ -3651,6 +3694,7 @@ namespace PhotoBooth.Booth.Frontend
             {
                 if (animationSerial == captureTrainAnimationSerial)
                 {
+                    SetCaptureTrainLineLevel(level);
                     SetActiveCaptureTrainCircle(level);
                 }
 
@@ -3677,6 +3721,17 @@ namespace PhotoBooth.Booth.Frontend
                 captureTrainMover.anchoredPosition = startPosition;
             }
 
+            targetPosition.x += ResolveCaptureTrainOvershoot(level, startPosition.x, targetPosition.x);
+            var startLineWidth = captureTrainLineFill != null && captureTrainLineFill.gameObject.activeSelf
+                ? captureTrainLineFill.sizeDelta.x
+                : 0f;
+            var targetLineWidth = ResolveCaptureTrainLineWidth(level);
+            if (captureTrainLineFill != null)
+            {
+                captureTrainLineFill.gameObject.SetActive(true);
+            }
+            SetActiveCaptureTrainCircle(level);
+
             const float duration = 0.65f;
             var elapsed = 0f;
             while (elapsed < duration)
@@ -3690,6 +3745,7 @@ namespace PhotoBooth.Booth.Frontend
                 elapsed += Time.unscaledDeltaTime;
                 var t = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(elapsed / duration));
                 captureTrainMover.anchoredPosition = Vector2.LerpUnclamped(startPosition, targetPosition, t);
+                ApplyCaptureTrainLineWidth(Mathf.LerpUnclamped(startLineWidth, targetLineWidth, t));
                 await Task.Yield();
             }
 
@@ -3699,14 +3755,226 @@ namespace PhotoBooth.Booth.Frontend
             }
 
             captureTrainMover.anchoredPosition = targetPosition;
+            ApplyCaptureTrainLineWidth(targetLineWidth);
             SetActiveCaptureTrainCircle(level);
+        }
+
+        private void EnsureCaptureTrainLineFill()
+        {
+            if (captureTrainLine == null || captureTrainLineFill != null)
+            {
+                return;
+            }
+
+            var fillHost = FindDirectChild(captureTrainLine.parent, "Line Fill")?.gameObject
+                ?? FindDirectChild(captureTrainLine, "Line Fill")?.gameObject;
+            if (fillHost == null)
+            {
+                fillHost = new GameObject("Line Fill", typeof(RectTransform), typeof(Image));
+            }
+
+            fillHost.transform.SetParent(captureTrainLine, false);
+            RemoveExtraCaptureTrainLineFills(fillHost);
+            captureTrainLineFill = fillHost.transform as RectTransform;
+            if (captureTrainLineFill == null)
+            {
+                return;
+            }
+
+            captureTrainLineFill.anchorMin = new Vector2(1f, 0.5f);
+            captureTrainLineFill.anchorMax = new Vector2(1f, 0.5f);
+            captureTrainLineFill.pivot = new Vector2(1f, 0.5f);
+            captureTrainLineFill.anchoredPosition = Vector2.zero;
+            captureTrainLineFill.sizeDelta = new Vector2(0f, captureTrainLine.sizeDelta.y);
+            captureTrainLineFill.localRotation = Quaternion.identity;
+            captureTrainLineFill.localScale = Vector3.one;
+            captureTrainLineFill.SetSiblingIndex(0);
+
+            captureTrainLineFillImage = fillHost.GetComponent<Image>() ?? fillHost.AddComponent<Image>();
+            captureTrainLineFillImage.raycastTarget = false;
+            if (captureTrainLineImage != null)
+            {
+                captureTrainLineFillImage.sprite = captureTrainLineImage.sprite;
+                captureTrainLineFillImage.type = captureTrainLineImage.type;
+                captureTrainLineFillImage.color = captureTrainLineImage.color;
+                captureTrainLineFillImage.material = captureTrainLineImage.material;
+                captureTrainLineImage.enabled = false;
+            }
+
+            fillHost.SetActive(false);
+        }
+
+        private void RemoveExtraCaptureTrainLineFills(GameObject keep)
+        {
+            var extras = new List<GameObject>();
+            CollectExtraCaptureTrainLineFills(captureTrainLine?.parent, keep, extras);
+            CollectExtraCaptureTrainLineFills(captureTrainLine, keep, extras);
+
+            foreach (var extra in extras)
+            {
+                if (extra == null)
+                {
+                    continue;
+                }
+
+                if (Application.isPlaying)
+                {
+                    Destroy(extra);
+                }
+                else
+                {
+                    DestroyImmediate(extra);
+                }
+            }
+        }
+
+        private static void CollectExtraCaptureTrainLineFills(Transform parent, GameObject keep, List<GameObject> extras)
+        {
+            if (parent == null)
+            {
+                return;
+            }
+
+            for (var index = parent.childCount - 1; index >= 0; index -= 1)
+            {
+                var child = parent.GetChild(index);
+                if (child == null
+                    || child.gameObject == keep
+                    || !string.Equals(child.name, "Line Fill", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                extras.Add(child.gameObject);
+            }
+        }
+
+        private void ResetCaptureTrainLineFill()
+        {
+            if (captureTrainLineImage != null)
+            {
+                captureTrainLineImage.enabled = false;
+            }
+
+            if (captureTrainLineFill == null)
+            {
+                return;
+            }
+
+            captureTrainLineFill.gameObject.SetActive(false);
+            if (hasCaptureTrainLineInitialRect)
+            {
+                ApplyCaptureTrainLineWidth(0f);
+            }
+        }
+
+        private void SetCaptureTrainLineLevel(int level)
+        {
+            if (captureTrainLineFill == null || !hasCaptureTrainLineInitialRect)
+            {
+                return;
+            }
+
+            captureTrainLineFill.gameObject.SetActive(level > 0);
+            ApplyCaptureTrainLineWidth(ResolveCaptureTrainLineWidth(level));
+        }
+
+        private float ResolveCaptureTrainLineWidth(int level)
+        {
+            var fullWidth = Mathf.Max(0f, captureTrainLineInitialSize.x);
+            if (level >= captureTrainInnerCircles.Length)
+            {
+                return fullWidth;
+            }
+
+            var circleTransform = level >= 1 && level <= captureTrainCircles.Length
+                ? captureTrainCircles[level - 1]?.transform as RectTransform
+                : null;
+            if (circleTransform == null || captureTrainLine == null)
+            {
+                return fullWidth;
+            }
+
+            var lineRight = captureTrainLineInitialPosition.x + (fullWidth * (1f - captureTrainLine.pivot.x));
+            var circleCenter = captureTrainLineInitialPosition.x + circleTransform.anchoredPosition.x;
+            var targetLeft = circleCenter - ResolveCaptureTrainLineOvershoot(level);
+            return Mathf.Clamp(lineRight - targetLeft, 0f, fullWidth);
+        }
+
+        private static float ResolveCaptureTrainLineOvershoot(int level)
+        {
+            const float waypointOvershoot = 75.56f;
+            return level >= 3 ? 0f : waypointOvershoot;
+        }
+
+        private void ApplyCaptureTrainLineWidth(float width)
+        {
+            if (captureTrainLineFill == null || !hasCaptureTrainLineInitialRect)
+            {
+                return;
+            }
+
+            width = Mathf.Clamp(width, 0f, Mathf.Max(0f, captureTrainLineInitialSize.x));
+            if (captureTrainLineFill.parent == captureTrainLine)
+            {
+                captureTrainLineFill.sizeDelta = new Vector2(width, captureTrainLineInitialSize.y);
+                captureTrainLineFill.anchoredPosition = Vector2.zero;
+                return;
+            }
+
+            var lineRight = captureTrainLineInitialPosition.x + (captureTrainLineInitialSize.x * (1f - captureTrainLineFill.pivot.x));
+            captureTrainLineFill.sizeDelta = new Vector2(width, captureTrainLineInitialSize.y);
+            captureTrainLineFill.anchoredPosition = new Vector2(
+                lineRight - (width * (1f - captureTrainLineFill.pivot.x)),
+                captureTrainLineInitialPosition.y);
+        }
+
+        private static float ResolveCaptureTrainOvershoot(int level, float startX, float targetX)
+        {
+            const float waypointOvershoot = 18f;
+            if (level >= 3)
+            {
+                return 0f;
+            }
+
+            var direction = Mathf.Sign(targetX - startX);
+            if (Mathf.Approximately(direction, 0f))
+            {
+                direction = -1f;
+            }
+
+            return direction * waypointOvershoot;
         }
 
         private void SetActiveCaptureTrainCircle(int level)
         {
             for (var index = 0; index < captureTrainInnerCircles.Length; index += 1)
             {
-                captureTrainInnerCircles[index]?.SetActive(index == level - 1);
+                var isCaptured = index < level;
+                var isCurrentLevel = index == level - 1;
+                captureTrainCircles[index]?.SetActive(isCaptured);
+                SetCaptureTrainInnerCircleVisible(index, isCurrentLevel);
+            }
+        }
+
+        private void SetCaptureTrainInnerCircleVisible(int index, bool visible)
+        {
+            if (index < 0 || index >= captureTrainInnerCircles.Length)
+            {
+                return;
+            }
+
+            var innerCircle = captureTrainInnerCircles[index];
+            if (innerCircle == null)
+            {
+                return;
+            }
+
+            innerCircle.SetActive(visible);
+            var graphics = innerCircle.GetComponentsInChildren<Graphic>(true);
+            foreach (var graphic in graphics)
+            {
+                graphic.enabled = visible;
             }
         }
 
@@ -8402,6 +8670,24 @@ namespace PhotoBooth.Booth.Frontend
                 if (child != null && string.Equals(child.name, childName, StringComparison.Ordinal))
                 {
                     return child;
+                }
+            }
+
+            return null;
+        }
+
+        private static Transform FindNamedDescendant(Transform root, string childName)
+        {
+            if (root == null || string.IsNullOrWhiteSpace(childName))
+            {
+                return null;
+            }
+
+            foreach (var candidate in root.GetComponentsInChildren<Transform>(true))
+            {
+                if (candidate != null && string.Equals(candidate.name, childName, StringComparison.Ordinal))
+                {
+                    return candidate;
                 }
             }
 

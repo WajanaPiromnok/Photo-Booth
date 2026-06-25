@@ -4,6 +4,7 @@ using System.IO;
 using PhotoBooth.Booth.Domain;
 using TMPro;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 using UnityEngine.UI;
 #if UNITY_EDITOR
 using UnityEditor;
@@ -18,6 +19,8 @@ namespace PhotoBooth.Booth.Frontend
         private const string PassengerNameFontAssetPath = "Assets/UI/Kooky/Fonts/Franie-SBold.otf";
         private const string PassengerNameFontPath = "UI/Kooky/Fonts/Franie-SBold.otf";
         private const string KookyPhotoBoothDirectory = "UI/Kooky/Separate pieces/Photo booth";
+        private const string KookyFontsDirectory = "UI/Kooky/Fonts";
+        private const string KookySceneName = "PhotoBooth-Kooky";
         private const int FinalJpegQuality = 86;
         private const int ThumbnailJpegQuality = 82;
         private const int KookyPrintWidth = 1800;
@@ -246,13 +249,12 @@ namespace PhotoBooth.Booth.Frontend
 
         private static Texture2D LoadLabelFrameTemplate(BoothThemeOption theme)
         {
-            var previewId = ResolveImagePreviewId(theme);
-            if (previewId == "1" || previewId == "image_preview_1" || previewId == "theme_01")
+            if (IsImagePreview1(theme))
             {
                 return LoadTextureFromAssets(KookyPhotoBoothDirectory, "ticket_1.png");
             }
 
-            if (previewId == "2" || previewId == "image_preview_2" || previewId == "theme_02")
+            if (IsImagePreview2(theme))
             {
                 return LoadTextureFromAssets(KookyPhotoBoothDirectory, "ticket_2.png");
             }
@@ -263,19 +265,20 @@ namespace PhotoBooth.Booth.Frontend
         private static Texture2D LoadTextureFromAssets(string relativeDirectory, string fileName)
         {
             var path = Path.Combine(Application.dataPath, relativeDirectory, fileName);
-            if (!File.Exists(path))
+            if (File.Exists(path))
             {
-                return null;
+                var texture = new Texture2D(2, 2, TextureFormat.RGBA32, false);
+                if (ImageConversion.LoadImage(texture, File.ReadAllBytes(path)))
+                {
+                    return texture;
+                }
+
+                UnityEngine.Object.Destroy(texture);
             }
 
-            var texture = new Texture2D(2, 2, TextureFormat.RGBA32, false);
-            if (ImageConversion.LoadImage(texture, File.ReadAllBytes(path)))
-            {
-                return texture;
-            }
-
-            UnityEngine.Object.Destroy(texture);
-            return null;
+            var resourcePath = $"{relativeDirectory}/{Path.GetFileNameWithoutExtension(fileName)}";
+            var resourceTexture = Resources.Load<Texture2D>(resourcePath);
+            return resourceTexture != null ? CloneReadableTexture(resourceTexture) : null;
         }
 
         private static Texture2D CloneReadableTexture(Texture2D source)
@@ -322,13 +325,18 @@ namespace PhotoBooth.Booth.Frontend
         private static bool IsImagePreview1(BoothThemeOption theme)
         {
             var previewId = ResolveImagePreviewId(theme);
-            return previewId == "1" || previewId == "image_preview_1" || previewId == "theme_01";
+            return previewId == "1"
+                || previewId == "image_preview_1"
+                || previewId == "theme_01"
+                || (string.IsNullOrWhiteSpace(previewId) && IsKookyScene());
         }
 
         private static bool IsImagePreview2(BoothThemeOption theme)
         {
             var previewId = ResolveImagePreviewId(theme);
-            return previewId == "2" || previewId == "image_preview_2" || previewId == "theme_02";
+            return previewId == "2"
+                || previewId == "image_preview_2"
+                || previewId == "theme_02";
         }
 
         private static bool IsKookyPrintTemplate(BoothThemeOption theme)
@@ -357,7 +365,17 @@ namespace PhotoBooth.Booth.Frontend
                 value = theme?.BackendFrameId;
             }
 
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                value = theme?.themeId;
+            }
+
             return string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim().ToLowerInvariant();
+        }
+
+        private static bool IsKookyScene()
+        {
+            return string.Equals(SceneManager.GetActiveScene().name, KookySceneName, StringComparison.Ordinal);
         }
 
         private static byte[] ComposePhotoGridBytes(IReadOnlyList<string> rawImagePaths, BoothAiStyleOption aiStyle)
@@ -657,10 +675,19 @@ namespace PhotoBooth.Booth.Frontend
         private static TMP_FontAsset LoadPassengerNameTmpFont()
         {
 #if UNITY_EDITOR
-            return AssetDatabase.LoadAssetAtPath<TMP_FontAsset>(PassengerNameTmpFontAssetPath);
+            var editorFont = AssetDatabase.LoadAssetAtPath<TMP_FontAsset>(PassengerNameTmpFontAssetPath);
+            if (editorFont != null)
+            {
+                return editorFont;
+            }
 #else
-            return null;
+            var resourceFont = Resources.Load<TMP_FontAsset>($"{KookyFontsDirectory}/Franie-SBold SDF");
+            if (resourceFont != null)
+            {
+                return resourceFont;
+            }
 #endif
+            return null;
         }
 
         private static Texture2D RenderTmpTextToTexture(TMP_FontAsset fontAsset, string value, int width, int height, Color color)
@@ -990,6 +1017,12 @@ namespace PhotoBooth.Booth.Frontend
                 return editorFont;
             }
 #endif
+            var resourceFont = Resources.Load<Font>($"{KookyFontsDirectory}/Franie-SBold");
+            if (resourceFont != null)
+            {
+                return resourceFont;
+            }
+
             var fontPath = Path.Combine(Application.dataPath, PassengerNameFontPath);
             if (!File.Exists(fontPath))
             {

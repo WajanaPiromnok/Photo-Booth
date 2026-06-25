@@ -50,7 +50,16 @@ async function handlePrintJob(body, config = buildConfig(), deps = {}) {
     return errorResponse(403, false, "Printer is not allowed by this bridge.", printerName);
   }
 
-  console.log("print_job_requested", { jobId, imagePath, requestedPrinterName, printerName, copies });
+  const imageMetadata = readImageMetadata(imagePath);
+  console.log("print_job_requested", {
+    jobId,
+    imagePath,
+    fileName: path.basename(imagePath),
+    requestedPrinterName,
+    printerName,
+    copies,
+    image: imageMetadata
+  });
   try {
     if (config.dryRun) {
       if (config.openPreview) {
@@ -224,6 +233,77 @@ function parseBoolean(value, defaultValue) {
   }
 
   return !["0", "false", "no", "off"].includes(String(value).trim().toLowerCase());
+}
+
+function readImageMetadata(imagePath) {
+  try {
+    const stat = fs.statSync(imagePath);
+    const buffer = fs.readFileSync(imagePath);
+    const dimensions = readImageDimensions(buffer);
+    return {
+      bytes: stat.size,
+      width: dimensions?.width || null,
+      height: dimensions?.height || null,
+      format: dimensions?.format || path.extname(imagePath).replace(".", "").toLowerCase() || null
+    };
+  } catch (error) {
+    return {
+      error: error?.message || "Could not read image metadata."
+    };
+  }
+}
+
+function readImageDimensions(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 10) {
+    return null;
+  }
+
+  if (buffer[0] === 0x89
+    && buffer[1] === 0x50
+    && buffer[2] === 0x4e
+    && buffer[3] === 0x47
+    && buffer.length >= 24) {
+    return {
+      format: "png",
+      width: buffer.readUInt32BE(16),
+      height: buffer.readUInt32BE(20)
+    };
+  }
+
+  if (buffer[0] === 0xff && buffer[1] === 0xd8) {
+    let offset = 2;
+    while (offset + 9 < buffer.length) {
+      if (buffer[offset] !== 0xff) {
+        offset += 1;
+        continue;
+      }
+
+      const marker = buffer[offset + 1];
+      if (marker === 0xd9 || marker === 0xda) {
+        break;
+      }
+
+      const segmentLength = buffer.readUInt16BE(offset + 2);
+      if (segmentLength < 2 || offset + 2 + segmentLength > buffer.length) {
+        break;
+      }
+
+      if ((marker >= 0xc0 && marker <= 0xc3)
+        || (marker >= 0xc5 && marker <= 0xc7)
+        || (marker >= 0xc9 && marker <= 0xcb)
+        || (marker >= 0xcd && marker <= 0xcf)) {
+        return {
+          format: "jpg",
+          height: buffer.readUInt16BE(offset + 5),
+          width: buffer.readUInt16BE(offset + 7)
+        };
+      }
+
+      offset += 2 + segmentLength;
+    }
+  }
+
+  return null;
 }
 
 function errorResponse(statusCode, retryable, message, printerName) {
