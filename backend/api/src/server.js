@@ -7183,13 +7183,13 @@ function renderKookyWorldDownloadPage({ job, composed, thumbnail, liveImage, mot
     }
     .label-stage-1 .label-passenger-name {
       left: 45.5%;
-      top: 20.6%;
+      top: 19.5%;
       font-size: 0.8cqw;
       color: #231F20;
     }
     .label-stage-2 .label-passenger-name {
       left: 33.0%;
-      top: 24.0%;
+      top: 25.0%;
       font-size: 0.8cqw;
       color: #FFFFFF;
     }
