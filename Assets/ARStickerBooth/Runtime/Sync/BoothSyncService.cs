@@ -102,6 +102,24 @@ namespace PhotoBooth.Booth.Sync
             return syncClient.UploadRawCaptureAsync(request, cancellationToken);
         }
 
+        public Task<PreparedDownloadResult> PrepareDownloadAsync(string jobId, CancellationToken cancellationToken = default)
+        {
+            var job = sessionService.GetJob(jobId);
+            var request = new PreparedDownloadRequest
+            {
+                JobId = job.JobId,
+                DeviceId = ResolveDeviceId(),
+                ThemeId = job.ThemeId,
+                ImagePreviewId = job.ThemeId,
+                PassengerName = job.PassengerName,
+                SessionStartedAtUtc = ResolveSessionStartedAtUtc(job),
+                CurrencyCode = job.CurrencyCode,
+                AmountMinorUnits = job.AmountMinorUnits,
+                PaymentReference = job.PaymentReference
+            };
+            return syncClient.PrepareDownloadAsync(request, cancellationToken);
+        }
+
         private string ResolveDeviceId()
         {
             return string.IsNullOrWhiteSpace(config.DeviceId) ? "booth-local" : config.DeviceId.Trim();

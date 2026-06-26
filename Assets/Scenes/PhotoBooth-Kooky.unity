@@ -19330,6 +19330,7 @@ MonoBehaviour:
   canonEdsdkCaptureTimeoutMs: 20000
   canonEdsdkPreviewFramesPerSecond: 15
   canonEdsdkPreviewUiFramesPerSecond: 15
+  mirrorCapturePreviewHorizontally: 1
   cameraCaptureSize: {x: 1280, y: 720}
   thumbnailSize: {x: 320, y: 180}
   captureForegroundTextures:

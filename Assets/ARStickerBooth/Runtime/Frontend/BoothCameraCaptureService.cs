@@ -72,6 +72,7 @@ namespace PhotoBooth.Booth.Frontend
         private readonly bool useCanonEdsdk;
         private readonly bool allowCameraFallback;
         private readonly int canonPreviewUiFramesPerSecond;
+        private readonly bool mirrorPreviewHorizontally;
         private readonly SemaphoreSlim previewLifecycleLock = new(1, 1);
 
         private WebCamTexture cameraTexture;
@@ -104,7 +105,8 @@ namespace PhotoBooth.Booth.Frontend
             ICanonCameraBackend canonCameraBackend = null,
             bool useCanonEdsdk = false,
             bool allowCameraFallback = true,
-            int canonPreviewUiFramesPerSecond = 10)
+            int canonPreviewUiFramesPerSecond = 10,
+            bool mirrorPreviewHorizontally = false)
         {
             this.previewTarget = previewTarget;
             this.requestedWidth = Math.Max(320, requestedWidth);
@@ -120,6 +122,7 @@ namespace PhotoBooth.Booth.Frontend
             this.useCanonEdsdk = useCanonEdsdk;
             this.allowCameraFallback = allowCameraFallback;
             this.canonPreviewUiFramesPerSecond = Mathf.Clamp(canonPreviewUiFramesPerSecond, 1, 15);
+            this.mirrorPreviewHorizontally = mirrorPreviewHorizontally;
         }
 
         public bool IsPreviewing => (cameraTexture != null && cameraTexture.isPlaying) || gPhoto2PreviewTexture != null || simulatedCameraTexture != null;
@@ -507,7 +510,7 @@ namespace PhotoBooth.Booth.Frontend
             {
                 previewTarget.texture = simulatedCameraTexture;
                 previewTarget.color = Color.white;
-                previewTarget.uvRect = new Rect(0f, 0f, 1f, 1f);
+                previewTarget.uvRect = PreviewUvRect(mirrorPreviewHorizontally);
             }
         }
 
@@ -552,9 +555,7 @@ namespace PhotoBooth.Booth.Frontend
             {
                 previewTarget.texture = cameraTexture;
                 previewTarget.color = Color.white;
-                previewTarget.uvRect = IsHd33DeviceName(selectedDeviceName)
-                    ? new Rect(0f, 0f, 1f, 1f)
-                    : new Rect(1f, 0f, -1f, 1f);
+                previewTarget.uvRect = PreviewUvRect(mirrorPreviewHorizontally || !IsHd33DeviceName(selectedDeviceName));
             }
 
             cameraTexture.Play();
@@ -608,7 +609,7 @@ namespace PhotoBooth.Booth.Frontend
 
                     if (await RefreshGPhoto2PreviewFrameAsync(cancellationToken))
                     {
-                        ApplyPreviewTexture(gPhoto2PreviewTexture, flipHorizontally: false);
+                        ApplyPreviewTexture(gPhoto2PreviewTexture, flipHorizontally: mirrorPreviewHorizontally);
                         Debug.Log($"PhotoBooth camera selected: device={CurrentDeviceName}, source={currentDeviceSource}");
                         Debug.Log($"PhotoBooth camera preview ready: device={CurrentDeviceName}, source={currentDeviceSource}, texture={CurrentWidth}x{CurrentHeight}");
 
@@ -673,7 +674,7 @@ namespace PhotoBooth.Booth.Frontend
 
             await firstFrameReady.Task;
             UpdateCanonPreviewTexture(force: true);
-            ApplyPreviewTexture(gPhoto2PreviewTexture, flipHorizontally: false);
+            ApplyPreviewTexture(gPhoto2PreviewTexture, flipHorizontally: mirrorPreviewHorizontally);
             Debug.Log($"PhotoBooth Canon preview ready: device={CurrentDeviceName}, texture={CurrentWidth}x{CurrentHeight}");
         }
 
@@ -930,7 +931,12 @@ namespace PhotoBooth.Booth.Frontend
 
             previewTarget.texture = texture;
             previewTarget.color = Color.white;
-            previewTarget.uvRect = flipHorizontally
+            previewTarget.uvRect = PreviewUvRect(flipHorizontally);
+        }
+
+        private static Rect PreviewUvRect(bool flipHorizontally)
+        {
+            return flipHorizontally
                 ? new Rect(1f, 0f, -1f, 1f)
                 : new Rect(0f, 0f, 1f, 1f);
         }

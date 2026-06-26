@@ -16,6 +16,32 @@ namespace PhotoBooth.Booth.Sync
             this.latencyMilliseconds = Math.Max(0, latencyMilliseconds);
         }
 
+        public async Task<PreparedDownloadResult> PrepareDownloadAsync(PreparedDownloadRequest request, CancellationToken cancellationToken = default)
+        {
+            if (request == null)
+            {
+                throw new ArgumentNullException(nameof(request));
+            }
+
+            if (latencyMilliseconds > 0)
+            {
+                await Task.Delay(latencyMilliseconds, cancellationToken);
+            }
+
+            var downloadUrl = BuildDownloadUrl(request.JobId);
+            return new PreparedDownloadResult
+            {
+                Success = true,
+                Retryable = false,
+                Message = "Scaffold download preparation completed.",
+                JobId = request.JobId,
+                RoutePrefix = "world-tour",
+                SessionFolder = $"{request.SessionStartedAtUtc ?? "session"}_{request.JobId}",
+                DownloadUrl = downloadUrl,
+                QrPngUrl = $"{downloadUrl}/qr"
+            };
+        }
+
         public async Task<RawCaptureUploadResult> UploadRawCaptureAsync(RawCaptureUploadRequest request, CancellationToken cancellationToken = default)
         {
             if (request == null)

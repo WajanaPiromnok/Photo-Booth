@@ -19,6 +19,41 @@ namespace PhotoBooth.Booth.Sync
             this.config = config ?? throw new ArgumentNullException(nameof(config));
         }
 
+        public async Task<PreparedDownloadResult> PrepareDownloadAsync(PreparedDownloadRequest request, CancellationToken cancellationToken = default)
+        {
+            if (request == null)
+            {
+                throw new ArgumentNullException(nameof(request));
+            }
+
+            if (string.IsNullOrWhiteSpace(config.BoothApiBaseUrl))
+            {
+                return PreparedFailure("Booth API base URL is not configured.", false);
+            }
+
+            var prepareUrl = BoothBackendPathResolver.Resolve(
+                config.BoothApiBaseUrl,
+                "/v1/jobs/{jobId}/prepare-download",
+                request.JobId);
+
+            var payload = JsonUtility.ToJson(new BoothPreparedDownloadRequest
+            {
+                job_id = request.JobId,
+                device_id = ResolveDeviceId(request.DeviceId),
+                theme_id = request.ThemeId,
+                image_preview_id = ResolveImagePreviewId(request.ImagePreviewId, request.ThemeId),
+                passenger_name = request.PassengerName,
+                session_started_at_utc = request.SessionStartedAtUtc,
+                currency = request.CurrencyCode,
+                amount_minor_units = request.AmountMinorUnits,
+                payment_reference = request.PaymentReference
+            });
+
+            using var requestMessage = CreateJsonRequest(prepareUrl, UnityWebRequest.kHttpVerbPOST, payload, ResolveDeviceId(request.DeviceId));
+            await SendAsync(requestMessage, cancellationToken);
+            return ParsePreparedDownloadResponse(request.JobId, requestMessage);
+        }
+
         public async Task<RawCaptureUploadResult> UploadRawCaptureAsync(RawCaptureUploadRequest request, CancellationToken cancellationToken = default)
         {
             if (request == null)
@@ -401,6 +436,32 @@ namespace PhotoBooth.Booth.Sync
             };
         }
 
+        private PreparedDownloadResult ParsePreparedDownloadResponse(string jobId, UnityWebRequest request)
+        {
+            if (!IsSuccess(request))
+            {
+                return ParsePreparedFailure(request, $"Download preparation failed for {jobId}.");
+            }
+
+            var envelope = TryParseJson<BoothPreparedDownloadResponseEnvelope>(request.downloadHandler.text);
+            if (envelope != null && !envelope.success)
+            {
+                return PreparedFailure(BuildEnvelopeErrorMessage(envelope.error, "Download preparation was rejected."), IsRetryable(request));
+            }
+
+            return new PreparedDownloadResult
+            {
+                Success = true,
+                Retryable = false,
+                Message = "Download preparation completed.",
+                JobId = string.IsNullOrWhiteSpace(envelope?.data?.job_id) ? jobId : envelope.data.job_id,
+                RoutePrefix = envelope?.data?.route_prefix,
+                SessionFolder = envelope?.data?.session_folder,
+                DownloadUrl = envelope?.data?.download_url,
+                QrPngUrl = envelope?.data?.qr_png_url
+            };
+        }
+
         private RawCaptureUploadResult ParseRawCaptureUploadResponse(string jobId, UnityWebRequest request)
         {
             if (!IsSuccess(request))
@@ -577,6 +638,18 @@ namespace PhotoBooth.Booth.Sync
             return Failure($"{fallbackMessage} HTTP {(long)request.responseCode}: {request.error}", IsRetryable(request));
         }
 
+        private static PreparedDownloadResult ParsePreparedFailure(UnityWebRequest request, string fallbackMessage)
+        {
+            var body = request.downloadHandler?.text;
+            var envelope = TryParseJson<BoothPreparedDownloadResponseEnvelope>(body);
+            if (envelope?.error != null)
+            {
+                return PreparedFailure(BuildEnvelopeErrorMessage(envelope.error, fallbackMessage), IsRetryable(request));
+            }
+
+            return PreparedFailure($"{fallbackMessage} HTTP {(long)request.responseCode}: {request.error}", IsRetryable(request));
+        }
+
         private static RawCaptureUploadResult ParseRawFailure(UnityWebRequest request, string fallbackMessage)
         {
             var body = request.downloadHandler?.text;
@@ -617,6 +690,16 @@ namespace PhotoBooth.Booth.Sync
         private static SyncJobResult Failure(string message, bool retryable)
         {
             return new SyncJobResult
+            {
+                Success = false,
+                Retryable = retryable,
+                Message = message
+            };
+        }
+
+        private static PreparedDownloadResult PreparedFailure(string message, bool retryable)
+        {
+            return new PreparedDownloadResult
             {
                 Success = false,
                 Retryable = retryable,

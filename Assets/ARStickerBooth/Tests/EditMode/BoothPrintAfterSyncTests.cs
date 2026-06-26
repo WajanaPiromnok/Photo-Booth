@@ -81,6 +81,19 @@ namespace PhotoBooth.Booth.Tests.EditMode
 
         private sealed class FakeSyncClient : IBoothSyncClient
         {
+            public Task<PreparedDownloadResult> PrepareDownloadAsync(PreparedDownloadRequest request, CancellationToken cancellationToken = default)
+            {
+                return Task.FromResult(new PreparedDownloadResult
+                {
+                    Success = true,
+                    Retryable = false,
+                    Message = "Prepared",
+                    JobId = request.JobId,
+                    DownloadUrl = $"https://example.invalid/d/{request.JobId}",
+                    QrPngUrl = $"https://example.invalid/d/{request.JobId}/qr"
+                });
+            }
+
             public Task<RawCaptureUploadResult> UploadRawCaptureAsync(RawCaptureUploadRequest request, CancellationToken cancellationToken = default)
             {
                 return Task.FromResult(new RawCaptureUploadResult

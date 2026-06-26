@@ -57,6 +57,33 @@ namespace PhotoBooth.Booth.Sync
     }
 
     [Serializable]
+    public sealed class PreparedDownloadRequest
+    {
+        public string JobId;
+        public string DeviceId;
+        public string ThemeId;
+        public string ImagePreviewId;
+        public string PassengerName;
+        public string SessionStartedAtUtc;
+        public string CurrencyCode;
+        public long AmountMinorUnits;
+        public string PaymentReference;
+    }
+
+    [Serializable]
+    public sealed class PreparedDownloadResult
+    {
+        public bool Success;
+        public bool Retryable;
+        public string Message;
+        public string JobId;
+        public string RoutePrefix;
+        public string SessionFolder;
+        public string DownloadUrl;
+        public string QrPngUrl;
+    }
+
+    [Serializable]
     public sealed class RawCaptureUploadResult
     {
         public bool Success;
@@ -131,6 +158,38 @@ namespace PhotoBooth.Booth.Sync
     {
         public bool success;
         public BoothRawCaptureUploadResponseData data;
+        public BoothApiError error;
+    }
+
+    [Serializable]
+    public sealed class BoothPreparedDownloadRequest
+    {
+        public string job_id;
+        public string device_id;
+        public string theme_id;
+        public string image_preview_id;
+        public string passenger_name;
+        public string session_started_at_utc;
+        public string currency;
+        public long amount_minor_units;
+        public string payment_reference;
+    }
+
+    [Serializable]
+    public sealed class BoothPreparedDownloadResponseData
+    {
+        public string job_id;
+        public string route_prefix;
+        public string session_folder;
+        public string download_url;
+        public string qr_png_url;
+    }
+
+    [Serializable]
+    public sealed class BoothPreparedDownloadResponseEnvelope
+    {
+        public bool success;
+        public BoothPreparedDownloadResponseData data;
         public BoothApiError error;
     }
 

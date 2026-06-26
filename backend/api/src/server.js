@@ -1449,6 +1449,62 @@ app.post("/v1/jobs/:jobId/assets/upload", requireDeviceAuth, upload.fields([
   }
 });
 
+app.post("/v1/jobs/:jobId/prepare-download", requireDeviceAuth, async (req, res) => {
+  const jobId = normalizeJobId(req.params.jobId);
+  if (!jobId) {
+    return res.status(400).json(errorEnvelope("INVALID_JOB_ID", "Job id is required."));
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    const deviceId = normalizeOptional(req.get("X-Device-Id")) || normalizeOptional(req.body?.device_id) || "booth-local";
+    const themeId = normalizeOptional(req.body?.theme_id);
+    const imagePreviewId = normalizeImagePreviewId(req.body?.image_preview_id || themeId);
+    const sessionStartedAtUtc = normalizeOptional(req.body?.session_started_at_utc);
+    const passengerName = normalizePassengerName(req.body?.passenger_name);
+
+    await ensureJob(client, {
+      jobId,
+      deviceId,
+      themeId,
+      imagePreviewId,
+      passengerName,
+      amountMinorUnits: normalizeInteger(req.body?.amount_minor_units, 0),
+      currencyCode: normalizeCurrency(req.body?.currency),
+      paymentReference: normalizeOptional(req.body?.payment_reference),
+      sessionStartedAtUtc
+    });
+
+    const sessionFolder = await ensureJobSessionFolder(client, jobId, sessionStartedAtUtc);
+    const routePrefix = await resolveDownloadRoutePrefix(client, jobId);
+    const downloadUrl = buildDownloadUrl(routePrefix, jobId);
+
+    await client.query(
+      `UPDATE booth_jobs
+       SET download_url = COALESCE(download_url, $2),
+           updated_at = NOW()
+       WHERE job_id = $1`,
+      [jobId, downloadUrl]
+    );
+
+    await client.query("COMMIT");
+
+    return res.status(201).json({
+      success: true,
+      data: buildPreparedDownloadResponse(req, jobId, routePrefix, sessionFolder),
+      error: null
+    });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    console.error("prepare_download_failed", { jobId, error });
+    return res.status(error.statusCode || 500).json(errorEnvelope(error.code || "PREPARE_DOWNLOAD_FAILED", error.message));
+  } finally {
+    client.release();
+  }
+});
+
 app.post("/v1/jobs/:jobId/assets/raw-capture", requireDeviceAuth, upload.fields([
   { name: "raw_capture_file", maxCount: 1 }
 ]), async (req, res) => {
@@ -1906,20 +1962,6 @@ app.get(["/d/:jobId/qr", "/world-tour/:jobId/qr", "/kooky-world/:jobId/qr"], asy
       return res.status(404).json(errorEnvelope("JOB_NOT_FOUND", `Job ${jobId} was not found.`));
     }
 
-    const job = result.rows[0];
-    if (job.upload_status !== "LINK_READY") {
-      const rawCaptureResult = await pool.query(
-        `SELECT COUNT(1)::int AS raw_capture_count
-         FROM booth_assets
-         WHERE job_id = $1 AND asset_type = 'raw_capture'`,
-        [jobId]
-      );
-      const rawCaptureCount = Number(rawCaptureResult.rows[0]?.raw_capture_count || 0);
-      if (rawCaptureCount < requiredRawCaptureCount(job.project_id)) {
-        return res.status(202).json(errorEnvelope("DOWNLOAD_NOT_READY", "Download link is still processing."));
-      }
-    }
-
     const routePrefix = downloadRoutePrefixFromRequest(req);
     const downloadUrl = buildDownloadUrl(routePrefix, jobId);
     const png = await QRCode.toBuffer(downloadUrl, {
@@ -2315,9 +2357,6 @@ app.get(["/d/:jobId", "/world-tour/:jobId", "/kooky-world/:jobId"], async (req, 
     const job = jobResult.rows[0];
     const assets = assetsResult.rows;
     const rawCaptures = sortRawCaptureAssets(assets.filter((asset) => asset.asset_type === "raw_capture"));
-    if ((job.upload_status !== "LINK_READY" || !job.remote_asset_key) && rawCaptures.length < requiredRawCaptureCount(job.project_id)) {
-      return res.status(202).send("Download is still processing.");
-    }
 
     const composed = findLatestAsset(assets, "composed") || { remote_key: job.remote_asset_key };
     const thumbnail = findLatestAsset(assets, "thumbnail") || composed;
@@ -2340,7 +2379,7 @@ app.get(["/d/:jobId", "/world-tour/:jobId", "/kooky-world/:jobId"], async (req, 
       : renderLegacyDownloadPage(pageArgs);
 
     res.setHeader("Content-Type", "text/html; charset=utf-8");
-    res.setHeader("Cache-Control", "public, max-age=300");
+    res.setHeader("Cache-Control", job.upload_status === "LINK_READY" ? "public, max-age=300" : "private, no-store");
     res.setHeader("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; media-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'");
     return res.send(page);
   } catch (error) {
@@ -6240,6 +6279,18 @@ function buildDownloadUrl(routePrefix, jobId) {
   return `${config.publicBaseUrl}/${normalizeDownloadRoutePrefix(routePrefix)}/${encodeURIComponent(jobId)}`;
 }
 
+function buildPreparedDownloadResponse(req, jobId, routePrefix, sessionFolder = null) {
+  const normalizedRoutePrefix = normalizeDownloadRoutePrefix(routePrefix);
+  const downloadUrl = buildDownloadUrl(normalizedRoutePrefix, jobId);
+  return {
+    job_id: jobId,
+    route_prefix: normalizedRoutePrefix,
+    session_folder: sessionFolder,
+    download_url: downloadUrl,
+    qr_png_url: `${downloadUrl}/qr`
+  };
+}
+
 function normalizeJobId(value) {
   const normalized = normalizeOptional(value);
   if (!normalized) {
@@ -6737,6 +6788,7 @@ function renderLegacyDownloadPage({ job, composed, thumbnail, liveImage, motionV
   const jobId = job.job_id;
   const safeJobId = escapeHtml(jobId);
   const displayTitle = escapeHtml(formatSessionTitle(job));
+  const refreshMeta = job.upload_status === "LINK_READY" ? "" : '<meta http-equiv="refresh" content="3">';
   const takenAt = escapeHtml(formatDisplayDate(job.session_started_at_utc || job.created_at));
   const imageUrl = assetUrl(composed);
   const thumbnailUrl = assetUrl(thumbnail);
@@ -6769,13 +6821,16 @@ function renderLegacyDownloadPage({ job, composed, thumbnail, liveImage, motionV
     ? renderRotatingFramedLivePhoto(rawCaptureUrls)
     : liveImageUrl
       ? `<img class="media" src="${liveImageUrl}" alt="Framed live image" loading="eager">`
-      : `<img class="media" src="${imageUrl}" alt="Framed liveview fallback" loading="lazy">`;
+      : imageUrl
+        ? `<img class="media" src="${imageUrl}" alt="Framed liveview fallback" loading="lazy">`
+        : `<div class="media media-empty">Processing please wait</div>`;
 
   return `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  ${refreshMeta}
   <title>${displayTitle}</title>
   <style>
     :root {
@@ -6857,14 +6912,14 @@ function renderLegacyDownloadPage({ job, composed, thumbnail, liveImage, motionV
         <div class="asset-label">Image</div>
         <a class="download-image-button" id="photo-download-button" href="${imageDownloadUrl}" download>Download</a>
       </div>
-      ${photoMarkup || `<p>Photo is still processing.</p>`}
+      ${photoMarkup || `<div class="media media-empty">Processing please wait</div>`}
       <div class="asset-row video-row">
         <img class="asset-icon video-icon" src="/assets/website/video.png" alt="">
         <div class="asset-label">VDO</div>
         ${canDownloadCountdownPreview ? `<a class="download-image-button" href="${framedCountdownVideoDownloadUrl}" download>Download MP4</a>` : canDownloadWebPreview ? `<a class="download-image-button" href="${liveviewVideoDownloadUrl}" download>Download MP4</a>` : motionVideoDownloadUrl ? `<a class="download-image-button" href="${motionVideoDownloadUrl}" download>Download MP4</a>` : `<span></span>`}
       </div>
       <div class="video-stage">
-        ${countdownClipMarkup || liveViewMarkup}
+        ${countdownClipMarkup || `<div class="media media-empty">Processing please wait</div>`}
       </div>
       <div class="asset-row video-row">
         <img class="asset-icon video-icon" src="/assets/website/live.png" alt="">
@@ -6885,6 +6940,7 @@ function renderKookyWorldDownloadPage({ job, composed, thumbnail, liveImage, mot
   const jobId = job.job_id;
   const safeJobId = escapeHtml(jobId);
   const displayTitle = "MRKREME Kooky World Session";
+  const refreshMeta = job.upload_status === "LINK_READY" ? "" : '<meta http-equiv="refresh" content="3">';
   const takenAt = escapeHtml(formatDisplayDate(job.session_started_at_utc || job.created_at)).toUpperCase();
   const imageUrl = assetUrl(composed);
   const thumbnailUrl = assetUrl(thumbnail);
@@ -6920,6 +6976,7 @@ function renderKookyWorldDownloadPage({ job, composed, thumbnail, liveImage, mot
         <img class="kooky-sticker" src="/assets/kooky-world/${stickerFileName}" alt="Frame ${labelTemplateId} overlay ${slotNumber}">
       </div>`;
   }).join("");
+  const photoProcessingMarkup = `<div class="label-photo label-photo-empty">Processing please wait</div>`;
 
   const videoMarkup = framedCountdownVideoUrl
     ? `<video class="media framed-video" controls autoplay playsinline loop muted poster="${photoUrl || thumbnailUrl}"><source src="${framedCountdownVideoUrl}" type="video/mp4"></video>`
@@ -6944,6 +7001,7 @@ function renderKookyWorldDownloadPage({ job, composed, thumbnail, liveImage, mot
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  ${refreshMeta}
   <title>${displayTitle}</title>
   <style>
     @font-face {
@@ -7093,6 +7151,8 @@ function renderKookyWorldDownloadPage({ job, composed, thumbnail, liveImage, mot
       background: #ddd;
     }
     .label-photo-empty {
+      left: 0;
+      top: 0;
       display: grid;
       place-items: center;
       width: 100%;
@@ -7183,13 +7243,13 @@ function renderKookyWorldDownloadPage({ job, composed, thumbnail, liveImage, mot
     }
     .label-stage-1 .label-passenger-name {
       left: 45.5%;
-      top: 19.5%;
+      top: 20.6%;
       font-size: 0.8cqw;
       color: #231F20;
     }
     .label-stage-2 .label-passenger-name {
       left: 33.0%;
-      top: 25.0%;
+      top: 24.0%;
       font-size: 0.8cqw;
       color: #FFFFFF;
     }
@@ -7263,7 +7323,7 @@ function renderKookyWorldDownloadPage({ job, composed, thumbnail, liveImage, mot
         <div class="ticket-frame">
           <div class="label-stage label-stage-${labelTemplateId}">
             <img class="label-template" src="${labelTemplateUrl}" alt="Furryways frame ${labelTemplateId}">
-            ${photoMarkup}
+            ${photoMarkup || photoProcessingMarkup}
             ${passengerNameMarkup}
           </div>
         </div>
@@ -7283,7 +7343,7 @@ function renderKookyWorldDownloadPage({ job, composed, thumbnail, liveImage, mot
       </div>
       <div class="card-body">
         <div class="ticket-frame">
-          ${videoMarkup || `<div class="media media-empty">Video is processing</div>`}
+          ${videoMarkup || `<div class="media media-empty">Processing please wait</div>`}
         </div>
       </div>
     </div>
@@ -7304,7 +7364,7 @@ function renderKookyWorldDownloadPage({ job, composed, thumbnail, liveImage, mot
           ${hasLiveview ? `
           <video class="media" controls autoplay playsinline loop muted poster="${photoUrl || thumbnailUrl}">
             <source src="${liveviewVideoUrl}" type="video/mp4">
-          </video>` : `<div class="media media-empty">Liveview is processing</div>`}
+          </video>` : `<div class="media media-empty">Processing please wait</div>`}
         </div>
       </div>
     </div>
@@ -7329,6 +7389,7 @@ function renderWorldTourDownloadPage({ job, composed, thumbnail, liveImage, moti
   const jobId = job.job_id;
   const safeJobId = escapeHtml(jobId);
   const displayTitle = prefix === "kooky-world" ? "MRKREME Kooky World Session" : "MRKREME World Tour Session";
+  const refreshMeta = job.upload_status === "LINK_READY" ? "" : '<meta http-equiv="refresh" content="3">';
   const takenAt = escapeHtml(formatDisplayDate(job.session_started_at_utc || job.created_at));
   const reference = escapeHtml(shortReference(jobId));
   const imageUrl = assetUrl(composed);
@@ -7353,7 +7414,7 @@ function renderWorldTourDownloadPage({ job, composed, thumbnail, liveImage, moti
   const photoUrl = rawCaptureUrls[0] || heroPreviewUrl || liveImageUrl;
   const photoMarkup = photoUrl
     ? `<img class="label-photo" src="${photoUrl}" alt="Captured photo" loading="eager">`
-    : `<div class="label-photo label-photo-empty">Processing</div>`;
+    : `<div class="label-photo label-photo-empty">Processing please wait</div>`;
   const videoMarkup = framedCountdownVideoUrl
     ? `<video class="media framed-video" controls autoplay playsinline loop muted poster="${photoUrl || thumbnailUrl}"><source src="${framedCountdownVideoUrl}" type="video/mp4"></video>`
     : (rawMotionVideoUrl || motionVideoUrl)
@@ -7368,13 +7429,14 @@ function renderWorldTourDownloadPage({ job, composed, thumbnail, liveImage, moti
     : motionVideoDownloadUrl;
   const videoDownloadMarkup = videoDownloadUrl
     ? `<a class="download-image-button" href="${videoDownloadUrl}" download>Download Video</a>`
-    : `<div class="download-placeholder">Video is processing</div>`;
+    : `<div class="download-placeholder">Processing please wait</div>`;
 
   return `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  ${refreshMeta}
   <title>${displayTitle}</title>
   <style>
     :root {
@@ -7678,7 +7740,7 @@ function renderWorldTourDownloadPage({ job, composed, thumbnail, liveImage, moti
     <a class="download-image-button" id="photo-download-button" href="${imageDownloadUrl}" download>Download Image</a>
     <h2 class="section-heading">Video</h2>
     <section class="video-panel" aria-label="Video">
-      ${videoMarkup || `<div class="media media-empty">Video is processing</div>`}
+      ${videoMarkup || `<div class="media media-empty">Processing please wait</div>`}
     </section>
     ${videoDownloadMarkup}
   </main>
@@ -7769,6 +7831,7 @@ function httpError(statusCode, code, message) {
 }
 
 module.exports = {
+  buildPreparedDownloadResponse,
   buildRotatingFrameSets,
   buildCountdownSlotFrameAssets,
   resolveKookyWorldCountdownFrameDurationSeconds,
@@ -7779,6 +7842,7 @@ module.exports = {
   renderKookyWorldFramedPng,
   renderKookyWorldFramedVideo,
   renderKookyWorldDownloadPage,
+  renderLegacyDownloadPage,
   resolveLabelTemplateId,
   sortRawCaptureAssets
 };

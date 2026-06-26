@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const {
+  buildPreparedDownloadResponse,
   buildCountdownSlotFrameAssets,
   buildRotatingFrameSets,
   generateMediaOnce,
@@ -12,6 +13,7 @@ const {
   requiredRawCaptureCount,
   requiredRawCaptureTotalForRoute,
   renderKookyWorldDownloadPage,
+  renderLegacyDownloadPage,
   resolveLabelTemplateId,
   sortRawCaptureAssets
 } = require("../src/server");
@@ -86,6 +88,36 @@ test("Kooky World waits for three raw captures", () => {
   assert.equal(requiredRawCaptureTotalForRoute("kooky-world", 2), 3);
   assert.equal(requiredRawCaptureTotalForRoute("kooky-world", 3), 3);
   assert.equal(requiredRawCaptureTotalForRoute("world-tour", 2), 2);
+});
+
+test("prepared download response returns scan-ready download and QR URLs", () => {
+  const response = buildPreparedDownloadResponse(null, "JOB-READY-001", "kooky-world", "session-folder");
+  assert.equal(response.job_id, "JOB-READY-001");
+  assert.equal(response.route_prefix, "kooky-world");
+  assert.equal(response.session_folder, "session-folder");
+  assert.ok(response.download_url.endsWith("/kooky-world/JOB-READY-001"));
+  assert.ok(response.qr_png_url.endsWith("/kooky-world/JOB-READY-001/qr"));
+});
+
+test("download pages show processing placeholders before assets are uploaded", () => {
+  const job = {
+    job_id: "JOB-PROCESSING-001",
+    image_preview_id: "image_preview_1",
+    passenger_name: "QA",
+    created_at: "2026-06-24T00:00:00.000Z"
+  };
+  const pageArgs = {
+    job,
+    composed: null,
+    thumbnail: null,
+    liveImage: null,
+    motionVideo: null,
+    rawCaptures: [],
+    motionFrames: []
+  };
+
+  assert.match(renderLegacyDownloadPage(pageArgs), /Processing please wait/);
+  assert.match(renderKookyWorldDownloadPage(pageArgs), /Processing please wait/);
 });
 
 test("raw captures are sorted by capture number", () => {

@@ -141,6 +141,7 @@ namespace PhotoBooth.Booth.Frontend
         [SerializeField] private int canonEdsdkCaptureTimeoutMs = 20000;
         [SerializeField] private int canonEdsdkPreviewFramesPerSecond = 15;
         [SerializeField] private int canonEdsdkPreviewUiFramesPerSecond = 10;
+        [SerializeField] private bool mirrorCapturePreviewHorizontally = true;
         [SerializeField] private Vector2Int cameraCaptureSize = new(1280, 720);
         [SerializeField] private Vector2Int thumbnailSize = new(320, 180);
         [SerializeField] private Sprite[] captureForegroundTextures;
@@ -2832,7 +2833,8 @@ namespace PhotoBooth.Booth.Frontend
                 canonCameraBackend: canonCameraBackend,
                 useCanonEdsdk: useCanonEdsdk,
                 allowCameraFallback: allowCanonCameraFallback,
-                canonPreviewUiFramesPerSecond: canonEdsdkPreviewUiFramesPerSecond);
+                canonPreviewUiFramesPerSecond: canonEdsdkPreviewUiFramesPerSecond,
+                mirrorPreviewHorizontally: mirrorCapturePreviewHorizontally);
             service.PreviewFailed += HandleCameraPreviewFailed;
             service.PreviewFrameReceived += jpegMotionRecorder.AcceptFrame;
             return service;
@@ -3168,6 +3170,7 @@ namespace PhotoBooth.Booth.Frontend
             SwitchScreen(BoothUiScreenId.Preview, "Syncing photo...");
             StopMotionClipPlayback();
             await TrackAsync("booth_frontend_sync_started", metadata: BuildAiMetadata());
+            await PrepareDownloadQrBeforeUploadAsync();
             if (rawCaptureUploadQueue != null)
             {
                 await rawCaptureUploadQueue.FlushAsync(flowCancellation.Token, ResolvePassengerNameForLabel());
@@ -3210,6 +3213,38 @@ namespace PhotoBooth.Booth.Frontend
             await TrackAsync("booth_frontend_download_link_shown", metadata: BuildAiMetadata());
             await LoadQrPreviewAsync(currentJob.DownloadUrl);
             SetStatus(BuildPostPublishStatusMessage(currentJob));
+        }
+
+        private async Task PrepareDownloadQrBeforeUploadAsync()
+        {
+            if (runtime?.SyncService == null || currentJob == null || !string.IsNullOrWhiteSpace(currentJob.DownloadUrl))
+            {
+                return;
+            }
+
+            try
+            {
+                var prepared = await runtime.SyncService.PrepareDownloadAsync(currentJob.JobId, flowCancellation.Token);
+                if (prepared == null || !prepared.Success || string.IsNullOrWhiteSpace(prepared.DownloadUrl))
+                {
+                    Debug.LogWarning($"Photo booth early download preparation skipped: job={currentJob.JobId}, error={prepared?.Message ?? "unknown"}");
+                    return;
+                }
+
+                currentJob.DownloadUrl = prepared.DownloadUrl;
+                downloadUrlText?.SetText(prepared.DownloadUrl);
+                Debug.Log($"Photo booth early download link ready: job={currentJob.JobId}, link={prepared.DownloadUrl}, qr={prepared.QrPngUrl ?? string.Empty}");
+                await LoadQrPreviewAsync(prepared.DownloadUrl);
+                SetStatus("Processing please wait");
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                Debug.LogWarning($"Photo booth early download preparation failed: job={currentJob.JobId}, error={exception.Message}");
+            }
         }
 
         private static string BuildPostPublishStatusMessage(BoothJob job)

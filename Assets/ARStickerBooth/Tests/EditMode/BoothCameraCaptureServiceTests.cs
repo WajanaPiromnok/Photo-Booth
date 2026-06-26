@@ -4,6 +4,7 @@ using System.Threading.Tasks;
 using NUnit.Framework;
 using PhotoBooth.Booth.Frontend;
 using UnityEngine;
+using UnityEngine.UI;
 
 namespace PhotoBooth.Booth.Tests.EditMode
 {
@@ -46,6 +47,32 @@ namespace PhotoBooth.Booth.Tests.EditMode
 
             Assert.That(path, Is.EqualTo(Path.Combine("captures", "capture_03.jpg")));
             Assert.That(backend.CaptureCount, Is.EqualTo(1));
+        }
+
+        [Test]
+        public async Task CanonBackend_MirrorsPreviewUvRectWhenRequested()
+        {
+            var host = new GameObject("Preview", typeof(RectTransform), typeof(RawImage));
+            try
+            {
+                var preview = host.GetComponent<RawImage>();
+                var backend = new FakeCanonCameraBackend(CreateTestJpeg());
+                using var service = new BoothCameraCaptureService(
+                    preview,
+                    canonCameraBackend: backend,
+                    useCanonEdsdk: true,
+                    allowCameraFallback: false,
+                    mirrorPreviewHorizontally: true);
+
+                await service.StartPreviewAsync();
+
+                Assert.That(preview.uvRect.x, Is.EqualTo(1f));
+                Assert.That(preview.uvRect.width, Is.EqualTo(-1f));
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(host);
+            }
         }
 
         [Test]

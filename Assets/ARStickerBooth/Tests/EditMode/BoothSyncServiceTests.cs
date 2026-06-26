@@ -96,6 +96,30 @@ namespace PhotoBooth.Booth.Tests.EditMode
         }
 
         [Test]
+        public async Task PrepareDownloadAsync_FillsConfiguredDeviceIdAndReturnsQrUrl()
+        {
+            var repository = new FileSystemLocalRepository(tempRootDirectory);
+            var sessions = new BoothSessionService(repository, new BoothStateMachine());
+            sessions.Initialize();
+
+            var job = sessions.CreateJob(12000, "THB");
+            job = sessions.SelectTheme(job.JobId, "theme-a");
+            var fakeClient = new FakeSyncClient(success: true, retryable: false);
+            var syncService = new BoothSyncService(
+                sessions,
+                fakeClient,
+                new BoothBackendScaffoldConfig { DeviceId = "booth-a01" });
+
+            var result = await syncService.PrepareDownloadAsync(job.JobId);
+
+            Assert.That(result.Success, Is.True);
+            Assert.That(result.DownloadUrl, Is.EqualTo("https://example.invalid/d/" + job.JobId));
+            Assert.That(result.QrPngUrl, Is.EqualTo("https://example.invalid/d/" + job.JobId + "/qr"));
+            Assert.That(fakeClient.LastPreparedDownloadRequest.DeviceId, Is.EqualTo("booth-a01"));
+            Assert.That(fakeClient.LastPreparedDownloadRequest.ThemeId, Is.EqualTo("theme-a"));
+        }
+
+        [Test]
         public async Task RawCaptureUploadQueue_WhenRetryableFailure_DoesNotThrow()
         {
             var repository = new FileSystemLocalRepository(tempRootDirectory);
@@ -137,6 +161,21 @@ namespace PhotoBooth.Booth.Tests.EditMode
             }
 
             public RawCaptureUploadRequest LastRawCaptureRequest { get; private set; }
+            public PreparedDownloadRequest LastPreparedDownloadRequest { get; private set; }
+
+            public Task<PreparedDownloadResult> PrepareDownloadAsync(PreparedDownloadRequest request, CancellationToken cancellationToken = default)
+            {
+                LastPreparedDownloadRequest = request;
+                return Task.FromResult(new PreparedDownloadResult
+                {
+                    Success = true,
+                    Retryable = false,
+                    Message = "Prepared",
+                    JobId = request.JobId,
+                    DownloadUrl = $"https://example.invalid/d/{request.JobId}",
+                    QrPngUrl = $"https://example.invalid/d/{request.JobId}/qr"
+                });
+            }
 
             public Task<RawCaptureUploadResult> UploadRawCaptureAsync(RawCaptureUploadRequest request, CancellationToken cancellationToken = default)
             {
