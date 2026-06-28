@@ -32,8 +32,8 @@ test("Kooky World output template is generated at 1800x1200", async () => {
   try {
     await sharp({
       create: {
-        width: 12640,
-        height: 8399,
+        width: 1800,
+        height: 1200,
         channels: 4,
         background: "#1b1f18"
       }

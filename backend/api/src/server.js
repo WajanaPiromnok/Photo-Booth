@@ -2958,14 +2958,14 @@ async function ensureKookyWorldNamedTemplate(job, labelTemplateId, templatePath)
 
   let width, height, x, y, fontSize;
   if (labelTemplateId === "2") {
-    width = 12640;
-    height = 8399;
+    width = 1800;
+    height = 1200;
     x = Math.round(width * 0.330);
     y = Math.round(height * 0.240);
     fontSize = Math.round(width * 0.008);
   } else {
-    width = 12657;
-    height = 8445;
+    width = 1800;
+    height = 1200;
     x = Math.round(width * 0.455);
     y = Math.round(height * 0.206);
     fontSize = Math.round(width * 0.008);
@@ -7140,8 +7140,8 @@ function renderKookyWorldDownloadPage({ job, composed, thumbnail, liveImage, mot
       background: #fff;
       container-type: inline-size;
     }
-    .label-stage-1 { aspect-ratio: 12657 / 8445; }
-    .label-stage-2 { aspect-ratio: 12640 / 8399; }
+    .label-stage-1 { aspect-ratio: 1800 / 1200; }
+    .label-stage-2 { aspect-ratio: 1800 / 1200; }
     .label-template {
       position: relative;
       z-index: 1;
