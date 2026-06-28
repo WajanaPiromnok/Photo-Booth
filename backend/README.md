@@ -74,8 +74,8 @@ On macOS it submits jobs with `lp -d <printer> -n <copies> -o ... <image_path>`.
 Default CUPS options match the current kiosk print dialog:
 
 ```text
-PageSize=w4h6
-orientation-requested=3
+PageSize=w6h4
+orientation-requested=4
 fit-to-page
 MediaMethod=Normal
 PaperType=LabelGaps

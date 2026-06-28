@@ -2,10 +2,14 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
+const sharp = require("sharp");
+
+const testTempRoot = path.join(process.cwd(), "tmp-tests");
 
 const {
   buildPreparedDownloadResponse,
   buildCountdownSlotFrameAssets,
+  ensureKookyWorldOutputTemplate,
   buildRotatingFrameSets,
   generateMediaOnce,
   kookyWorldStickerFileNames,
@@ -17,6 +21,38 @@ const {
   resolveLabelTemplateId,
   sortRawCaptureAssets
 } = require("../src/server");
+
+test("Kooky World output template is generated at 1800x1200", async () => {
+  const tempRoot = path.join(testTempRoot, `kooky-output-template-${process.pid}-${Date.now()}`);
+  const sessionFolder = `session-folder-${process.pid}-${Date.now()}`;
+  const generatedRoot = path.join(process.cwd(), "uploads", "jobs", sessionFolder);
+  const sourcePath = path.join(tempRoot, "ticket_2.png");
+  fs.mkdirSync(tempRoot, { recursive: true });
+
+  try {
+    await sharp({
+      create: {
+        width: 12640,
+        height: 8399,
+        channels: 4,
+        background: "#1b1f18"
+      }
+    }).png().toFile(sourcePath);
+
+    const outputPath = await ensureKookyWorldOutputTemplate(
+      { job_id: "JOB-TEMPLATE-001", session_folder: sessionFolder, passenger_name: "NOAH" },
+      "2",
+      sourcePath,
+      "test"
+    );
+    const metadata = await sharp(outputPath).metadata();
+    assert.equal(metadata.width, 1800);
+    assert.equal(metadata.height, 1200);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+    fs.rmSync(generatedRoot, { recursive: true, force: true });
+  }
+});
 
 test("livephoto rotates 123, 231, 312 for two rounds", () => {
   assert.deepEqual(buildRotatingFrameSets(["1", "2", "3"], 2), [
@@ -61,7 +97,8 @@ test("Kooky countdown video keeps old 4fps motion uploads at real speed", () => 
 });
 
 test("concurrent media requests share one generation", async () => {
-  const outputPath = path.join("/tmp", `kooky-media-lock-${process.pid}.mp4`);
+  fs.mkdirSync(testTempRoot, { recursive: true });
+  const outputPath = path.join(testTempRoot, `kooky-media-lock-${process.pid}.mp4`);
   if (fs.existsSync(outputPath)) {
     fs.unlinkSync(outputPath);
   }

@@ -2990,10 +2990,26 @@ async function ensureKookyWorldNamedTemplate(job, labelTemplateId, templatePath)
   return outputPath;
 }
 
+async function ensureKookyWorldOutputTemplate(job, labelTemplateId, namedTemplatePath, cacheSuffix) {
+  const outputPath = path.join(
+    generatedDirectory(job),
+    `label_kooky-world_frame-${labelTemplateId}_name-${passengerNameCacheKey(job.passenger_name)}_${cacheSuffix}_1800x1200.png`
+  );
+  if (fs.existsSync(outputPath)) {
+    return outputPath;
+  }
+
+  await sharp(namedTemplatePath)
+    .resize({ width: 1800, height: 1200, fit: "fill" })
+    .png()
+    .toFile(outputPath);
+  return outputPath;
+}
+
 async function ensureKookyWorldPhotoImage(job, rawCaptures) {
   const labelTemplateId = resolveLabelTemplateId(job.image_preview_id || job.theme_id);
   const nameKey = passengerNameCacheKey(job.passenger_name);
-  const outputPath = path.join(generatedDirectory(job), `photo_kooky-world_frame-${labelTemplateId}_name-${nameKey}_v7_3072_q86.jpg`);
+  const outputPath = path.join(generatedDirectory(job), `photo_kooky-world_frame-${labelTemplateId}_name-${nameKey}_v8_1800x1200_q86.jpg`);
   if (fs.existsSync(outputPath)) {
     return outputPath;
   }
@@ -3004,9 +3020,10 @@ async function ensureKookyWorldPhotoImage(job, rawCaptures) {
   }
 
   const namedTemplatePath = await ensureKookyWorldNamedTemplate(job, labelTemplateId, templatePath);
-  const sourcePath = path.join(generatedDirectory(job), `photo_kooky-world_frame-${labelTemplateId}_name-${nameKey}_v7_source.png`);
+  const outputTemplatePath = await ensureKookyWorldOutputTemplate(job, labelTemplateId, namedTemplatePath, "franie-v2-photo-v8");
+  const sourcePath = path.join(generatedDirectory(job), `photo_kooky-world_frame-${labelTemplateId}_name-${nameKey}_v8_1800x1200_source.png`);
   if (!fs.existsSync(sourcePath)) {
-    await renderKookyWorldFramedPng(rawCaptures, sourcePath, namedTemplatePath, labelTemplateId);
+    await renderKookyWorldFramedPng(rawCaptures, sourcePath, outputTemplatePath, labelTemplateId);
   }
 
   await compressStillImage(sourcePath, outputPath, "format=yuvj420p");
@@ -3260,16 +3277,7 @@ async function renderKookyWorldFramedVideo(job, frameSets, frameDurationSeconds,
   }
 
   const namedTemplatePath = await ensureKookyWorldNamedTemplate(job, labelTemplateId, templatePath);
-  const videoTemplatePath = path.join(
-    generatedDirectory(job),
-    `label_kooky-world_frame-${labelTemplateId}_name-${passengerNameCacheKey(job.passenger_name)}_franie-v2_video-1800.png`
-  );
-  if (!fs.existsSync(videoTemplatePath)) {
-    await sharp(namedTemplatePath)
-      .resize({ width: 1800, withoutEnlargement: true })
-      .png()
-      .toFile(videoTemplatePath);
-  }
+  const videoTemplatePath = await ensureKookyWorldOutputTemplate(job, labelTemplateId, namedTemplatePath, "franie-v2-video-v9");
   fs.mkdirSync(frameDirectory, { recursive: true });
   const framePaths = [];
 
@@ -7839,6 +7847,7 @@ module.exports = {
   kookyWorldStickerFileNames,
   requiredRawCaptureCount,
   requiredRawCaptureTotalForRoute,
+  ensureKookyWorldOutputTemplate,
   renderKookyWorldFramedPng,
   renderKookyWorldFramedVideo,
   renderKookyWorldDownloadPage,

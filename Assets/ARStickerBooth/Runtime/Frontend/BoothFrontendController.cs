@@ -89,6 +89,7 @@ namespace PhotoBooth.Booth.Frontend
         [SerializeField] private bool skipPaymentScreen;
         [SerializeField] private int countdownSeconds = 3;
         [SerializeField] private int capturesPerSession = 1;
+        [SerializeField] private float finalCapturePreviewDelaySeconds = 1f;
         [SerializeField] private int motionClipFramesPerSecond = 15;
         [SerializeField] private bool enableArTracking = true;
         [SerializeField] private int maxArFaces = 4;
@@ -2345,6 +2346,7 @@ namespace PhotoBooth.Booth.Frontend
                     capturedPhotoCount = captureNumber;
                     UpdateAutomaticCaptureProgressUi(captureNumber, capturedPhotoCount);
                     SetStatus($"Captured {capturedPhotoCount} / {totalCaptures}.");
+                    await HoldFinalCapturePreviewAsync(captureNumber, totalCaptures, rawPath, flowCancellation.Token);
                 }
 
                 if (cameraCaptureService != null && cameraCaptureService.IsUsingCanonEdsdk)
@@ -2425,6 +2427,21 @@ namespace PhotoBooth.Booth.Frontend
             UpdateCaptureReviewControls();
             SetStatus("Review your photo. Tap capture to continue or refresh to retake.");
             await TrackAsync("booth_frontend_capture_review_shown", metadata: BuildAiMetadata());
+        }
+
+        private async Task HoldFinalCapturePreviewAsync(
+            int captureNumber,
+            int totalCaptures,
+            string rawPath,
+            CancellationToken cancellationToken)
+        {
+            if (captureNumber < totalCaptures || finalCapturePreviewDelaySeconds <= 0f)
+            {
+                return;
+            }
+
+            ShowCaptureReviewImage(rawPath);
+            await Task.Delay(Mathf.RoundToInt(finalCapturePreviewDelaySeconds * 1000f), cancellationToken);
         }
 
         private async Task TryAutoFocusBeforeCountdownAsync(int captureNumber, CancellationToken cancellationToken)

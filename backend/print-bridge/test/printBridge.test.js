@@ -6,7 +6,7 @@ const config = {
   defaultPrinterName: "XP-420B",
   allowedPrinterNames: new Set(["XP-420B"]),
   overrideRequestedPrinter: true,
-  printOptions: ["PageSize=w4h6", "Darkness=13"],
+  printOptions: ["PageSize=w6h4", "Darkness=13"],
   printCommand: "lp",
   printPlatform: "darwin"
 };
@@ -50,7 +50,7 @@ test("overrides requested printer with local default printer", async () => {
 
   assert.equal(result.statusCode, 200);
   assert.equal(result.body.printer_name, "XP-420B");
-  assert.deepEqual(receivedArgs, ["-d", "XP-420B", "-n", "1", "-o", "PageSize=w4h6", "-o", "Darkness=13", "/tmp/final.png"]);
+  assert.deepEqual(receivedArgs, ["-d", "XP-420B", "-n", "1", "-o", "PageSize=w6h4", "-o", "Darkness=13", "/tmp/final.png"]);
 });
 
 test("returns retryable failure when OS print command fails", async () => {
@@ -92,7 +92,7 @@ test("returns success when OS print command succeeds", async () => {
   assert.equal(result.body.printer_name, "XP-420B");
   assert.match(result.body.operation_id, /^[0-9a-f-]{36}$/);
   assert.equal(receivedCommand, "lp");
-  assert.deepEqual(receivedArgs, ["-d", "XP-420B", "-n", "1", "-o", "PageSize=w4h6", "-o", "Darkness=13", "/tmp/final.png"]);
+  assert.deepEqual(receivedArgs, ["-d", "XP-420B", "-n", "1", "-o", "PageSize=w6h4", "-o", "Darkness=13", "/tmp/final.png"]);
 });
 
 test("submits one OS print command per requested copy", async () => {
@@ -159,7 +159,18 @@ test("buildPrintArgs uses Windows PowerShell image print arguments", () => {
   assert.equal(args[2], "Bypass");
   assert.equal(args[3], "-File");
   assert.match(args[4], /print-image\.ps1$/);
-  assert.deepEqual(args.slice(5), ["-ImagePath", "C:\\photos\\final.jpg", "-PrinterName", "DS-RX1 4x6 Cut", "-Copies", "1"]);
+  assert.deepEqual(args.slice(5), [
+    "-ImagePath",
+    "C:\\photos\\final.jpg",
+    "-PrinterName",
+    "DS-RX1 4x6 Cut",
+    "-Copies",
+    "1",
+    "-PaperWidthHundredths",
+    "600",
+    "-PaperHeightHundredths",
+    "400"
+  ]);
 });
 
 test("buildPrintArgs includes kiosk driver defaults", () => {
@@ -171,9 +182,9 @@ test("buildPrintArgs includes kiosk driver defaults", () => {
     "-n",
     "1",
     "-o",
-    "PageSize=w4h6",
+    "PageSize=w6h4",
     "-o",
-    "orientation-requested=3",
+    "orientation-requested=4",
     "-o",
     "fit-to-page",
     "-o",

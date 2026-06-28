@@ -149,7 +149,11 @@ function buildPrintArgs(printerName, copies, imagePath, printOptions = defaultPr
       "-PrinterName",
       printerName,
       "-Copies",
-      String(copies)
+      String(copies),
+      "-PaperWidthHundredths",
+      "600",
+      "-PaperHeightHundredths",
+      "400"
     ];
   }
 
@@ -172,8 +176,8 @@ function isWindowsPlatform(platform) {
 
 function defaultPrintOptions() {
   return [
-    "PageSize=w4h6",
-    "orientation-requested=3",
+    "PageSize=w6h4",
+    "orientation-requested=4",
     "fit-to-page",
     "MediaMethod=Normal",
     "PaperType=LabelGaps",

@@ -25,6 +25,10 @@ namespace PhotoBooth.Booth.Frontend
         private const int ThumbnailJpegQuality = 82;
         private const int KookyPrintWidth = 1800;
         private const int KookyPrintHeight = 1200;
+        private const int ImagePreview1TemplateSourceWidth = 12657;
+        private const int ImagePreview1TemplateSourceHeight = 8445;
+        private const int ImagePreview2TemplateSourceWidth = 12640;
+        private const int ImagePreview2TemplateSourceHeight = 8399;
         private const int PassengerNameFontSize = 20;
         private static readonly Color PassengerNameFrame1Color = new Color32(0x23, 0x1F, 0x20, 0xFF);
         private static readonly Color PassengerNameFrame2Color = new Color32(0xFF, 0xFF, 0xFF, 0xFF);
@@ -446,8 +450,9 @@ namespace PhotoBooth.Booth.Frontend
         {
             if (IsKookyPrintTemplate(theme))
             {
-                scaleX = KookyPrintWidth / (float)template.width;
-                scaleY = KookyPrintHeight / (float)template.height;
+                var sourceSize = ResolveKookyTemplateSourceSize(theme);
+                scaleX = KookyPrintWidth / (float)sourceSize.x;
+                scaleY = KookyPrintHeight / (float)sourceSize.y;
                 var scaled = new Texture2D(KookyPrintWidth, KookyPrintHeight, TextureFormat.RGBA32, false);
                 DrawTextureScaledAlpha(template, scaled, 0, 0, scaled.width, scaled.height);
                 return scaled;
@@ -458,6 +463,13 @@ namespace PhotoBooth.Booth.Frontend
             var canvas = new Texture2D(template.width, template.height, TextureFormat.RGBA32, false);
             canvas.SetPixels(template.GetPixels());
             return canvas;
+        }
+
+        private static Vector2Int ResolveKookyTemplateSourceSize(BoothThemeOption theme)
+        {
+            return IsImagePreview2(theme)
+                ? new Vector2Int(ImagePreview2TemplateSourceWidth, ImagePreview2TemplateSourceHeight)
+                : new Vector2Int(ImagePreview1TemplateSourceWidth, ImagePreview1TemplateSourceHeight);
         }
 
         private static RectInt ScaleRect(RectInt source, float scaleX, float scaleY)

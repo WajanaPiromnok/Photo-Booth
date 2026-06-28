@@ -6,8 +6,8 @@ param(
     [string] $PrinterName,
 
     [int] $Copies = 1,
-    [int] $PaperWidthHundredths = 400,
-    [int] $PaperHeightHundredths = 600,
+    [int] $PaperWidthHundredths = 600,
+    [int] $PaperHeightHundredths = 400,
     [switch] $Portrait
 )
 
@@ -28,9 +28,9 @@ for ($copy = 0; $copy -lt [Math]::Max(1, $Copies); $copy++) {
 
     $document.DocumentName = [IO.Path]::GetFileName($ImagePath)
     $document.OriginAtMargins = $false
-    $document.DefaultPageSettings.Landscape = -not $Portrait
+    $document.DefaultPageSettings.Landscape = -not $Portrait -and $PaperWidthHundredths -lt $PaperHeightHundredths
     $document.DefaultPageSettings.Margins = New-Object System.Drawing.Printing.Margins(0, 0, 0, 0)
-    $document.DefaultPageSettings.PaperSize = New-Object System.Drawing.Printing.PaperSize("Photo 4x6", $PaperWidthHundredths, $PaperHeightHundredths)
+    $document.DefaultPageSettings.PaperSize = New-Object System.Drawing.Printing.PaperSize("Photo 6x4", $PaperWidthHundredths, $PaperHeightHundredths)
 
     $image = [System.Drawing.Image]::FromFile($ImagePath)
     try {
