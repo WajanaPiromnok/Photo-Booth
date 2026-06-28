@@ -169,7 +169,10 @@ test("buildPrintArgs uses Windows PowerShell image print arguments", () => {
     "-PaperWidthHundredths",
     "600",
     "-PaperHeightHundredths",
-    "400"
+    "400",
+    "-PaperName",
+    "(6x4)",
+    "-Landscape"
   ]);
 });
 

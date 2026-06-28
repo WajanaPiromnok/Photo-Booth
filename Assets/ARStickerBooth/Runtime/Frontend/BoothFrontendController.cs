@@ -218,6 +218,7 @@ namespace PhotoBooth.Booth.Frontend
         [SerializeField] private Button continueButton;
         [SerializeField] private Button printButton;
         [SerializeField] private Button doneButton;
+        private Button qrReadyHomeButton;
 
         private readonly BoothImageComposer composer = new();
         private readonly BoothFfmpegMotionEncoder motionEncoder = new();
@@ -273,6 +274,7 @@ namespace PhotoBooth.Booth.Frontend
         private BoothRawCaptureUploadQueue rawCaptureUploadQueue;
         private bool rawCaptureUploadStarted;
         private bool previewScreenShowsFinalDownload;
+        private bool qrReadyHomeButtonVisible;
         private bool printRequestStarted;
         private bool isCaptureReviewing;
         private GameObject captureIntroLozado;
@@ -2440,7 +2442,7 @@ namespace PhotoBooth.Booth.Frontend
                 return;
             }
 
-            ShowCaptureReviewImage(rawPath);
+            ShowCaptureReviewImage(rawPath, mirrorCapturePreviewHorizontally);
             await Task.Delay(Mathf.RoundToInt(finalCapturePreviewDelaySeconds * 1000f), cancellationToken);
         }
 
@@ -2599,6 +2601,14 @@ namespace PhotoBooth.Booth.Frontend
 
         public async void FinishPreviewAndReturnHomeFromUi()
         {
+            if (qrReadyHomeButtonVisible)
+            {
+                SetQrReadyHomeButtonVisible(false);
+                await MarkCurrentJobDoneAsync();
+                await ResetSessionToAttractAsync();
+                return;
+            }
+
             if (!await BeginBusyAsync())
             {
                 return;
@@ -2732,7 +2742,7 @@ namespace PhotoBooth.Booth.Frontend
         public async void DoneFromUi()
         {
             await MarkCurrentJobDoneAsync();
-            SwitchScreen(BoothUiScreenId.Done, "Session complete.");
+            await ResetSessionToAttractAsync();
         }
 
         private async Task MarkCurrentJobDoneAsync()
@@ -2864,9 +2874,7 @@ namespace PhotoBooth.Booth.Frontend
                 return;
             }
 
-            cameraPreviewFailureException = exception;
-            Debug.LogError($"Canon camera preview stopped unexpectedly: {exception}");
-            ShowError($"Canon camera disconnected or Live View failed: {exception.Message}");
+            Debug.LogWarning($"Canon camera preview frame failed; keeping booth flow active: {exception.Message}");
         }
 
         private void ThrowIfCameraPreviewFailed()
@@ -3335,7 +3343,7 @@ namespace PhotoBooth.Booth.Frontend
             return new[] { GetLatestCapturedRawImagePath() };
         }
 
-        private void ShowCaptureReviewImage(string imagePath)
+        private void ShowCaptureReviewImage(string imagePath, bool mirrorHorizontally = false)
         {
             ClearCaptureReviewImage();
             if (cameraPreview == null || string.IsNullOrWhiteSpace(imagePath) || !File.Exists(imagePath))
@@ -3352,7 +3360,9 @@ namespace PhotoBooth.Booth.Frontend
 
             cameraPreview.texture = captureReviewTexture;
             cameraPreview.color = Color.white;
-            cameraPreview.uvRect = new Rect(0f, 0f, 1f, 1f);
+            cameraPreview.uvRect = mirrorHorizontally
+                ? new Rect(1f, 0f, -1f, 1f)
+                : new Rect(0f, 0f, 1f, 1f);
             ApplyHd33PreviewRotation(capturing: false);
         }
 
@@ -5598,6 +5608,17 @@ namespace PhotoBooth.Booth.Frontend
 
         private void SetQrReadyHomeButtonVisible(bool visible)
         {
+            qrReadyHomeButton ??= FindButtonInScreen(BoothUiScreenId.Preview, "ContinueButton", "BackToHomeButton", "HomeButton")
+                ?? FindButtonInScreen(BoothUiScreenId.Fulfillment, "ContinueButton", "BackToHomeButton", "HomeButton")
+                ?? FindButton("ContinueButton")
+                ?? FindButton("BackToHomeButton")
+                ?? FindButton("HomeButton");
+            if (qrReadyHomeButton != null)
+            {
+                qrReadyHomeButton.gameObject.SetActive(visible);
+                qrReadyHomeButton.interactable = visible;
+            }
+
             doneButton ??= FindButtonInScreen(BoothUiScreenId.Preview, "DoneButton")
                 ?? FindButtonInScreen(BoothUiScreenId.Fulfillment, "DoneButton")
                 ?? FindButton("DoneButton");
@@ -5606,6 +5627,8 @@ namespace PhotoBooth.Booth.Frontend
                 doneButton.gameObject.SetActive(visible);
                 doneButton.interactable = visible;
             }
+
+            qrReadyHomeButtonVisible = visible;
         }
 
         private async Task<bool> BeginBusyAsync()
@@ -5659,9 +5682,10 @@ namespace PhotoBooth.Booth.Frontend
             if (captureButton != null) captureButton.interactable = interactable;
             // if (captureRetakeButton != null) captureRetakeButton.interactable = interactable && isCaptureReviewing && !captureReviewRetakeUsed;
             // if (retakeButton != null) retakeButton.interactable = interactable;
-            if (continueButton != null) continueButton.interactable = interactable;
+            if (continueButton != null) continueButton.interactable = interactable || (qrReadyHomeButtonVisible && continueButton.gameObject.activeSelf);
             if (printButton != null) printButton.interactable = interactable;
-            if (doneButton != null) doneButton.interactable = interactable;
+            if (qrReadyHomeButton != null) qrReadyHomeButton.interactable = interactable || (qrReadyHomeButtonVisible && qrReadyHomeButton.gameObject.activeSelf);
+            if (doneButton != null) doneButton.interactable = interactable || (qrReadyHomeButtonVisible && doneButton.gameObject.activeSelf);
         }
 
         private void ShowError(string message)
@@ -8594,6 +8618,11 @@ namespace PhotoBooth.Booth.Frontend
                 return;
             }
 
+            if (screenId == BoothUiScreenId.Preview && buttonName == "ContinueButton")
+            {
+                continueButton = button;
+            }
+
             button.onClick = new Button.ButtonClickedEvent();
             button.onClick.AddListener(action);
         }
@@ -8782,20 +8811,18 @@ namespace PhotoBooth.Booth.Frontend
 
         private Transform FindScreenRoot(BoothUiScreenId screenId)
         {
-            if (screens == null)
+            if (screens != null)
             {
-                return null;
-            }
-
-            foreach (var binding in screens)
-            {
-                if (binding != null && binding.screenId == screenId && binding.root != null)
+                foreach (var binding in screens)
                 {
-                    return binding.root.transform;
+                    if (binding != null && binding.screenId == screenId && binding.root != null)
+                    {
+                        return binding.root.transform;
+                    }
                 }
             }
 
-            return null;
+            return FindTransform($"{screenId}Screen");
         }
 
         private RawImage FindRawImageInScreen(BoothUiScreenId screenId, params string[] names)

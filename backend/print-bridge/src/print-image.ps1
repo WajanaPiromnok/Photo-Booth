@@ -8,6 +8,8 @@ param(
     [int] $Copies = 1,
     [int] $PaperWidthHundredths = 600,
     [int] $PaperHeightHundredths = 400,
+    [string] $PaperName = "(6x4)",
+    [switch] $Landscape,
     [switch] $Portrait
 )
 
@@ -28,9 +30,28 @@ for ($copy = 0; $copy -lt [Math]::Max(1, $Copies); $copy++) {
 
     $document.DocumentName = [IO.Path]::GetFileName($ImagePath)
     $document.OriginAtMargins = $false
-    $document.DefaultPageSettings.Landscape = -not $Portrait -and $PaperWidthHundredths -lt $PaperHeightHundredths
+    $document.DefaultPageSettings.Landscape = $Landscape -or (-not $Portrait -and $PaperWidthHundredths -gt $PaperHeightHundredths)
     $document.DefaultPageSettings.Margins = New-Object System.Drawing.Printing.Margins(0, 0, 0, 0)
-    $document.DefaultPageSettings.PaperSize = New-Object System.Drawing.Printing.PaperSize("Photo 6x4", $PaperWidthHundredths, $PaperHeightHundredths)
+    $selectedPaperSize = $null
+    foreach ($paperSize in $document.PrinterSettings.PaperSizes) {
+        if ($paperSize.PaperName -eq $PaperName) {
+            $selectedPaperSize = $paperSize
+            break
+        }
+
+        if (-not $selectedPaperSize -and $paperSize.PaperName -like "*6x4*") {
+            $selectedPaperSize = $paperSize
+        }
+    }
+
+    if ($selectedPaperSize) {
+        $document.DefaultPageSettings.PaperSize = $selectedPaperSize
+        Write-Host "Using printer paper size: $($selectedPaperSize.PaperName) $($selectedPaperSize.Width)x$($selectedPaperSize.Height)"
+    } else {
+        Write-Warning "Paper size '$PaperName' was not reported by printer '$PrinterName'. Keeping the driver's default paper size."
+    }
+    $orientationName = if ($document.DefaultPageSettings.Landscape) { "Landscape" } else { "Portrait" }
+    Write-Host "Using printer orientation: $orientationName"
 
     $image = [System.Drawing.Image]::FromFile($ImagePath)
     try {

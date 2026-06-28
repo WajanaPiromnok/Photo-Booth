@@ -53,8 +53,7 @@ namespace PhotoBooth.Booth.Services
         [SerializeField] private string[] localPrintBridgePrinterPreference =
         {
             "DS-RX1 4x6 Cut",
-            "DS-RX1",
-            "Xprinter XP-420B"
+            "DS-RX1"
         };
         [SerializeField] private string[] preferredCameraDeviceNames = Array.Empty<string>();
         [SerializeField] private int preferredCameraDeviceDiscoveryTimeoutSeconds = 0;

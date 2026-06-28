@@ -718,11 +718,9 @@ namespace PhotoBooth.Booth.Frontend
                 catch (Exception exception)
                 {
                     consecutiveFailures++;
-                    if (consecutiveFailures >= 3)
+                    if (consecutiveFailures == 1 || consecutiveFailures % 30 == 0)
                     {
-                        Interlocked.Exchange(ref pendingCanonPreviewFailure, exception);
-                        firstFrameReady.TrySetException(exception);
-                        break;
+                        Debug.LogWarning($"Canon EDSDK Live View frame skipped after {consecutiveFailures} consecutive failure(s): {exception.Message}");
                     }
 
                     await Task.Delay(100, cancellationToken).ConfigureAwait(false);

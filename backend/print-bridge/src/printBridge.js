@@ -153,7 +153,10 @@ function buildPrintArgs(printerName, copies, imagePath, printOptions = defaultPr
       "-PaperWidthHundredths",
       "600",
       "-PaperHeightHundredths",
-      "400"
+      "400",
+      "-PaperName",
+      "(6x4)",
+      "-Landscape"
     ];
   }
 

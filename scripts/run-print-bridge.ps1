@@ -31,7 +31,7 @@ if (-not $env:DEFAULT_PRINTER_NAME) {
     $printerPreference = if ($env:PRINT_BRIDGE_PRINTER_PREFERENCE) {
         $env:PRINT_BRIDGE_PRINTER_PREFERENCE
     } else {
-        "DS-RX1 4x6 Cut,DS-RX1,Xprinter XP-420B"
+        "DS-RX1 4x6 Cut,DS-RX1"
     }
 
     $preferredNames = $printerPreference.Split(",") |
