@@ -30,7 +30,6 @@ for ($copy = 0; $copy -lt [Math]::Max(1, $Copies); $copy++) {
 
     $document.DocumentName = [IO.Path]::GetFileName($ImagePath)
     $document.OriginAtMargins = $false
-    $document.DefaultPageSettings.Landscape = $Landscape -or (-not $Portrait -and $PaperWidthHundredths -gt $PaperHeightHundredths)
     $document.DefaultPageSettings.Margins = New-Object System.Drawing.Printing.Margins(0, 0, 0, 0)
     $selectedPaperSize = $null
     foreach ($paperSize in $document.PrinterSettings.PaperSizes) {
@@ -46,6 +45,10 @@ for ($copy = 0; $copy -lt [Math]::Max(1, $Copies); $copy++) {
 
     if ($selectedPaperSize) {
         $document.DefaultPageSettings.PaperSize = $selectedPaperSize
+        $paperIsLandscape = $selectedPaperSize.Width -gt $selectedPaperSize.Height
+        if (-not $paperIsLandscape) {
+            $document.DefaultPageSettings.Landscape = $Landscape -or (-not $Portrait -and $PaperWidthHundredths -gt $PaperHeightHundredths)
+        }
         Write-Host "Using printer paper size: $($selectedPaperSize.PaperName) $($selectedPaperSize.Width)x$($selectedPaperSize.Height)"
     } else {
         Write-Warning "Paper size '$PaperName' was not reported by printer '$PrinterName'. Keeping the driver's default paper size."

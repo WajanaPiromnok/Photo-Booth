@@ -41,21 +41,21 @@ namespace PhotoBooth.Booth.Frontend
         };
         private static readonly RectInt[] ImagePreview1FrameSlots =
         {
-            new(840, 1010, 3510, 3255),
-            new(4555, 1010, 3510, 3255),
-            new(8275, 1010, 3510, 3255)
+            new(1090, 1133, 3255, 3082),
+            new(4689, 1133, 3256, 3082),
+            new(8276, 1133, 3256, 3082)
         };
         private static readonly RectInt[] ImagePreview2FrameSlots =
         {
-            new(840, 1010, 3510, 3255),
-            new(4555, 1010, 3510, 3255),
-            new(8275, 1010, 3510, 3255)
+            new(1080, 1110, 3255, 3082),
+            new(4670, 1110, 3256, 3082),
+            new(8260, 1110, 3256, 3082)
         };
         private static readonly RectInt[] ImagePreview1OverlaySlots =
         {
-            new(840, 1010, 3510, 3255),
-            new(4555, 1010, 3510, 3255),
-            new(8275, 1010, 3510, 3255)
+            new(1090, 1133, 3256, 3082),
+            new(4689, 1133, 3256, 3082),
+            new(8276, 1133, 3256, 3082)
         };
         private static readonly string[] ImagePreview1OverlayFileNames =
         {
@@ -65,9 +65,9 @@ namespace PhotoBooth.Booth.Frontend
         };
         private static readonly RectInt[] ImagePreview2OverlaySlots =
         {
-            new(840, 1010, 3510, 3255),
-            new(4555, 1010, 3510, 3255),
-            new(8275, 1010, 3510, 3255)
+            new(1080, 1110, 3255, 3082),
+            new(4670, 1110, 3256, 3082),
+            new(8260, 1110, 3256, 3082)
         };
         private static readonly string[] ImagePreview2OverlayFileNames =
         {
@@ -75,8 +75,8 @@ namespace PhotoBooth.Booth.Frontend
             "frame02_02.png",
             "frame02_03.png"
         };
-        private static readonly RectInt ImagePreview1FromNameSlot = new(5750, 6620, 2200, 280);
-        private static readonly RectInt ImagePreview2FromNameSlot = new(4175, 6140, 1950, 280);
+        private static readonly RectInt ImagePreview1FromNameSlot = new(5775, 6550, 2200, 280);
+        private static readonly RectInt ImagePreview2FromNameSlot = new(4380, 6200, 1950, 280);
 
         public BoothCompositionResult Compose(BoothJob job, string rawImagePath, Vector2Int thumbnailSize, BoothAiStyleOption aiStyle = null, Action<Texture2D> preStyleProcessor = null)
         {

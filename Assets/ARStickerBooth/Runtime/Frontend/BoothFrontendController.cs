@@ -218,6 +218,7 @@ namespace PhotoBooth.Booth.Frontend
         [SerializeField] private Button continueButton;
         [SerializeField] private Button printButton;
         [SerializeField] private Button doneButton;
+        private Button startButton;
         private Button qrReadyHomeButton;
 
         private readonly BoothImageComposer composer = new();
@@ -3196,12 +3197,37 @@ namespace PhotoBooth.Booth.Frontend
             StopMotionClipPlayback();
             await TrackAsync("booth_frontend_sync_started", metadata: BuildAiMetadata());
             await PrepareDownloadQrBeforeUploadAsync();
-            if (rawCaptureUploadQueue != null)
+            var jobBeforeSync = currentJob;
+            try
             {
-                await rawCaptureUploadQueue.FlushAsync(flowCancellation.Token, ResolvePassengerNameForLabel());
+                if (rawCaptureUploadQueue != null)
+                {
+                    await rawCaptureUploadQueue.FlushAsync(flowCancellation.Token, ResolvePassengerNameForLabel());
+                }
+
+                var syncedJob = await runtime.SyncService.SyncAsync(jobBeforeSync.JobId, flowCancellation.Token);
+                currentJob = syncedJob ?? jobBeforeSync;
+                if (syncedJob == null)
+                {
+                    currentJob.DownloadUrl = string.IsNullOrWhiteSpace(currentJob.DownloadUrl)
+                        ? BuildFallbackDownloadUrl(currentJob.JobId)
+                        : currentJob.DownloadUrl;
+                    Debug.LogWarning($"Photo booth sync returned no job, continuing with fallback download page: job={currentJob.JobId}, link={currentJob.DownloadUrl}");
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                currentJob ??= jobBeforeSync;
+                currentJob.DownloadUrl = string.IsNullOrWhiteSpace(currentJob.DownloadUrl)
+                    ? BuildFallbackDownloadUrl(currentJob.JobId)
+                    : currentJob.DownloadUrl;
+                Debug.LogWarning($"Photo booth upload failed, continuing with fallback download page: job={currentJob.JobId}, error={exception.Message}, link={currentJob.DownloadUrl}");
             }
 
-            currentJob = await runtime.SyncService.SyncAsync(currentJob.JobId, flowCancellation.Token);
             if (currentJob.Status != BoothJobStatus.LinkReady && currentJob.Status != BoothJobStatus.Done)
             {
                 var reason = !string.IsNullOrWhiteSpace(currentJob.LastUploadError)
@@ -4554,20 +4580,31 @@ namespace PhotoBooth.Booth.Frontend
             int? durationSeconds = null,
             IReadOnlyDictionary<string, string> metadata = null)
         {
-            runtime?.AnalyticsService?.TrackFeatureUsed(eventName, selectedTheme?.themeId, screenIdOverride?.ToString());
-            if (backendAnalytics == null)
+            try
             {
-                return;
-            }
+                runtime?.AnalyticsService?.TrackFeatureUsed(eventName, selectedTheme?.themeId, screenIdOverride?.ToString());
+                if (backendAnalytics == null)
+                {
+                    return;
+                }
 
-            await backendAnalytics.TrackAsync(
-                eventName,
-                currentJob?.JobId,
-                selectedTheme?.themeId,
-                screenIdOverride ?? currentScreen,
-                durationSeconds,
-                metadata,
-                flowCancellation?.Token ?? CancellationToken.None);
+                await backendAnalytics.TrackAsync(
+                    eventName,
+                    currentJob?.JobId,
+                    selectedTheme?.themeId,
+                    screenIdOverride ?? currentScreen,
+                    durationSeconds,
+                    metadata,
+                    flowCancellation?.Token ?? CancellationToken.None);
+            }
+            catch (OperationCanceledException)
+            {
+                Debug.LogWarning($"Backend analytics event cancelled: {eventName}");
+            }
+            catch (Exception exception)
+            {
+                Debug.LogWarning($"Backend analytics event skipped: {eventName}, error={exception.Message}");
+            }
         }
 
         private void StartMotionClipPlayback(BoothCaptureClip clip)
@@ -5545,6 +5582,11 @@ namespace PhotoBooth.Booth.Frontend
                 request = null;
                 ApplyQrPreviewTexture(rawTarget, imageTarget, qrPreviewTexture);
             }
+            catch (Exception exception)
+            {
+                Debug.LogWarning($"QR preview skipped: {exception.Message}");
+                SetStatus("Download link ready. QR preview failed, use the URL text.");
+            }
             finally
             {
                 HideQrLoading();
@@ -5640,12 +5682,21 @@ namespace PhotoBooth.Booth.Frontend
 
             isBusy = true;
             SetInteractable(false);
-            if (runtime != null)
+            try
             {
-                await runtime.EnsureReadyAsync();
-            }
+                if (runtime != null)
+                {
+                    await runtime.EnsureReadyAsync();
+                }
 
-            return true;
+                return true;
+            }
+            catch
+            {
+                isBusy = false;
+                SetInteractable(true);
+                throw;
+            }
         }
 
         private void EndBusy()
@@ -5679,6 +5730,7 @@ namespace PhotoBooth.Booth.Frontend
 
         private void SetInteractable(bool interactable)
         {
+            if (startButton != null) startButton.interactable = interactable;
             if (captureButton != null) captureButton.interactable = interactable;
             // if (captureRetakeButton != null) captureRetakeButton.interactable = interactable && isCaptureReviewing && !captureReviewRetakeUsed;
             // if (retakeButton != null) retakeButton.interactable = interactable;
@@ -8033,6 +8085,7 @@ namespace PhotoBooth.Booth.Frontend
             SetObjectActive("ArPresetPreview3", false);
             SetObjectActive("ArPresetPreview4", false);
 
+            startButton ??= FindButton("StartButton");
             WireButton("StartButton", StartSessionFromUi);
             WireButton("ThemeButton1", () => ChooseThemeCandidateFromUi(0));
             WireButton("ThemeButton2", () => ChooseThemeCandidateFromUi(1));
