@@ -8,6 +8,7 @@ const helmet = require("helmet");
 const cors = require("cors");
 const QRCode = require("qrcode");
 const { Pool } = require("pg");
+const { S3Client, PutObjectCommand, GetObjectCommand } = require("@aws-sdk/client-s3");
 const sharp = require("sharp");
 const opentype = require("opentype.js");
 require("dotenv").config();
@@ -42,7 +43,15 @@ const config = {
   voucherScanSessionTtlSeconds: Math.max(60, Number.parseInt(process.env.VOUCHER_SCAN_SESSION_TTL_SECONDS || "300", 10)),
   featuredComposedRecencySeconds: Math.max(1, Number.parseInt(process.env.FEATURED_COMPOSED_RECENCY_SECONDS || "600", 10)),
   featuredRawRecencySeconds: Math.max(1, Number.parseInt(process.env.FEATURED_RAW_RECENCY_SECONDS || process.env.FEATURED_COMPOSED_RECENCY_SECONDS || "600", 10)),
-  printQuotaTotal: Math.max(1, Number.parseInt(process.env.PRINT_QUOTA_TOTAL || "700", 10))
+  printQuotaTotal: Math.max(1, Number.parseInt(process.env.PRINT_QUOTA_TOTAL || "700", 10)),
+  storageDriver: (process.env.STORAGE_DRIVER || "auto").trim().toLowerCase(),
+  spacesEndpoint: (process.env.SPACES_ENDPOINT || "").trim().replace(/\/$/, ""),
+  spacesRegion: (process.env.SPACES_REGION || "sgp1").trim(),
+  spacesBucket: (process.env.SPACES_BUCKET || "").trim(),
+  spacesAccessKeyId: (process.env.SPACES_ACCESS_KEY_ID || "").trim(),
+  spacesSecretAccessKey: (process.env.SPACES_SECRET_ACCESS_KEY || "").trim(),
+  spacesPublicBaseUrl: (process.env.SPACES_PUBLIC_BASE_URL || "").trim().replace(/\/$/, ""),
+  spacesKeyPrefix: normalizeStorageKeyPrefix(process.env.SPACES_KEY_PREFIX || "")
 };
 
 function normalizePostgresConnectionString(raw) {
@@ -71,6 +80,7 @@ const pool = new Pool({
 });
 
 const generatedMediaPromises = new Map();
+const objectStorage = createObjectStorageClient();
 
 fs.mkdirSync(config.uploadsRoot, { recursive: true });
 
@@ -84,11 +94,15 @@ app.use(cors({
   credentials: false
 }));
 app.use(express.json({ limit: "2mb" }));
-app.use("/files", express.static(config.uploadsRoot, {
-  fallthrough: false,
-  maxAge: "7d",
-  immutable: false
-}));
+if (objectStorage.enabled) {
+  app.get("/files/*", serveStoredFile);
+} else {
+  app.use("/files", express.static(config.uploadsRoot, {
+    fallthrough: false,
+    maxAge: "7d",
+    immutable: false
+  }));
+}
 app.use("/assets", express.static(config.publicRoot, {
   fallthrough: false,
   maxAge: "30d",
@@ -1450,27 +1464,27 @@ app.post("/v1/jobs/:jobId/assets/upload", requireDeviceAuth, upload.fields([
 
     const sessionFolder = await ensureJobSessionFolder(client, jobId, sessionStartedAtUtc);
     const routePrefix = await resolveDownloadRoutePrefix(client, jobId);
-    const composedAsset = writeUploadFile(sessionFolder, routePrefix, "composed", composedFile);
+    const composedAsset = await writeUploadFile(sessionFolder, routePrefix, "composed", composedFile);
     const assets = [composedAsset];
 
     const thumbnailFile = req.files?.thumbnail_file?.[0];
     if (thumbnailFile) {
-      assets.push(writeUploadFile(sessionFolder, routePrefix, "thumbnail", thumbnailFile));
+      assets.push(await writeUploadFile(sessionFolder, routePrefix, "thumbnail", thumbnailFile));
     }
 
     const liveImageFile = req.files?.live_image_file?.[0];
     if (liveImageFile) {
-      assets.push(writeUploadFile(sessionFolder, routePrefix, "live_image", liveImageFile));
+      assets.push(await writeUploadFile(sessionFolder, routePrefix, "live_image", liveImageFile));
     }
 
     const motionVideoFile = req.files?.motion_video_file?.[0];
     if (motionVideoFile) {
-      assets.push(writeUploadFile(sessionFolder, routePrefix, "motion_video", motionVideoFile));
+      assets.push(await writeUploadFile(sessionFolder, routePrefix, "motion_video", motionVideoFile));
     }
 
     const motionFrameFiles = req.files?.motion_frame_files || [];
     for (const motionFrameFile of motionFrameFiles) {
-      assets.push(writeUploadFile(sessionFolder, routePrefix, "motion_frame", motionFrameFile));
+      assets.push(await writeUploadFile(sessionFolder, routePrefix, "motion_frame", motionFrameFile));
     }
 
     for (const asset of assets) {
@@ -1610,7 +1624,7 @@ app.post("/v1/jobs/:jobId/assets/raw-capture", requireDeviceAuth, upload.fields(
 
     const sessionFolder = await ensureJobSessionFolder(client, jobId, sessionStartedAtUtc);
     const routePrefix = await resolveDownloadRoutePrefix(client, jobId);
-    const rawAsset = writeRawCaptureFile(sessionFolder, routePrefix, captureIndex, captureTakenAtUtc, rawCaptureFile);
+    const rawAsset = await writeRawCaptureFile(sessionFolder, routePrefix, captureIndex, captureTakenAtUtc, rawCaptureFile);
     await upsertAsset(client, jobId, rawAsset);
     const rawCaptureCountResult = await client.query(
       `SELECT COUNT(1)::int AS raw_capture_count
@@ -2917,7 +2931,7 @@ async function loadPrintQuotaStatus(queryable) {
   };
 }
 
-function writeUploadFile(sessionFolder, routePrefix, assetType, file) {
+async function writeUploadFile(sessionFolder, routePrefix, assetType, file) {
   const originalName = sanitizeFilename(file.originalname || `${assetType}.bin`);
   const assetBaseKey = uploadAssetBaseKey(sessionFolder, routePrefix);
   const assetDirectory = path.join(config.uploadsRoot, ...assetBaseKey.split("/"), assetType);
@@ -2929,10 +2943,13 @@ function writeUploadFile(sessionFolder, routePrefix, assetType, file) {
   const absolutePath = path.join(assetDirectory, uniqueName);
   fs.writeFileSync(absolutePath, file.buffer);
 
+  const remoteKey = path.posix.join(assetBaseKey, assetType, uniqueName);
+  await putStoredFile(remoteKey, file.buffer, file.mimetype || "application/octet-stream");
+
   const checksum = sha256(file.buffer);
   return {
     assetType,
-    remoteKey: path.posix.join(assetBaseKey, assetType, uniqueName),
+    remoteKey,
     contentType: file.mimetype || "application/octet-stream",
     checksum,
     fileSizeBytes: file.size ?? file.buffer.length,
@@ -2940,7 +2957,7 @@ function writeUploadFile(sessionFolder, routePrefix, assetType, file) {
   };
 }
 
-function writeRawCaptureFile(sessionFolder, routePrefix, captureIndex, captureTakenAtUtc, file) {
+async function writeRawCaptureFile(sessionFolder, routePrefix, captureIndex, captureTakenAtUtc, file) {
   const originalName = sanitizeFilename(file.originalname || `capture_${captureIndex}.png`);
   const assetBaseKey = uploadAssetBaseKey(sessionFolder, routePrefix);
   const assetDirectory = path.join(config.uploadsRoot, ...assetBaseKey.split("/"), "raw");
@@ -2952,10 +2969,13 @@ function writeRawCaptureFile(sessionFolder, routePrefix, captureIndex, captureTa
   const absolutePath = path.join(assetDirectory, uniqueName);
   fs.writeFileSync(absolutePath, file.buffer);
 
+  const remoteKey = path.posix.join(assetBaseKey, "raw", uniqueName);
+  await putStoredFile(remoteKey, file.buffer, file.mimetype || "application/octet-stream");
+
   const checksum = sha256(file.buffer);
   return {
     assetType: "raw_capture",
-    remoteKey: path.posix.join(assetBaseKey, "raw", uniqueName),
+    remoteKey,
     contentType: file.mimetype || "application/octet-stream",
     checksum,
     fileSizeBytes: file.size ?? file.buffer.length,
@@ -3095,6 +3115,103 @@ function findFirstExistingAsset(assets) {
 function uploadFileExists(remoteKey) {
   const absolutePath = path.resolve(config.uploadsRoot, remoteKey || "");
   return absolutePath.startsWith(`${config.uploadsRoot}${path.sep}`) && fs.existsSync(absolutePath);
+}
+
+function normalizeStorageKeyPrefix(value) {
+  return String(value || "")
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^\/+|\/+$/g, "")
+    .replace(/\/{2,}/g, "/");
+}
+
+function createObjectStorageClient() {
+  const hasSpacesConfig = Boolean(
+    config.spacesEndpoint &&
+    config.spacesBucket &&
+    config.spacesAccessKeyId &&
+    config.spacesSecretAccessKey
+  );
+  const enabled = config.storageDriver !== "local" && hasSpacesConfig;
+
+  if (!enabled) {
+    return { enabled: false, client: null };
+  }
+
+  return {
+    enabled: true,
+    client: new S3Client({
+      region: config.spacesRegion || "us-east-1",
+      endpoint: config.spacesEndpoint,
+      forcePathStyle: false,
+      credentials: {
+        accessKeyId: config.spacesAccessKeyId,
+        secretAccessKey: config.spacesSecretAccessKey
+      }
+    })
+  };
+}
+
+function storageObjectKey(remoteKey) {
+  const cleanRemoteKey = normalizeStorageKeyPrefix(remoteKey);
+  return config.spacesKeyPrefix
+    ? path.posix.join(config.spacesKeyPrefix, cleanRemoteKey)
+    : cleanRemoteKey;
+}
+
+function storagePublicUrl(remoteKey) {
+  if (!objectStorage.enabled || !config.spacesPublicBaseUrl) {
+    return "";
+  }
+  return `${config.spacesPublicBaseUrl}/${encodeURIPath(storageObjectKey(remoteKey))}`;
+}
+
+async function putStoredFile(remoteKey, body, contentType) {
+  if (!objectStorage.enabled) {
+    return;
+  }
+
+  await objectStorage.client.send(new PutObjectCommand({
+    Bucket: config.spacesBucket,
+    Key: storageObjectKey(remoteKey),
+    Body: body,
+    ContentType: contentType || "application/octet-stream",
+    CacheControl: "public, max-age=604800"
+  }));
+}
+
+async function serveStoredFile(req, res, next) {
+  const remoteKey = normalizeStorageKeyPrefix(req.params[0] || "");
+  if (!remoteKey || remoteKey.includes("..")) {
+    return res.status(400).send("Invalid file key.");
+  }
+
+  const publicUrl = storagePublicUrl(remoteKey);
+  if (publicUrl) {
+    return res.redirect(302, publicUrl);
+  }
+
+  try {
+    const result = await objectStorage.client.send(new GetObjectCommand({
+      Bucket: config.spacesBucket,
+      Key: storageObjectKey(remoteKey)
+    }));
+    res.setHeader("Content-Type", result.ContentType || "application/octet-stream");
+    res.setHeader("Cache-Control", "public, max-age=604800");
+    if (result.ContentLength) {
+      res.setHeader("Content-Length", result.ContentLength);
+    }
+    return result.Body.pipe(res);
+  } catch (error) {
+    const absolutePath = absoluteUploadPath(remoteKey);
+    if (fs.existsSync(absolutePath)) {
+      return res.sendFile(absolutePath);
+    }
+    if (error?.name !== "NoSuchKey") {
+      console.error("stored_file_read_failed", { remoteKey, error });
+    }
+    return next();
+  }
 }
 
 function absolutePublicUrl(req, routePath) {

@@ -98,6 +98,23 @@ Open `/admin/print-quota` to see how many photos have been printed from the 700 
 
 The counter is based on print-completed backend analytics events from Unity (`booth_frontend_print_completed` and `booth_print_completed`) after the latest reset. Resetting does not delete historical events; it stores a new reset timestamp and starts the displayed count from that point.
 
+## DigitalOcean Spaces Storage
+
+Set the Spaces env vars to upload booth media to S3-compatible object storage. The backend still keeps a local cache under `UPLOADS_ROOT` for image/video processing, but `/files/...` redirects or proxies to Spaces when storage is enabled.
+
+```text
+STORAGE_DRIVER=auto
+SPACES_ENDPOINT=https://<region>.digitaloceanspaces.com
+SPACES_REGION=<region>
+SPACES_BUCKET=<bucket>
+SPACES_ACCESS_KEY_ID=<access-key>
+SPACES_SECRET_ACCESS_KEY=<secret-key>
+SPACES_PUBLIC_BASE_URL=https://<bucket>.<region>.digitaloceanspaces.com
+SPACES_KEY_PREFIX=
+```
+
+Use `STORAGE_DRIVER=local` to force local filesystem storage for development.
+
 Default CUPS options match the current kiosk print dialog:
 
 ```text
