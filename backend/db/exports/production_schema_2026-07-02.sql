@@ -1,3 +1,9 @@
+-- Photo Booth production PostgreSQL schema export
+-- Generated from backend/db/init/001_init.sql on 2026-07-02.
+-- This file is idempotent and safe to run on an empty production database.
+
+BEGIN;
+
 CREATE TABLE IF NOT EXISTS projects (
     id TEXT PRIMARY KEY,
     code TEXT NOT NULL UNIQUE,
@@ -273,3 +279,5 @@ CREATE TABLE IF NOT EXISTS print_quota_state (
 INSERT INTO print_quota_state (id, total_quota, reset_at)
 VALUES ('default', 700, '-infinity'::timestamptz)
 ON CONFLICT (id) DO NOTHING;
+
+COMMIT;

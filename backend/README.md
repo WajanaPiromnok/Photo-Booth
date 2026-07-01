@@ -18,6 +18,11 @@ Minimal backend scaffold for the Unity booth runtime.
 - `POST /v1/jobs/:jobId/publish`
 - `GET /v1/jobs/:jobId`
 - `GET /v1/assets/composed/featured`
+- `GET /v1/assets/raw/featured`
+- `GET /v1/assets/:projectRoute/:assetKind/featured`
+- `GET /admin/print-quota`
+- `GET /api/admin/v1/print-quota/status`
+- `POST /api/admin/v1/print-quota/reset`
 - `GET /world-tour/:jobId`
 - `GET /d/:jobId`
 - `GET /healthz`
@@ -26,11 +31,27 @@ Minimal backend scaffold for the Unity booth runtime.
 
 The Unity runtime can call a local print bridge instead of the simulated print client.
 
+Current kiosk builds keep Unity pointed at `http://127.0.0.1:18080`. If the team-provided bridge exists at `/Users/ezreal/Downloads/Furryways2_Claude/Build/backend/print-bridge`, the runner scripts use that folder and `/Users/ezreal/Downloads/Furryways2_Claude/print-bridge.env` automatically. Otherwise they fall back to this repo's `backend/print-bridge`.
+
+Team-provided env:
+
+```text
+DEFAULT_PRINTER_NAME=DS-RX1 4x6 Cut
+ALLOWED_PRINTER_NAMES=DS-RX1 4x6 Cut
+OVERRIDE_REQUESTED_PRINTER=true
+```
+
+On the Windows kiosk, place that env file at:
+
+```text
+C:\Users\Administrator\.photo-booth\print-bridge.env
+```
+
 For kiosk/app setup, install it as a macOS LaunchAgent so it starts automatically on login:
 
 ```bash
 cd /Users/ezreal/Desktop/Photo-Booth
-DEFAULT_PRINTER_NAME="Noah_Test_Printer" ./scripts/install-print-bridge-launchagent.sh
+./scripts/install-print-bridge-launchagent.sh
 ```
 
 The installer writes:
@@ -49,8 +70,8 @@ cd /Users/ezreal/Desktop/Photo-Booth
 Manual foreground run for debugging:
 
 ```bash
-cd /Users/ezreal/Desktop/Photo-Booth/backend/print-bridge
-PORT=18080 DEFAULT_PRINTER_NAME="Noah_Test_Printer" ALLOWED_PRINTER_NAMES="Noah_Test_Printer" OVERRIDE_REQUESTED_PRINTER=true npm start
+cd /Users/ezreal/Desktop/Photo-Booth
+./scripts/run-print-bridge.sh
 ```
 
 PrintBridge listens on `http://127.0.0.1:18080` and exposes:
@@ -69,7 +90,13 @@ Request body:
 }
 ```
 
-On macOS it submits jobs with `lp -d <printer> -n <copies> -o ... <image_path>`. With `OVERRIDE_REQUESTED_PRINTER=true`, PrintBridge ignores any printer name from Unity and always uses `DEFAULT_PRINTER_NAME`, so moving kiosks only requires changing the local PrintBridge env. Keep `ALLOWED_PRINTER_NAMES` restricted to the installed kiosk printer name. On this machine, `lpstat -p` currently reports `Noah_Test_Printer`.
+On macOS it submits jobs with `lp -d <printer> -n <copies> -o ... <image_path>`. On Windows it uses PowerShell printing from the bridge folder. With `OVERRIDE_REQUESTED_PRINTER=true`, PrintBridge ignores any printer name from Unity and always uses `DEFAULT_PRINTER_NAME`, so moving kiosks only requires changing the local PrintBridge env. Keep `ALLOWED_PRINTER_NAMES` restricted to the installed kiosk printer name.
+
+## Print Quota Admin
+
+Open `/admin/print-quota` to see how many photos have been printed from the 700 photo quota, how many remain, and reset the counter to zero. The page uses `ADMIN_BEARER_TOKEN` for the status and reset APIs.
+
+The counter is based on print-completed backend analytics events from Unity (`booth_frontend_print_completed` and `booth_print_completed`) after the latest reset. Resetting does not delete historical events; it stores a new reset timestamp and starts the displayed count from that point.
 
 Default CUPS options match the current kiosk print dialog:
 
@@ -243,7 +270,10 @@ Final asset upload (`/v1/jobs/:jobId/assets/upload`):
 
 - Files are stored in a Docker volume mounted at `/var/photo-booth/uploads`
 - Job files are grouped under `jobs/<yyyyMMdd_HHmmss_JOB-ID>/...` using `session_started_at_utc` converted to `Asia/Bangkok`
+- New project uploads are grouped under `<project-route>/jobs/<yyyyMMdd_HHmmss_JOB-ID>/...`, such as `world-tour/jobs/...` and `kooky-world/jobs/...`. Existing `jobs/...` assets remain valid.
 - Unity download links resolve through `/world-tour/:jobId` as the current World Tour page. Direct final image access is available at `/world-tour/:jobId/image`.
 - Unity can request a featured composed image at `/v1/assets/composed/featured`. The endpoint redirects to the newest composed asset from the last 10 minutes, or a random composed asset if no recent one exists. Override the window with `FEATURED_COMPOSED_RECENCY_SECONDS`.
+- Unity can request a featured raw capture image at `/v1/assets/raw/featured`. The endpoint redirects to the newest `raw_capture` asset from the raw folder in the recent window, or a random raw capture if no recent one exists. Override the window with `FEATURED_RAW_RECENCY_SECONDS`.
+- Unity can request a project-filtered featured image at `/v1/assets/:projectRoute/:assetKind/featured`, for example `/v1/assets/kooky-world/raw/featured` or `/v1/assets/world-tour/composed/featured`.
 - Legacy download links resolve through `/d/:jobId` with the `chiselda/photo-booth-backend:0.2.25` style page. `/d` and `/world-tour` render separate page designs.
 - The scaffold uses local-disk storage first. You can move asset storage to S3/R2 later without changing the Unity contract much.

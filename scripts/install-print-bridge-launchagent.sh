@@ -4,10 +4,38 @@ set -euo pipefail
 
 LABEL="com.readyverse.photobooth.printbridge"
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TEAM_PRINT_BRIDGE_ROOT="/Users/ezreal/Downloads/Furryways2_Claude"
+TEAM_PRINT_BRIDGE_ENV="${TEAM_PRINT_BRIDGE_ROOT}/print-bridge.env"
+TEAM_PRINT_BRIDGE_DIR="${TEAM_PRINT_BRIDGE_ROOT}/Build/backend/print-bridge"
 DEFAULT_PRINT_BRIDGE_DIR="${PROJECT_ROOT}/backend/print-bridge"
+
+load_env_file() {
+  local file_path="$1"
+  local line name value
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    line="${line%$'\r'}"
+    [[ -z "${line}" || "${line}" == \#* || "${line}" != *=* ]] && continue
+    name="${line%%=*}"
+    value="${line#*=}"
+    name="$(printf '%s' "${name}" | LC_ALL=C sed 's/^\xEF\xBB\xBF//; s/^[[:space:]]*//; s/[[:space:]]*$//')"
+    value="$(printf '%s' "${value}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    value="${value%\"}"
+    value="${value#\"}"
+    [[ -z "${name}" ]] && continue
+    export "${name}=${value}"
+  done < "${file_path}"
+}
+
+if [[ -f "${TEAM_PRINT_BRIDGE_ENV}" ]]; then
+  load_env_file "${TEAM_PRINT_BRIDGE_ENV}"
+fi
+
+if [[ -z "${PRINT_BRIDGE_DIR:-}" && -d "${TEAM_PRINT_BRIDGE_DIR}" ]]; then
+  PRINT_BRIDGE_DIR="${TEAM_PRINT_BRIDGE_DIR}"
+fi
 PRINT_BRIDGE_DIR="${PRINT_BRIDGE_DIR:-${DEFAULT_PRINT_BRIDGE_DIR}}"
 PORT="${PORT:-18080}"
-DEFAULT_PRINTER_NAME="${DEFAULT_PRINTER_NAME:-Noah_Test_Printer}"
+DEFAULT_PRINTER_NAME="${DEFAULT_PRINTER_NAME:-DS-RX1 4x6 Cut}"
 ALLOWED_PRINTER_NAMES="${ALLOWED_PRINTER_NAMES:-${DEFAULT_PRINTER_NAME}}"
 OVERRIDE_REQUESTED_PRINTER="${OVERRIDE_REQUESTED_PRINTER:-true}"
 PRINT_COMMAND="${PRINT_COMMAND:-lp}"

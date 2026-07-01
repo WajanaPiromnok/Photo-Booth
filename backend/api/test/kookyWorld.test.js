@@ -18,8 +18,10 @@ const {
   requiredRawCaptureTotalForRoute,
   renderKookyWorldDownloadPage,
   renderLegacyDownloadPage,
+  renderPrintQuotaAdminPage,
   resolveLabelTemplateId,
-  sortRawCaptureAssets
+  sortRawCaptureAssets,
+  uploadAssetBaseKey
 } = require("../src/server");
 
 test("Kooky World output template is generated at 1800x1200", async () => {
@@ -63,6 +65,12 @@ test("livephoto rotates 123, 231, 312 for two rounds", () => {
     ["2", "3", "1"],
     ["3", "1", "2"]
   ]);
+});
+
+test("new uploads are grouped under project route prefix", () => {
+  assert.equal(uploadAssetBaseKey("20260629_JOB-001", "kooky-world"), "kooky-world/jobs/20260629_JOB-001");
+  assert.equal(uploadAssetBaseKey("20260629_JOB-002", "world-tour"), "world-tour/jobs/20260629_JOB-002");
+  assert.equal(uploadAssetBaseKey("20260629_JOB-003", "d"), "jobs/20260629_JOB-003");
 });
 
 test("aggregate Unity motion frames split into three capture segments", () => {
@@ -136,6 +144,14 @@ test("prepared download response returns scan-ready download and QR URLs", () =>
   assert.ok(response.qr_png_url.endsWith("/kooky-world/JOB-READY-001/qr"));
 });
 
+test("print quota admin page includes status and reset actions", () => {
+  const html = renderPrintQuotaAdminPage();
+  assert.match(html, /Print Quota/);
+  assert.ok(html.includes("/api/admin/v1/print-quota/status"));
+  assert.ok(html.includes("/api/admin/v1/print-quota/reset"));
+  assert.match(html, /Reset to 0/);
+});
+
 test("download pages show processing placeholders before assets are uploaded", () => {
   const job = {
     job_id: "JOB-PROCESSING-001",
@@ -154,7 +170,10 @@ test("download pages show processing placeholders before assets are uploaded", (
   };
 
   assert.match(renderLegacyDownloadPage(pageArgs), /Processing please wait/);
-  assert.match(renderKookyWorldDownloadPage(pageArgs), /Processing please wait/);
+  const kookyHtml = renderKookyWorldDownloadPage(pageArgs);
+  assert.match(kookyHtml, /Processing please wait/);
+  assert.match(kookyHtml, /data-kooky-vdo-processing="true"/);
+  assert.match(kookyHtml, /setInterval\(checkVdoReady, 3500\)/);
 });
 
 test("raw captures are sorted by capture number", () => {
@@ -218,8 +237,8 @@ test("all mapped overlays exist and the download page pairs them with captures i
     assert.match(html, /liveview\.mp4\?v=frame-[12]-name-[a-f0-9]+-v7/);
     assert.match(html, /font-family: "Franie", Impact/);
     assert.match(html, /font-weight: 600;/);
-    assert.match(html, /\.label-stage-1 \.label-passenger-name \{[\s\S]*?left: 45\.5%;[\s\S]*?top: 20\.6%;[\s\S]*?font-size: 0\.8cqw;[\s\S]*?color: #231F20;/);
-    assert.match(html, /\.label-stage-2 \.label-passenger-name \{[\s\S]*?left: 33\.0%;[\s\S]*?top: 24\.0%;[\s\S]*?font-size: 0\.8cqw;[\s\S]*?color: #FFFFFF;/);
+    assert.match(html, /\.label-stage-1 \.label-passenger-name \{[\s\S]*?left: 45\.5%;[\s\S]*?top: 19\.6%;[\s\S]*?font-size: 0\.8cqw;[\s\S]*?color: #231F20;/);
+    assert.match(html, /\.label-stage-2 \.label-passenger-name \{[\s\S]*?left: 33\.0%;[\s\S]*?top: 25\.25%;[\s\S]*?font-size: 0\.8cqw;[\s\S]*?color: #FFFFFF;/);
 
     let previousCaptureOffset = -1;
     for (let index = 0; index < 3; index += 1) {

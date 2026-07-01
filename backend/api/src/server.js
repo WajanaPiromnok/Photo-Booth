@@ -40,15 +40,34 @@ const config = {
   voucherScanPath: normalizeRoutePath(process.env.VOUCHER_SCAN_PATH || "/voucher-scan"),
   kioskSessionTtlSeconds: Math.max(60, Number.parseInt(process.env.KIOSK_SESSION_TTL_SECONDS || "900", 10)),
   voucherScanSessionTtlSeconds: Math.max(60, Number.parseInt(process.env.VOUCHER_SCAN_SESSION_TTL_SECONDS || "300", 10)),
-  featuredComposedRecencySeconds: Math.max(1, Number.parseInt(process.env.FEATURED_COMPOSED_RECENCY_SECONDS || "600", 10))
+  featuredComposedRecencySeconds: Math.max(1, Number.parseInt(process.env.FEATURED_COMPOSED_RECENCY_SECONDS || "600", 10)),
+  featuredRawRecencySeconds: Math.max(1, Number.parseInt(process.env.FEATURED_RAW_RECENCY_SECONDS || process.env.FEATURED_COMPOSED_RECENCY_SECONDS || "600", 10)),
+  printQuotaTotal: Math.max(1, Number.parseInt(process.env.PRINT_QUOTA_TOTAL || "700", 10))
 };
 
+function normalizePostgresConnectionString(raw) {
+  if (!raw) {
+    return "";
+  }
+  const url = new URL(raw);
+  url.searchParams.delete("sslmode");
+  return url.toString();
+}
+
+const postgresConnectionString = normalizePostgresConnectionString(process.env.DATABASE_URL || "");
+const postgresSslEnabled = ["1", "true", "require"].includes(String(process.env.POSTGRES_SSL || "").toLowerCase()) || /sslmode=require/i.test(process.env.DATABASE_URL || "");
+
 const pool = new Pool({
-  host: process.env.POSTGRES_HOST || "db",
-  port: Number.parseInt(process.env.POSTGRES_PORT || "5432", 10),
-  database: process.env.POSTGRES_DB || "photo_booth",
-  user: process.env.POSTGRES_USER || "photo_booth",
-  password: process.env.POSTGRES_PASSWORD || "photo_booth"
+  ...(process.env.DATABASE_URL
+    ? { connectionString: postgresConnectionString }
+    : {
+        host: process.env.POSTGRES_HOST || "db",
+        port: Number.parseInt(process.env.POSTGRES_PORT || "5432", 10),
+        database: process.env.POSTGRES_DB || "photo_booth",
+        user: process.env.POSTGRES_USER || "photo_booth",
+        password: process.env.POSTGRES_PASSWORD || "photo_booth"
+      }),
+  ...(postgresSslEnabled ? { ssl: { rejectUnauthorized: false } } : {})
 });
 
 const generatedMediaPromises = new Map();
@@ -88,6 +107,11 @@ app.get("/healthz", async (req, res) => {
 app.get("/admin/vouchers", (req, res) => {
   res.setHeader("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'");
   return res.send(renderAdminVoucherConsolePage());
+});
+
+app.get("/admin/print-quota", (req, res) => {
+  res.setHeader("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'");
+  return res.send(renderPrintQuotaAdminPage());
 });
 
 app.get("/api/docs/openapi.json", (req, res) => {
@@ -590,6 +614,45 @@ app.get("/api/admin/v1/redemptions", requireAdminAuth, async (req, res) => {
   } catch (error) {
     console.error("redemptions_list_failed", { projectId, error });
     return res.status(500).json(errorEnvelope("REDEMPTIONS_LIST_FAILED", error.message));
+  }
+});
+
+app.get("/api/admin/v1/print-quota/status", requireAdminAuth, async (req, res) => {
+  try {
+    const status = await loadPrintQuotaStatus(pool);
+    return res.json({ success: true, data: status, error: null });
+  } catch (error) {
+    console.error("print_quota_status_failed", error);
+    return res.status(500).json(errorEnvelope("PRINT_QUOTA_STATUS_FAILED", error.message));
+  }
+});
+
+app.post("/api/admin/v1/print-quota/reset", requireAdminAuth, async (req, res) => {
+  const requestedTotal = normalizeInteger(req.body?.total_quota, config.printQuotaTotal);
+  const totalQuota = Math.max(1, requestedTotal);
+  try {
+    await pool.query(
+      `INSERT INTO print_quota_state (
+          id,
+          total_quota,
+          reset_at,
+          reset_by,
+          updated_at
+        )
+        VALUES ('default', $1, NOW(), $2, NOW())
+        ON CONFLICT (id)
+        DO UPDATE SET
+          total_quota = EXCLUDED.total_quota,
+          reset_at = EXCLUDED.reset_at,
+          reset_by = EXCLUDED.reset_by,
+          updated_at = NOW()`,
+      [totalQuota, req.adminId]
+    );
+    const status = await loadPrintQuotaStatus(pool);
+    return res.json({ success: true, data: status, error: null });
+  } catch (error) {
+    console.error("print_quota_reset_failed", error);
+    return res.status(500).json(errorEnvelope("PRINT_QUOTA_RESET_FAILED", error.message));
   }
 });
 
@@ -1386,27 +1449,28 @@ app.post("/v1/jobs/:jobId/assets/upload", requireDeviceAuth, upload.fields([
     });
 
     const sessionFolder = await ensureJobSessionFolder(client, jobId, sessionStartedAtUtc);
-    const composedAsset = writeUploadFile(sessionFolder, "composed", composedFile);
+    const routePrefix = await resolveDownloadRoutePrefix(client, jobId);
+    const composedAsset = writeUploadFile(sessionFolder, routePrefix, "composed", composedFile);
     const assets = [composedAsset];
 
     const thumbnailFile = req.files?.thumbnail_file?.[0];
     if (thumbnailFile) {
-      assets.push(writeUploadFile(sessionFolder, "thumbnail", thumbnailFile));
+      assets.push(writeUploadFile(sessionFolder, routePrefix, "thumbnail", thumbnailFile));
     }
 
     const liveImageFile = req.files?.live_image_file?.[0];
     if (liveImageFile) {
-      assets.push(writeUploadFile(sessionFolder, "live_image", liveImageFile));
+      assets.push(writeUploadFile(sessionFolder, routePrefix, "live_image", liveImageFile));
     }
 
     const motionVideoFile = req.files?.motion_video_file?.[0];
     if (motionVideoFile) {
-      assets.push(writeUploadFile(sessionFolder, "motion_video", motionVideoFile));
+      assets.push(writeUploadFile(sessionFolder, routePrefix, "motion_video", motionVideoFile));
     }
 
     const motionFrameFiles = req.files?.motion_frame_files || [];
     for (const motionFrameFile of motionFrameFiles) {
-      assets.push(writeUploadFile(sessionFolder, "motion_frame", motionFrameFile));
+      assets.push(writeUploadFile(sessionFolder, routePrefix, "motion_frame", motionFrameFile));
     }
 
     for (const asset of assets) {
@@ -1545,7 +1609,8 @@ app.post("/v1/jobs/:jobId/assets/raw-capture", requireDeviceAuth, upload.fields(
     });
 
     const sessionFolder = await ensureJobSessionFolder(client, jobId, sessionStartedAtUtc);
-    const rawAsset = writeRawCaptureFile(sessionFolder, captureIndex, captureTakenAtUtc, rawCaptureFile);
+    const routePrefix = await resolveDownloadRoutePrefix(client, jobId);
+    const rawAsset = writeRawCaptureFile(sessionFolder, routePrefix, captureIndex, captureTakenAtUtc, rawCaptureFile);
     await upsertAsset(client, jobId, rawAsset);
     const rawCaptureCountResult = await client.query(
       `SELECT COUNT(1)::int AS raw_capture_count
@@ -1554,7 +1619,6 @@ app.post("/v1/jobs/:jobId/assets/raw-capture", requireDeviceAuth, upload.fields(
       [jobId]
     );
     const rawCaptureCount = Number(rawCaptureCountResult.rows[0]?.raw_capture_count || 0);
-    const routePrefix = await resolveDownloadRoutePrefix(client, jobId);
     const expectedCaptureTotal = requiredRawCaptureTotalForRoute(routePrefix, captureTotal);
     const rawCapturesComplete = rawCaptureCount >= expectedCaptureTotal;
     const downloadUrl = `${config.publicBaseUrl}/${routePrefix}/${encodeURIComponent(jobId)}`;
@@ -1888,6 +1952,69 @@ app.get("/v1/assets/composed/featured", async (req, res) => {
   } catch (error) {
     console.error("featured_composed_asset_failed", { error });
     return res.status(error.statusCode || 500).json(errorEnvelope(error.code || "FEATURED_COMPOSED_ASSET_FAILED", error.message));
+  }
+});
+
+app.get("/v1/assets/raw/featured", async (req, res) => {
+  try {
+    const selected = await selectFeaturedRawAsset();
+    if (!selected) {
+      return res.status(404).json(errorEnvelope("NO_RAW_ASSETS", "No raw capture assets were found."));
+    }
+
+    const assetUrl = `/files/${encodeURIPath(selected.remote_key)}`;
+    if (String(req.query?.format || "").toLowerCase() === "json") {
+      return res.json({
+        success: true,
+        data: {
+          asset_type: selected.asset_type,
+          selection_mode: selected.selection_mode,
+          url: absolutePublicUrl(req, assetUrl),
+          created_at: selected.created_at
+        },
+        error: null
+      });
+    }
+
+    return res.redirect(302, assetUrl);
+  } catch (error) {
+    console.error("featured_raw_asset_failed", { error });
+    return res.status(error.statusCode || 500).json(errorEnvelope(error.code || "FEATURED_RAW_ASSET_FAILED", error.message));
+  }
+});
+
+app.get("/v1/assets/:projectRoute/:assetKind/featured", async (req, res) => {
+  const projectId = projectIdForAssetRoute(req.params.projectRoute);
+  const assetType = featuredAssetTypeFromRoute(req.params.assetKind);
+  if (!projectId || !assetType) {
+    return res.status(404).json(errorEnvelope("FEATURED_ASSET_ROUTE_NOT_FOUND", "Featured asset route was not found."));
+  }
+
+  try {
+    const selected = await selectFeaturedAssetByType(assetType, featuredRecencySecondsForAssetType(assetType), projectId);
+    if (!selected) {
+      return res.status(404).json(errorEnvelope("NO_FEATURED_ASSETS", "No featured assets were found for this project."));
+    }
+
+    const assetUrl = `/files/${encodeURIPath(selected.remote_key)}`;
+    if (String(req.query?.format || "").toLowerCase() === "json") {
+      return res.json({
+        success: true,
+        data: {
+          project_id: projectId,
+          asset_type: selected.asset_type,
+          selection_mode: selected.selection_mode,
+          url: absolutePublicUrl(req, assetUrl),
+          created_at: selected.created_at
+        },
+        error: null
+      });
+    }
+
+    return res.redirect(302, assetUrl);
+  } catch (error) {
+    console.error("featured_project_asset_failed", { projectId, assetType, error });
+    return res.status(error.statusCode || 500).json(errorEnvelope(error.code || "FEATURED_PROJECT_ASSET_FAILED", error.message));
   }
 });
 
@@ -2699,6 +2826,21 @@ async function initialize() {
   await pool.query("CREATE INDEX IF NOT EXISTS idx_booth_events_job_id ON booth_events(job_id)");
   await pool.query("CREATE INDEX IF NOT EXISTS idx_booth_events_device_id ON booth_events(device_id)");
   await pool.query("CREATE INDEX IF NOT EXISTS idx_booth_events_created_at ON booth_events(created_at DESC)");
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS print_quota_state (
+      id TEXT PRIMARY KEY,
+      total_quota INTEGER NOT NULL DEFAULT 700,
+      reset_at TIMESTAMPTZ NOT NULL DEFAULT '-infinity',
+      reset_by TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  await pool.query(
+    `INSERT INTO print_quota_state (id, total_quota, reset_at)
+     VALUES ('default', $1, '-infinity'::timestamptz)
+     ON CONFLICT (id) DO NOTHING`,
+    [config.printQuotaTotal]
+  );
 }
 
 function requireDeviceAuth(req, res, next) {
@@ -2734,9 +2876,51 @@ function requireAdminAuth(req, res, next) {
   return next();
 }
 
-function writeUploadFile(sessionFolder, assetType, file) {
+async function loadPrintQuotaStatus(queryable) {
+  const result = await queryable.query(
+    `WITH state AS (
+       SELECT total_quota, reset_at, reset_by, updated_at
+       FROM print_quota_state
+       WHERE id = 'default'
+     ),
+     counted AS (
+       SELECT COUNT(DISTINCT COALESCE(NULLIF(be.job_id, ''), be.id::text))::int AS printed_count,
+              MAX(be.created_at) AS last_printed_at
+       FROM booth_events be
+       CROSS JOIN state s
+       WHERE be.event_name IN ('booth_frontend_print_completed', 'booth_print_completed')
+         AND be.created_at >= s.reset_at
+     )
+     SELECT s.total_quota,
+            s.reset_at,
+            s.reset_by,
+            s.updated_at,
+            COALESCE(c.printed_count, 0)::int AS printed_count,
+            c.last_printed_at
+     FROM state s
+     CROSS JOIN counted c`,
+    []
+  );
+  const row = result.rows[0] || {};
+  const totalQuota = Math.max(1, Number(row.total_quota || config.printQuotaTotal));
+  const printedCount = Math.max(0, Number(row.printed_count || 0));
+  const remainingCount = Math.max(0, totalQuota - printedCount);
+  return {
+    printed_count: printedCount,
+    total_quota: totalQuota,
+    remaining_count: remainingCount,
+    percent_used: Math.min(100, Math.round((printedCount / totalQuota) * 10000) / 100),
+    reset_at: row.reset_at || null,
+    reset_by: row.reset_by || null,
+    updated_at: row.updated_at || null,
+    last_printed_at: row.last_printed_at || null
+  };
+}
+
+function writeUploadFile(sessionFolder, routePrefix, assetType, file) {
   const originalName = sanitizeFilename(file.originalname || `${assetType}.bin`);
-  const assetDirectory = path.join(config.uploadsRoot, "jobs", sessionFolder, assetType);
+  const assetBaseKey = uploadAssetBaseKey(sessionFolder, routePrefix);
+  const assetDirectory = path.join(config.uploadsRoot, ...assetBaseKey.split("/"), assetType);
   fs.mkdirSync(assetDirectory, { recursive: true });
 
   const extension = path.extname(originalName) || defaultExtensionForMimeType(file.mimetype);
@@ -2748,7 +2932,7 @@ function writeUploadFile(sessionFolder, assetType, file) {
   const checksum = sha256(file.buffer);
   return {
     assetType,
-    remoteKey: path.posix.join("jobs", sessionFolder, assetType, uniqueName),
+    remoteKey: path.posix.join(assetBaseKey, assetType, uniqueName),
     contentType: file.mimetype || "application/octet-stream",
     checksum,
     fileSizeBytes: file.size ?? file.buffer.length,
@@ -2756,9 +2940,10 @@ function writeUploadFile(sessionFolder, assetType, file) {
   };
 }
 
-function writeRawCaptureFile(sessionFolder, captureIndex, captureTakenAtUtc, file) {
+function writeRawCaptureFile(sessionFolder, routePrefix, captureIndex, captureTakenAtUtc, file) {
   const originalName = sanitizeFilename(file.originalname || `capture_${captureIndex}.png`);
-  const assetDirectory = path.join(config.uploadsRoot, "jobs", sessionFolder, "raw");
+  const assetBaseKey = uploadAssetBaseKey(sessionFolder, routePrefix);
+  const assetDirectory = path.join(config.uploadsRoot, ...assetBaseKey.split("/"), "raw");
   fs.mkdirSync(assetDirectory, { recursive: true });
 
   const extension = path.extname(originalName) || defaultExtensionForMimeType(file.mimetype);
@@ -2770,12 +2955,24 @@ function writeRawCaptureFile(sessionFolder, captureIndex, captureTakenAtUtc, fil
   const checksum = sha256(file.buffer);
   return {
     assetType: "raw_capture",
-    remoteKey: path.posix.join("jobs", sessionFolder, "raw", uniqueName),
+    remoteKey: path.posix.join(assetBaseKey, "raw", uniqueName),
     contentType: file.mimetype || "application/octet-stream",
     checksum,
     fileSizeBytes: file.size ?? file.buffer.length,
     originalFileName: originalName
   };
+}
+
+function uploadAssetBaseKey(sessionFolder, routePrefix) {
+  const prefix = uploadProjectPrefix(routePrefix);
+  return prefix
+    ? path.posix.join(prefix, "jobs", sessionFolder)
+    : path.posix.join("jobs", sessionFolder);
+}
+
+function uploadProjectPrefix(routePrefix) {
+  const normalized = String(routePrefix || "").trim().toLowerCase();
+  return normalized === "kooky-world" || normalized === "world-tour" ? normalized : "";
 }
 
 async function loadDownloadJobAssets(jobId) {
@@ -2823,13 +3020,23 @@ function absoluteUploadPath(remoteKey) {
 }
 
 async function selectFeaturedComposedAsset() {
+  return selectFeaturedAssetByType("composed", config.featuredComposedRecencySeconds);
+}
+
+async function selectFeaturedRawAsset() {
+  return selectFeaturedAssetByType("raw_capture", config.featuredRawRecencySeconds);
+}
+
+async function selectFeaturedAssetByType(assetType, recencySeconds, projectId = null) {
   const recentResult = await pool.query(
-    `SELECT asset_type, remote_key, content_type, original_file_name, created_at
-     FROM booth_assets
-     WHERE asset_type = 'composed'
-       AND created_at >= NOW() - ($1::int * INTERVAL '1 second')
-     ORDER BY created_at DESC`,
-    [config.featuredComposedRecencySeconds]
+    `SELECT a.asset_type, a.remote_key, a.content_type, a.original_file_name, a.created_at
+     FROM booth_assets a
+     JOIN booth_jobs j ON j.job_id = a.job_id
+     WHERE a.asset_type = $1
+       AND ($3::text IS NULL OR j.project_id = $3)
+       AND a.created_at >= NOW() - ($2::int * INTERVAL '1 second')
+     ORDER BY a.created_at DESC`,
+    [assetType, recencySeconds, projectId]
   );
   const recentAsset = findFirstExistingAsset(recentResult.rows);
   if (recentAsset) {
@@ -2837,10 +3044,13 @@ async function selectFeaturedComposedAsset() {
   }
 
   const randomResult = await pool.query(
-    `SELECT asset_type, remote_key, content_type, original_file_name, created_at
-     FROM booth_assets
-     WHERE asset_type = 'composed'
-     ORDER BY RANDOM()`
+    `SELECT a.asset_type, a.remote_key, a.content_type, a.original_file_name, a.created_at
+     FROM booth_assets a
+     JOIN booth_jobs j ON j.job_id = a.job_id
+     WHERE a.asset_type = $1
+       AND ($2::text IS NULL OR j.project_id = $2)
+     ORDER BY RANDOM()`,
+    [assetType, projectId]
   );
   const randomAsset = findFirstExistingAsset(randomResult.rows);
   if (randomAsset) {
@@ -2848,6 +3058,34 @@ async function selectFeaturedComposedAsset() {
   }
 
   return null;
+}
+
+function projectIdForAssetRoute(route) {
+  const normalized = String(route || "").trim().toLowerCase();
+  if (normalized === "kooky-world") {
+    return "prj_kooky_world";
+  }
+  if (normalized === "world-tour") {
+    return "prj_world_tour";
+  }
+  return null;
+}
+
+function featuredAssetTypeFromRoute(assetKind) {
+  const normalized = String(assetKind || "").trim().toLowerCase();
+  if (normalized === "raw") {
+    return "raw_capture";
+  }
+  if (normalized === "composed") {
+    return "composed";
+  }
+  return null;
+}
+
+function featuredRecencySecondsForAssetType(assetType) {
+  return assetType === "raw_capture"
+    ? config.featuredRawRecencySeconds
+    : config.featuredComposedRecencySeconds;
 }
 
 function findFirstExistingAsset(assets) {
@@ -4897,6 +5135,85 @@ function buildOpenApiSpec(req) {
           }
         }
       },
+      "/v1/assets/raw/featured": {
+        get: {
+          tags: ["Assets"],
+          summary: "Get featured raw capture image",
+          description: "Redirects to the newest raw_capture asset from the recent window, or a random raw_capture asset when no recent image exists. Add ?format=json for debugging metadata.",
+          parameters: [
+            {
+              name: "format",
+              in: "query",
+              required: false,
+              schema: { type: "string", enum: ["json"] },
+              description: "Return JSON metadata instead of redirecting to the image."
+            }
+          ],
+          responses: {
+            302: { description: "Redirects to the selected image under /files/." },
+            200: {
+              description: "Selected image metadata when format=json.",
+              content: {
+                "application/json": {
+                  schema: {
+                    allOf: [
+                      { $ref: "#/components/schemas/SuccessEnvelope" },
+                      {
+                        type: "object",
+                        properties: {
+                          data: {
+                            type: "object",
+                            properties: {
+                              asset_type: { type: "string", example: "raw_capture" },
+                              selection_mode: { type: "string", enum: ["latest", "random"] },
+                              url: { type: "string", format: "uri" },
+                              created_at: { type: "string", format: "date-time" }
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            404: { description: "No raw capture assets were found.", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+          }
+        }
+      },
+      "/v1/assets/{projectRoute}/{assetKind}/featured": {
+        get: {
+          tags: ["Assets"],
+          summary: "Get featured image filtered by project",
+          description: "Redirects to a featured raw or composed asset for one project. projectRoute must be world-tour or kooky-world; assetKind must be raw or composed. Add ?format=json for debugging metadata.",
+          parameters: [
+            {
+              name: "projectRoute",
+              in: "path",
+              required: true,
+              schema: { type: "string", enum: ["world-tour", "kooky-world"] }
+            },
+            {
+              name: "assetKind",
+              in: "path",
+              required: true,
+              schema: { type: "string", enum: ["raw", "composed"] }
+            },
+            {
+              name: "format",
+              in: "query",
+              required: false,
+              schema: { type: "string", enum: ["json"] },
+              description: "Return JSON metadata instead of redirecting to the image."
+            }
+          ],
+          responses: {
+            302: { description: "Redirects to the selected image under /files/." },
+            200: { description: "Selected image metadata when format=json." },
+            404: { description: "No matching featured asset was found.", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+          }
+        }
+      },
       "/api/admin/v1/vouchers/generate": {
         post: {
           tags: ["Admin Vouchers"],
@@ -6497,6 +6814,130 @@ function resolveWorldTourTemplate(labelTemplateId) {
   };
 }
 
+function renderPrintQuotaAdminPage() {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Photo Booth Print Quota</title>
+  <style>
+    :root { --bg:#f4f4f1; --shell:#10212a; --surface:#fff; --line:#deddd8; --ink:#17232c; --muted:#65717a; --teal:#14627a; --green:#16704d; --red:#b8323d; --orange:#c95722; --mono:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100vh; background:var(--bg); color:var(--ink); font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif; }
+    .app { min-height:100vh; display:grid; grid-template-columns:246px minmax(0,1fr); }
+    aside { background:var(--shell); color:#d8e8eb; padding:22px 16px; }
+    .brand { padding:4px 8px 20px; border-bottom:1px solid rgba(255,255,255,.10); margin-bottom:18px; }
+    .brand b { display:block; color:#fff; font-size:19px; margin-bottom:3px; }
+    .brand span { color:#9bb9c0; font-size:12px; }
+    .nav-item { display:block; text-decoration:none; padding:11px 12px; border-radius:10px; color:#bdd3d8; font-size:13px; margin-bottom:5px; }
+    .nav-item.active { background:#173c47; color:#fff; }
+    .nav-note { margin-top:22px; border:1px solid rgba(120,205,222,.22); background:rgba(20,98,122,.18); border-radius:13px; padding:13px; color:#cfe3e7; font-size:12px; line-height:1.5; }
+    main { min-width:0; padding:24px; }
+    .topbar { display:flex; justify-content:space-between; align-items:flex-start; gap:16px; margin-bottom:18px; }
+    h1 { margin:0 0 4px; font-size:24px; letter-spacing:0; }
+    .sub { color:var(--muted); font-size:13px; }
+    .token-box { display:grid; grid-template-columns:minmax(220px,320px) auto; gap:8px; align-items:end; }
+    label { display:block; color:var(--muted); font-size:11px; margin-bottom:5px; }
+    input { width:100%; border:1px solid #d8d7d2; border-radius:9px; padding:10px; background:#fff; color:var(--ink); font:inherit; font-size:13px; }
+    input:focus { outline:2px solid #cae9ed; border-color:var(--teal); }
+    button { border:0; border-radius:10px; padding:11px 13px; background:#e9e9e4; color:var(--ink); font:inherit; font-size:13px; font-weight:700; cursor:pointer; white-space:nowrap; }
+    button.primary { background:var(--teal); color:#fff; }
+    button.danger { background:var(--red); color:#fff; }
+    button:disabled { opacity:.55; cursor:not-allowed; }
+    .quota-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; margin-bottom:14px; }
+    .metric { border:1px solid var(--line); background:var(--surface); border-radius:15px; padding:18px; min-height:132px; }
+    .metric span { display:block; color:var(--muted); font-size:12px; margin-bottom:11px; }
+    .metric strong { display:block; font-size:46px; line-height:1; letter-spacing:0; }
+    .metric small { display:block; color:var(--muted); margin-top:9px; font-size:12px; }
+    .panel { border:1px solid var(--line); background:var(--surface); border-radius:15px; padding:17px; margin-bottom:14px; }
+    .progress-track { height:22px; border-radius:999px; overflow:hidden; background:#e5e3dc; border:1px solid #d8d6cf; }
+    .progress-fill { height:100%; width:0%; background:linear-gradient(90deg,var(--teal),#45a5b8); transition:width .25s ease; }
+    .meta { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; margin-top:14px; color:var(--muted); font-size:13px; }
+    .meta code { color:var(--teal); font-family:var(--mono); }
+    .actions { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+    .status { margin-top:12px; min-height:18px; color:var(--muted); font-size:12px; }
+    .status.error { color:var(--red); } .status.ok { color:var(--green); }
+    @media (max-width:900px) { .app{grid-template-columns:1fr} aside{display:none} main{padding:16px} .topbar,.quota-grid{display:block} .metric{margin-bottom:12px} .token-box{grid-template-columns:1fr;margin-top:12px} .meta{grid-template-columns:1fr} }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside>
+      <div class="brand"><b>Photo Booth Admin</b><span>Print Quota</span></div>
+      <a class="nav-item active" href="/admin/print-quota">Print Quota</a>
+      <a class="nav-item" href="/admin/vouchers">Voucher Codes</a>
+      <div class="nav-note">Counts print-completed analytics events after the latest reset. Reset starts the counter from zero without deleting historical events.</div>
+    </aside>
+    <main>
+      <div class="topbar">
+        <div><h1>Print Quota</h1><div class="sub">Track printed photos against the quota of ${config.printQuotaTotal}.</div></div>
+        <form class="token-box" id="tokenForm"><div><label for="adminToken">Admin bearer token</label><input id="adminToken" type="password" autocomplete="off" placeholder="ADMIN_BEARER_TOKEN"></div><button id="saveToken" type="button">Save</button></form>
+      </div>
+      <section class="quota-grid" aria-label="Print quota metrics">
+        <div class="metric"><span>Printed</span><strong id="printedCount">0</strong><small>photos printed since reset</small></div>
+        <div class="metric"><span>Total quota</span><strong id="totalQuota">${config.printQuotaTotal}</strong><small>configured photo allowance</small></div>
+        <div class="metric"><span>Remaining</span><strong id="remainingCount">${config.printQuotaTotal}</strong><small>photos left before quota ends</small></div>
+      </section>
+      <section class="panel">
+        <div class="progress-track" aria-label="Quota usage"><div id="progressFill" class="progress-fill"></div></div>
+        <div class="meta">
+          <div>Used: <code id="percentUsed">0%</code></div>
+          <div>Last printed: <code id="lastPrintedAt">-</code></div>
+          <div>Reset at: <code id="resetAt">-</code></div>
+          <div>Reset by: <code id="resetBy">-</code></div>
+        </div>
+      </section>
+      <section class="panel">
+        <div class="actions">
+          <button class="primary" id="refreshButton" type="button">Refresh</button>
+          <button class="danger" id="resetButton" type="button">Reset to 0</button>
+        </div>
+        <div id="status" class="status"></div>
+      </section>
+    </main>
+  </div>
+  <script>
+    const tokenInput = document.getElementById("adminToken");
+    tokenInput.value = localStorage.getItem("photoBoothAdminToken") || (location.hostname === "localhost" || location.hostname === "127.0.0.1" ? "dev-admin-token" : "");
+    function authHeaders(){ const token = tokenInput.value.trim(); return token ? { "Authorization": "Bearer " + token } : {}; }
+    function setStatus(message, kind){ const el = document.getElementById("status"); el.textContent = message || ""; el.className = "status" + (kind ? " " + kind : ""); }
+    function formatDate(value){ if (!value) return "-"; const date = new Date(value); return Number.isNaN(date.getTime()) ? "-" : date.toLocaleString(); }
+    async function api(path, options){ const opts = options || {}; const headers = Object.assign({ "Content-Type":"application/json" }, authHeaders(), opts.headers || {}); const response = await fetch(path, Object.assign({}, opts, { headers })); const body = await response.json().catch(() => ({ success:false, error:{ message:response.statusText } })); if (!response.ok || body.success === false) throw new Error((body.error && body.error.message) || response.statusText); return body.data; }
+    function render(data){
+      document.getElementById("printedCount").textContent = data.printed_count;
+      document.getElementById("totalQuota").textContent = data.total_quota;
+      document.getElementById("remainingCount").textContent = data.remaining_count;
+      document.getElementById("percentUsed").textContent = data.percent_used + "%";
+      document.getElementById("progressFill").style.width = Math.min(100, Math.max(0, Number(data.percent_used || 0))) + "%";
+      document.getElementById("lastPrintedAt").textContent = formatDate(data.last_printed_at);
+      document.getElementById("resetAt").textContent = formatDate(data.reset_at);
+      document.getElementById("resetBy").textContent = data.reset_by || "-";
+    }
+    async function refresh(){ try { setStatus("Loading...", ""); render(await api("/api/admin/v1/print-quota/status")); setStatus("Loaded.", "ok"); } catch (error) { setStatus(error.message, "error"); } }
+    async function resetQuota(){
+      if (!confirm("Reset printed count to 0? Historical events will be kept, but the dashboard will count from now.")) return;
+      try {
+        document.getElementById("resetButton").disabled = true;
+        setStatus("Resetting...", "");
+        render(await api("/api/admin/v1/print-quota/reset", { method:"POST", body:JSON.stringify({ total_quota:${config.printQuotaTotal} }) }));
+        setStatus("Reset complete. Counter is now 0.", "ok");
+      } catch (error) {
+        setStatus(error.message, "error");
+      } finally {
+        document.getElementById("resetButton").disabled = false;
+      }
+    }
+    document.getElementById("saveToken").addEventListener("click", () => { localStorage.setItem("photoBoothAdminToken", tokenInput.value.trim()); refresh(); });
+    document.getElementById("refreshButton").addEventListener("click", refresh);
+    document.getElementById("resetButton").addEventListener("click", resetQuota);
+    refresh();
+    setInterval(refresh, 10000);
+  </script>
+</body>
+</html>`;
+}
+
 function renderAdminVoucherConsolePage() {
   return `<!doctype html>
 <html lang="en">
@@ -6995,6 +7436,40 @@ function renderKookyWorldDownloadPage({ job, composed, thumbnail, liveImage, mot
           ${passengerNameMarkup}
         </div>`
       : "";
+  const videoProcessingMarkup = `<div class="media media-empty" data-kooky-vdo-processing="true">Processing please wait</div>`;
+  const processingPollScript = !videoMarkup ? `
+  <script>
+    (() => {
+      const marker = document.querySelector('[data-kooky-vdo-processing="true"]');
+      if (!marker) return;
+      let pending = false;
+      async function checkVdoReady() {
+        if (pending || document.hidden) return;
+        pending = true;
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 8000);
+        try {
+          const response = await fetch(window.location.href, {
+            cache: "no-store",
+            headers: { "Accept": "text/html" },
+            signal: controller.signal
+          });
+          if (!response.ok) return;
+          const html = await response.text();
+          if (!html.includes('data-kooky-vdo-processing="true"')) {
+            window.location.reload();
+          }
+        } catch (error) {
+          // Keep the visible processing state; the next poll will retry.
+        } finally {
+          clearTimeout(timeout);
+          pending = false;
+        }
+      }
+      setInterval(checkVdoReady, 3500);
+      setTimeout(checkVdoReady, 1200);
+    })();
+  </script>` : "";
 
   const videoDownloadUrl = hasCountdownPreview
     ? framedCountdownVideoDownloadUrl
@@ -7251,13 +7726,13 @@ function renderKookyWorldDownloadPage({ job, composed, thumbnail, liveImage, mot
     }
     .label-stage-1 .label-passenger-name {
       left: 45.5%;
-      top: 20.6%;
+      top: 19.6%;
       font-size: 0.8cqw;
       color: #231F20;
     }
     .label-stage-2 .label-passenger-name {
       left: 33.0%;
-      top: 24.0%;
+      top: 25.25%;
       font-size: 0.8cqw;
       color: #FFFFFF;
     }
@@ -7351,7 +7826,7 @@ function renderKookyWorldDownloadPage({ job, composed, thumbnail, liveImage, mot
       </div>
       <div class="card-body">
         <div class="ticket-frame">
-          ${videoMarkup || `<div class="media media-empty">Processing please wait</div>`}
+          ${videoMarkup || videoProcessingMarkup}
         </div>
       </div>
     </div>
@@ -7385,6 +7860,7 @@ function renderKookyWorldDownloadPage({ job, composed, thumbnail, liveImage, mot
       <img class="footer-image" src="/assets/kooky-world/footer.png" alt="Footer Logo and Copyright">
     </footer>
   </main>
+  ${processingPollScript}
 </body>
 </html>`;
 }
@@ -7850,8 +8326,10 @@ module.exports = {
   ensureKookyWorldOutputTemplate,
   renderKookyWorldFramedPng,
   renderKookyWorldFramedVideo,
+  renderPrintQuotaAdminPage,
   renderKookyWorldDownloadPage,
   renderLegacyDownloadPage,
   resolveLabelTemplateId,
-  sortRawCaptureAssets
+  sortRawCaptureAssets,
+  uploadAssetBaseKey
 };
