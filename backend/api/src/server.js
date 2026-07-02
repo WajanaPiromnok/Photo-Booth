@@ -54,6 +54,33 @@ const config = {
   spacesKeyPrefix: normalizeStorageKeyPrefix(process.env.SPACES_KEY_PREFIX || "")
 };
 
+function cspSourceFromUrl(rawUrl) {
+  if (!rawUrl) {
+    return "";
+  }
+  try {
+    return new URL(rawUrl).origin;
+  } catch (_error) {
+    return "";
+  }
+}
+
+const spacesCspSource = cspSourceFromUrl(config.spacesPublicBaseUrl);
+const storedImageCspSources = ["'self'", "data:", spacesCspSource].filter(Boolean).join(" ");
+const storedMediaCspSources = ["'self'", "blob:", spacesCspSource].filter(Boolean).join(" ");
+
+function pageCsp({ images = storedImageCspSources, media = "'self'", defaults = "'self'", styles = "'self' 'unsafe-inline'", scripts = "'self' 'unsafe-inline'", connect = "'self'" } = {}) {
+  const directives = [
+    `default-src ${defaults}`,
+    `img-src ${images}`,
+    media ? `media-src ${media}` : "",
+    `style-src ${styles}`,
+    `script-src ${scripts}`,
+    connect ? `connect-src ${connect}` : ""
+  ].filter(Boolean);
+  return directives.join("; ");
+}
+
 function normalizePostgresConnectionString(raw) {
   if (!raw) {
     return "";
@@ -119,12 +146,12 @@ app.get("/healthz", async (req, res) => {
 });
 
 app.get("/admin/vouchers", (req, res) => {
-  res.setHeader("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'");
+  res.setHeader("Content-Security-Policy", pageCsp());
   return res.send(renderAdminVoucherConsolePage());
 });
 
 app.get("/admin/print-quota", (req, res) => {
-  res.setHeader("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'");
+  res.setHeader("Content-Security-Policy", pageCsp());
   return res.send(renderPrintQuotaAdminPage());
 });
 
@@ -138,30 +165,30 @@ app.get("/api/docs", (req, res) => {
 });
 
 app.get("/tools/voucher-test", (req, res) => {
-  res.setHeader("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'");
+  res.setHeader("Content-Security-Policy", pageCsp());
   return res.send(renderVoucherTestPage());
 });
 
 app.get(config.voucherScanPath, (req, res) => {
-  res.setHeader("Content-Security-Policy", "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'");
+  res.setHeader("Content-Security-Policy", pageCsp({ images: [storedImageCspSources, "blob:"].join(" "), media: storedMediaCspSources }));
   return res.send(renderVoucherScanPage());
 });
 
 if (config.voucherScanPath !== "/voucher-scan") {
   app.get("/voucher-scan", (req, res) => {
-    res.setHeader("Content-Security-Policy", "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'");
+    res.setHeader("Content-Security-Policy", pageCsp({ images: [storedImageCspSources, "blob:"].join(" "), media: storedMediaCspSources }));
     return res.send(renderVoucherScanPage());
   });
 }
 
 app.get(config.voucherLinkPath, (req, res) => {
-  res.setHeader("Content-Security-Policy", "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'");
+  res.setHeader("Content-Security-Policy", pageCsp({ images: [storedImageCspSources, "blob:"].join(" "), media: storedMediaCspSources }));
   return res.send(renderVoucherLinkPage());
 });
 
 if (config.voucherLinkPath !== "/voucher-link") {
   app.get("/voucher-link", (req, res) => {
-    res.setHeader("Content-Security-Policy", "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'");
+    res.setHeader("Content-Security-Policy", pageCsp({ images: [storedImageCspSources, "blob:"].join(" "), media: storedMediaCspSources }));
     return res.send(renderVoucherLinkPage());
   });
 }
@@ -2160,7 +2187,7 @@ app.get(["/d/:jobId/clip", "/world-tour/:jobId/clip", "/kooky-world/:jobId/clip"
     const frameUrls = frameResult.rows.map((row) => `/files/${encodeURIPath(row.remote_key)}`);
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.setHeader("Cache-Control", "public, max-age=300");
-    res.setHeader("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'");
+    res.setHeader("Content-Security-Policy", pageCsp({ media: null, connect: null }));
     return res.send(renderMotionClipPage(jobId, frameUrls));
   } catch (error) {
     console.error("clip_render_failed", { jobId, error });
@@ -2521,7 +2548,7 @@ app.get(["/d/:jobId", "/world-tour/:jobId", "/kooky-world/:jobId"], async (req, 
 
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.setHeader("Cache-Control", job.upload_status === "LINK_READY" ? "public, max-age=300" : "private, no-store");
-    res.setHeader("Content-Security-Policy", "default-src 'self'; img-src 'self' data: https://photobooth-storage.sgp1.digitaloceanspaces.com; media-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'");
+    res.setHeader("Content-Security-Policy", pageCsp({ media: storedMediaCspSources, connect: null }));
     return res.send(page);
   } catch (error) {
     console.error("download_page_failed", { jobId, error });
