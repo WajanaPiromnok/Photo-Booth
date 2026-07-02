@@ -3198,16 +3198,30 @@ namespace PhotoBooth.Booth.Frontend
             SwitchScreen(BoothUiScreenId.Preview, "Syncing photo...");
             StopMotionClipPlayback();
             await TrackAsync("booth_frontend_sync_started", metadata: BuildAiMetadata());
-            await PrepareDownloadQrBeforeUploadAsync();
+            var earlyDownloadReady = await PrepareDownloadQrBeforeUploadAsync();
             var jobBeforeSync = currentJob;
+            var uploadQueue = rawCaptureUploadQueue;
+            var uploadPassengerName = ResolvePassengerNameForLabel();
+            rawCaptureUploadQueue = null;
+
+            if (earlyDownloadReady && !string.IsNullOrWhiteSpace(jobBeforeSync.DownloadUrl))
+            {
+                _ = UploadAndPublishJobInBackgroundAsync(
+                    jobBeforeSync.JobId,
+                    uploadQueue,
+                    uploadPassengerName,
+                    jobBeforeSync.DownloadUrl);
+                SetStatus("Processing please wait");
+                return;
+            }
+
             try
             {
-                if (rawCaptureUploadQueue != null)
-                {
-                    await rawCaptureUploadQueue.FlushAsync(flowCancellation.Token, ResolvePassengerNameForLabel());
-                }
-
-                var syncedJob = await runtime.SyncService.SyncAsync(jobBeforeSync.JobId, flowCancellation.Token);
+                var syncedJob = await UploadAndPublishJobAsync(
+                    jobBeforeSync.JobId,
+                    uploadQueue,
+                    uploadPassengerName,
+                    flowCancellation.Token);
                 currentJob = syncedJob ?? jobBeforeSync;
                 if (syncedJob == null)
                 {
@@ -3268,11 +3282,11 @@ namespace PhotoBooth.Booth.Frontend
             SetStatus(BuildPostPublishStatusMessage(currentJob));
         }
 
-        private async Task PrepareDownloadQrBeforeUploadAsync()
+        private async Task<bool> PrepareDownloadQrBeforeUploadAsync()
         {
             if (runtime?.SyncService == null || currentJob == null || !string.IsNullOrWhiteSpace(currentJob.DownloadUrl))
             {
-                return;
+                return !string.IsNullOrWhiteSpace(currentJob?.DownloadUrl);
             }
 
             try
@@ -3281,7 +3295,7 @@ namespace PhotoBooth.Booth.Frontend
                 if (prepared == null || !prepared.Success || string.IsNullOrWhiteSpace(prepared.DownloadUrl))
                 {
                     Debug.LogWarning($"Photo booth early download preparation skipped: job={currentJob.JobId}, error={prepared?.Message ?? "unknown"}");
-                    return;
+                    return false;
                 }
 
                 currentJob.DownloadUrl = prepared.DownloadUrl;
@@ -3289,6 +3303,7 @@ namespace PhotoBooth.Booth.Frontend
                 Debug.Log($"Photo booth early download link ready: job={currentJob.JobId}, link={prepared.DownloadUrl}, qr={prepared.QrPngUrl ?? string.Empty}");
                 await LoadQrPreviewAsync(prepared.DownloadUrl);
                 SetStatus("Processing please wait");
+                return true;
             }
             catch (OperationCanceledException)
             {
@@ -3297,6 +3312,60 @@ namespace PhotoBooth.Booth.Frontend
             catch (Exception exception)
             {
                 Debug.LogWarning($"Photo booth early download preparation failed: job={currentJob.JobId}, error={exception.Message}");
+                return false;
+            }
+        }
+
+        private async Task<BoothJob> UploadAndPublishJobAsync(
+            string jobId,
+            BoothRawCaptureUploadQueue uploadQueue,
+            string passengerName,
+            CancellationToken cancellationToken)
+        {
+            if (uploadQueue != null)
+            {
+                await uploadQueue.FlushAsync(cancellationToken, passengerName);
+            }
+
+            return await runtime.SyncService.SyncAsync(jobId, cancellationToken);
+        }
+
+        private async Task UploadAndPublishJobInBackgroundAsync(
+            string jobId,
+            BoothRawCaptureUploadQueue uploadQueue,
+            string passengerName,
+            string preparedDownloadUrl)
+        {
+            try
+            {
+                Debug.Log($"Photo booth background upload started: job={jobId}, link={preparedDownloadUrl}");
+                var syncedJob = await UploadAndPublishJobAsync(
+                    jobId,
+                    uploadQueue,
+                    passengerName,
+                    CancellationToken.None);
+
+                if (syncedJob == null)
+                {
+                    Debug.LogWarning($"Photo booth background upload returned no job: job={jobId}, link={preparedDownloadUrl}");
+                    return;
+                }
+
+                Debug.Log($"Photo booth background upload completed: job={syncedJob.JobId}, status={syncedJob.Status}, uploadStatus={syncedJob.UploadStatus}, link={syncedJob.DownloadUrl ?? preparedDownloadUrl}");
+                runtime.TrackDownloadRequested(syncedJob.JobId);
+                runtime.TrackFeatureUsed("booth_frontend_background_sync_completed");
+
+                if (currentJob != null && string.Equals(currentJob.JobId, syncedJob.JobId, StringComparison.Ordinal))
+                {
+                    currentJob = syncedJob;
+                    downloadUrlText?.SetText(BuildDownloadSummary(currentJob));
+                    SetStatus(BuildPostPublishStatusMessage(currentJob));
+                }
+            }
+            catch (Exception exception)
+            {
+                Debug.LogWarning($"Photo booth background upload failed: job={jobId}, error={exception.Message}, link={preparedDownloadUrl}");
+                runtime?.TrackFeatureUsed("booth_frontend_background_sync_failed");
             }
         }
 

@@ -32,7 +32,7 @@ namespace PhotoBooth.Booth.Frontend
         private const int ImagePreview1TemplateSourceHeight = 8445;
         private const int ImagePreview2TemplateSourceWidth = 12640;
         private const int ImagePreview2TemplateSourceHeight = 8399;
-        private const int PassengerNameFontSize = 20;
+        private const int PassengerNameFontSize = 36;
         private static readonly Color PassengerNameFrame1Color = new Color32(0x23, 0x1F, 0x20, 0xFF);
         private static readonly Color PassengerNameFrame2Color = new Color32(0xFF, 0xFF, 0xFF, 0xFF);
         private static readonly RectInt[] DefaultFrameSlots =
@@ -44,21 +44,21 @@ namespace PhotoBooth.Booth.Frontend
         };
         private static readonly RectInt[] ImagePreview1FrameSlots =
         {
-            new(1090, 1133, 3255, 3082),
-            new(4689, 1133, 3256, 3082),
-            new(8276, 1133, 3256, 3082)
+            new(1090, 1133, 3240, 3067),
+            new(4689, 1133, 3240, 3067),
+            new(8276, 1133, 3240, 3067)
         };
         private static readonly RectInt[] ImagePreview2FrameSlots =
         {
-            new(1080, 1110, 3255, 3082),
-            new(4670, 1110, 3256, 3082),
-            new(8260, 1110, 3256, 3082)
+            new(1080, 1110, 3245, 3072),
+            new(4670, 1110, 3245, 3072),
+            new(8260, 1110, 3245, 3072)
         };
         private static readonly RectInt[] ImagePreview1OverlaySlots =
         {
-            new(1090, 1133, 3256, 3082),
-            new(4689, 1133, 3256, 3082),
-            new(8276, 1133, 3256, 3082)
+            new(1090, 1133, 3240, 3067),
+            new(4689, 1133, 3240, 3067),
+            new(8276, 1133, 3240, 3067)
         };
         private static readonly string[] ImagePreview1OverlayFileNames =
         {
@@ -68,9 +68,9 @@ namespace PhotoBooth.Booth.Frontend
         };
         private static readonly RectInt[] ImagePreview2OverlaySlots =
         {
-            new(1080, 1110, 3255, 3082),
-            new(4670, 1110, 3256, 3082),
-            new(8260, 1110, 3256, 3082)
+            new(1080, 1110, 3245, 3072),
+            new(4670, 1110, 3245, 3072),
+            new(8260, 1110, 3245, 3072)
         };
         private static readonly string[] ImagePreview2OverlayFileNames =
         {
