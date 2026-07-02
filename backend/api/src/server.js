@@ -2507,7 +2507,7 @@ app.get(["/d/:jobId", "/world-tour/:jobId", "/kooky-world/:jobId"], async (req, 
 
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.setHeader("Cache-Control", job.upload_status === "LINK_READY" ? "public, max-age=300" : "private, no-store");
-    res.setHeader("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; media-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'");
+    res.setHeader("Content-Security-Policy", "default-src 'self'; img-src 'self' data: https://photobooth-storage.sgp1.digitaloceanspaces.com; media-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'");
     return res.send(page);
   } catch (error) {
     console.error("download_page_failed", { jobId, error });

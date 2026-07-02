@@ -22,9 +22,12 @@ namespace PhotoBooth.Booth.Frontend
         private const string KookyFontsDirectory = "UI/Kooky/Fonts";
         private const string KookySceneName = "PhotoBooth-Kooky";
         private const int FinalJpegQuality = 86;
+        private const int PrintJpegQuality = 96;
         private const int ThumbnailJpegQuality = 82;
-        private const int KookyPrintWidth = 1800;
-        private const int KookyPrintHeight = 1200;
+        private const int KookyServerWidth = 1800;
+        private const int KookyServerHeight = 1200;
+        private const int KookyPrintWidth = 3600;
+        private const int KookyPrintHeight = 2400;
         private const int ImagePreview1TemplateSourceWidth = 12657;
         private const int ImagePreview1TemplateSourceHeight = 8445;
         private const int ImagePreview2TemplateSourceWidth = 12640;
@@ -134,7 +137,13 @@ namespace PhotoBooth.Booth.Frontend
             var printPath = Path.Combine(job.Paths.ComposedDirectory, "print.jpg");
             var thumbnailPath = Path.Combine(job.Paths.ThumbsDirectory, "thumbnail.jpg");
             var composedBytes = ComposePhotoTemplateBytes(rawImagePaths, theme, aiStyle, job.PassengerName);
-            var printBytes = composedBytes;
+            var printBytes = ComposePhotoTemplateBytes(
+                rawImagePaths,
+                theme,
+                aiStyle,
+                job.PassengerName,
+                usePrintResolution: true,
+                jpegQuality: PrintJpegQuality);
             File.WriteAllBytes(composedPath, composedBytes);
             File.WriteAllBytes(printPath, printBytes);
 
@@ -177,7 +186,9 @@ namespace PhotoBooth.Booth.Frontend
             BoothThemeOption theme,
             BoothAiStyleOption aiStyle,
             string passengerName,
-            float captureBrightenAmount = 0f)
+            float captureBrightenAmount = 0f,
+            bool usePrintResolution = false,
+            int jpegQuality = FinalJpegQuality)
         {
             var template = ResolveFrameTemplate(theme, out var shouldDestroyTemplate);
             if (template == null)
@@ -191,7 +202,7 @@ namespace PhotoBooth.Booth.Frontend
             try
             {
                 LoadCaptures(rawImagePaths, captures);
-                canvas = CreateTemplateCanvas(template, theme, out var scaleX, out var scaleY);
+                canvas = CreateTemplateCanvas(template, theme, usePrintResolution, out var scaleX, out var scaleY);
 
                 var frameSlots = ResolveFrameSlots(theme);
                 var slotCount = Mathf.Min(captures.Count, frameSlots.Length);
@@ -204,7 +215,7 @@ namespace PhotoBooth.Booth.Frontend
                 DrawFrameOverlays(canvas, theme, scaleX, scaleY);
                 DrawPassengerName(canvas, ScaleRect(ResolveFromNameSlot(theme), scaleX, scaleY), passengerName, ResolvePassengerNameColor(theme));
                 canvas.Apply(false, false);
-                return ImageConversion.EncodeToJPG(canvas, FinalJpegQuality);
+                return ImageConversion.EncodeToJPG(canvas, jpegQuality);
             }
             finally
             {
@@ -446,14 +457,16 @@ namespace PhotoBooth.Booth.Frontend
             }
         }
 
-        private static Texture2D CreateTemplateCanvas(Texture2D template, BoothThemeOption theme, out float scaleX, out float scaleY)
+        private static Texture2D CreateTemplateCanvas(Texture2D template, BoothThemeOption theme, bool usePrintResolution, out float scaleX, out float scaleY)
         {
             if (IsKookyPrintTemplate(theme))
             {
                 var sourceSize = ResolveKookyTemplateSourceSize(theme);
-                scaleX = KookyPrintWidth / (float)sourceSize.x;
-                scaleY = KookyPrintHeight / (float)sourceSize.y;
-                var scaled = new Texture2D(KookyPrintWidth, KookyPrintHeight, TextureFormat.RGBA32, false);
+                var targetWidth = usePrintResolution ? KookyPrintWidth : KookyServerWidth;
+                var targetHeight = usePrintResolution ? KookyPrintHeight : KookyServerHeight;
+                scaleX = targetWidth / (float)sourceSize.x;
+                scaleY = targetHeight / (float)sourceSize.y;
+                var scaled = new Texture2D(targetWidth, targetHeight, TextureFormat.RGBA32, false);
                 DrawTextureScaledAlpha(template, scaled, 0, 0, scaled.width, scaled.height);
                 return scaled;
             }

@@ -773,6 +773,7 @@ namespace PhotoBooth.Booth.Frontend
                 ClearQrPreview();
                 ApplyMonsterFrameSelection(pendingThemeUsesMonsterFrame);
                 UpdateMonsterToggleSelectionVisuals(pendingThemeUsesMonsterFrame);
+                ApplyDefaultThemeCandidateSelection();
                 await TrackAsync("booth_frontend_session_started");
                 SwitchScreen(BoothUiScreenId.ThemeSelect, "Choose your frame.");
             }
@@ -817,6 +818,7 @@ namespace PhotoBooth.Booth.Frontend
             var theme = ResolveTheme(themeIndex);
             pendingImagePreviewIndex = ResolveImagePreviewIndex(theme, themeIndex);
             ApplyMonsterFrameSelection(useMonsterFrame);
+            UpdateThemeSelectionVisuals(themeIndex);
             UpdateMonsterToggleSelectionVisuals(useMonsterFrame);
             SetStatus($"Selected frame: {theme.displayName}{BuildMonsterFrameStatusSuffix(useMonsterFrame)}. Tap confirm to continue.");
             priceText?.SetText(FormatPrice(theme));
@@ -6494,6 +6496,46 @@ namespace PhotoBooth.Booth.Frontend
                 if (isFrameSelectionMarker || isMonsterToggleMarker)
                 {
                     candidate.gameObject.SetActive(false);
+                }
+            }
+        }
+
+        private void ApplyDefaultThemeCandidateSelection()
+        {
+            EnsureDefaultThemes();
+            if (themes == null || themes.Length == 0)
+            {
+                return;
+            }
+
+            ChooseThemeCandidateFromUi(0, pendingThemeUsesMonsterFrame);
+        }
+
+        private void UpdateThemeSelectionVisuals(int themeIndex)
+        {
+            var root = FindScreenRoot(BoothUiScreenId.ThemeSelect);
+            if (root == null)
+            {
+                return;
+            }
+
+            var selectedParentName = $"FramePreview{themeIndex + 1}";
+            foreach (var candidate in root.GetComponentsInChildren<Transform>(true))
+            {
+                if (candidate == null || candidate.parent == null)
+                {
+                    continue;
+                }
+
+                var parentName = candidate.parent.name;
+                var candidateName = candidate.name;
+                var isFrameSelectionMarker = parentName.StartsWith("FramePreview", StringComparison.Ordinal)
+                    && (candidateName.StartsWith("ThemeButton", StringComparison.Ordinal)
+                        || string.Equals(candidateName, "Select", StringComparison.Ordinal));
+
+                if (isFrameSelectionMarker)
+                {
+                    candidate.gameObject.SetActive(string.Equals(parentName, selectedParentName, StringComparison.Ordinal));
                 }
             }
         }

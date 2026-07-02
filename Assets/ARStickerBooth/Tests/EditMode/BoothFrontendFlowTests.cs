@@ -208,10 +208,14 @@ namespace PhotoBooth.Booth.Tests.EditMode
         {
             Assert.That(composed.width, Is.EqualTo(1800));
             Assert.That(composed.height, Is.EqualTo(1200));
+            Assert.That(print.width, Is.EqualTo(3600));
+            Assert.That(print.height, Is.EqualTo(2400));
             Assert.That(composed.GetPixel(368, 375).r, Is.GreaterThan(0.8f));
             Assert.That(composed.GetPixel(897, 375).g, Is.GreaterThan(0.4f));
             Assert.That(composed.GetPixel(1426, 375).b, Is.GreaterThan(0.8f));
-            Assert.That(print.GetPixel(368, 375), Is.EqualTo(composed.GetPixel(368, 375)));
+            Assert.That(print.GetPixel(736, 750).r, Is.GreaterThan(0.8f));
+            Assert.That(print.GetPixel(1794, 750).g, Is.GreaterThan(0.4f));
+            Assert.That(print.GetPixel(2852, 750).b, Is.GreaterThan(0.8f));
         }
 
         private BoothSessionService CreateSessionService()
