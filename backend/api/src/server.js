@@ -3213,11 +3213,6 @@ async function serveStoredFile(req, res, next) {
     return res.status(400).send("Invalid file key.");
   }
 
-  const publicUrl = storagePublicUrl(remoteKey);
-  if (publicUrl) {
-    return res.redirect(302, publicUrl);
-  }
-
   try {
     const result = await objectStorage.client.send(new GetObjectCommand({
       Bucket: config.spacesBucket,
