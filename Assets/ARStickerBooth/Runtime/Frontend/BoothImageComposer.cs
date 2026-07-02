@@ -50,9 +50,9 @@ namespace PhotoBooth.Booth.Frontend
         };
         private static readonly RectInt[] ImagePreview2FrameSlots =
         {
-            new(1080, 1110, 3245, 3072),
-            new(4670, 1110, 3245, 3072),
-            new(8260, 1110, 3245, 3072)
+            new(1080, 1110, 3240, 3067),
+            new(4670, 1110, 3240, 3067),
+            new(8260, 1110, 3240, 3067)
         };
         private static readonly RectInt[] ImagePreview1OverlaySlots =
         {
@@ -68,9 +68,9 @@ namespace PhotoBooth.Booth.Frontend
         };
         private static readonly RectInt[] ImagePreview2OverlaySlots =
         {
-            new(1080, 1110, 3245, 3072),
-            new(4670, 1110, 3245, 3072),
-            new(8260, 1110, 3245, 3072)
+            new(1080, 1110, 3240, 3067),
+            new(4670, 1110, 3240, 3067),
+            new(8260, 1110, 3240, 3067)
         };
         private static readonly string[] ImagePreview2OverlayFileNames =
         {
