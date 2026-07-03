@@ -3339,13 +3339,13 @@ async function ensureKookyWorldNamedTemplate(job, labelTemplateId, templatePath)
     height = 1200;
     x = Math.round(width * 0.330);
     y = Math.round(height * 0.30);
-    fontSize = Math.round(width * 0.008);
+    fontSize = Math.round(width * 0.01);
   } else {
     width = 1800;
     height = 1200;
     x = Math.round(width * 0.455);
     y = Math.round(height * 0.17);
-    fontSize = Math.round(width * 0.008);
+    fontSize = Math.round(width * 0.01);
   }
 
   const textPath = font.getPath(passengerName, 0, 0, fontSize);
