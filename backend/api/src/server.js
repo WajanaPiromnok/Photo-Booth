@@ -3338,7 +3338,7 @@ async function ensureKookyWorldNamedTemplate(job, labelTemplateId, templatePath)
     width = 1800;
     height = 1200;
     x = Math.round(width * 0.330);
-    y = Math.round(height * 0.30);
+    y = Math.round(height * 0.26);
     fontSize = Math.round(width * 0.01);
   } else {
     width = 1800;
