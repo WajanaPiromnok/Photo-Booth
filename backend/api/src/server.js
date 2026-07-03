@@ -3313,11 +3313,11 @@ async function ensureWorldTourPhotoImage(job, photoPath) {
   return outputPath;
 }
 
-const KOOKY_WORLD_NAME_TEMPLATE_CACHE_KEY = "franie-v5";
-const KOOKY_WORLD_PHOTO_CACHE_VERSION = "v11";
-const KOOKY_WORLD_COUNTDOWN_CACHE_VERSION = "v11";
-const KOOKY_WORLD_LIVEVIEW_CACHE_VERSION = "v11";
-const KOOKY_WORLD_VIDEO_TEMPLATE_CACHE_VERSION = "v11";
+const KOOKY_WORLD_NAME_TEMPLATE_CACHE_KEY = "franie-v6";
+const KOOKY_WORLD_PHOTO_CACHE_VERSION = "v12";
+const KOOKY_WORLD_COUNTDOWN_CACHE_VERSION = "v12";
+const KOOKY_WORLD_LIVEVIEW_CACHE_VERSION = "v12";
+const KOOKY_WORLD_VIDEO_TEMPLATE_CACHE_VERSION = "v12";
 
 async function ensureKookyWorldNamedTemplate(job, labelTemplateId, templatePath) {
   const passengerName = normalizePassengerName(job.passenger_name);
@@ -3344,13 +3344,13 @@ async function ensureKookyWorldNamedTemplate(job, labelTemplateId, templatePath)
     width = 1800;
     height = 1200;
     x = Math.round(width * 0.330);
-    y = Math.round(height * 0.24);
+    y = Math.round(height * 0.23);
     fontSize = Math.round(width * 0.009);
   } else {
     width = 1800;
     height = 1200;
     x = Math.round(width * 0.455);
-    y = Math.round(height * 0.20);
+    y = Math.round(height * 0.18);
     fontSize = Math.round(width * 0.009);
   }
 
