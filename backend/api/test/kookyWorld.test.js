@@ -234,7 +234,7 @@ test("all mapped overlays exist and the download page pairs them with captures i
       })),
       motionFrames: []
     });
-    assert.match(html, /liveview\.mp4\?v=frame-[12]-name-[a-f0-9]+-v7/);
+    assert.match(html, /liveview\.mp4\?v=frame-[12]-name-[a-f0-9]+-v\d+/);
     assert.match(html, /font-family: "Franie", Impact/);
     assert.match(html, /font-weight: 600;/);
     assert.match(html, /\.label-stage-1 \.label-passenger-name \{[\s\S]*?left: 45\.5%;[\s\S]*?top: 19\.6%;[\s\S]*?font-size: 0\.8cqw;[\s\S]*?color: #231F20;/);

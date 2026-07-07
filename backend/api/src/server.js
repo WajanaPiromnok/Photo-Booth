@@ -2,6 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { spawn } = require("child_process");
+const { pipeline } = require("stream/promises");
 const express = require("express");
 const multer = require("multer");
 const helmet = require("helmet");
@@ -51,7 +52,9 @@ const config = {
   spacesAccessKeyId: (process.env.SPACES_ACCESS_KEY_ID || "").trim(),
   spacesSecretAccessKey: (process.env.SPACES_SECRET_ACCESS_KEY || "").trim(),
   spacesPublicBaseUrl: (process.env.SPACES_PUBLIC_BASE_URL || "").trim().replace(/\/$/, ""),
-  spacesKeyPrefix: normalizeStorageKeyPrefix(process.env.SPACES_KEY_PREFIX || "")
+  spacesKeyPrefix: normalizeStorageKeyPrefix(process.env.SPACES_KEY_PREFIX || ""),
+  localCacheTtlHours: Math.max(0, Number.parseFloat(process.env.LOCAL_CACHE_TTL_HOURS || "24")),
+  localCacheCleanupIntervalMinutes: Math.max(1, Number.parseFloat(process.env.LOCAL_CACHE_CLEANUP_INTERVAL_MINUTES || "60"))
 };
 
 function cspSourceFromUrl(rawUrl) {
@@ -107,9 +110,11 @@ const pool = new Pool({
 });
 
 const generatedMediaPromises = new Map();
+const localFileHydrationPromises = new Map();
 const objectStorage = createObjectStorageClient();
 
 fs.mkdirSync(config.uploadsRoot, { recursive: true });
+scheduleLocalCacheCleanup();
 
 app.disable("x-powered-by");
 app.set("trust proxy", true);
@@ -2233,10 +2238,7 @@ app.get(["/d/:jobId/clip.mp4", "/world-tour/:jobId/clip.mp4", "/kooky-world/:job
     }
 
     const video = videoResult.rows[0];
-    const absolutePath = path.resolve(config.uploadsRoot, video.remote_key);
-    if (!absolutePath.startsWith(`${config.uploadsRoot}${path.sep}`) || !fs.existsSync(absolutePath)) {
-      return res.status(404).send("Countdown video file was not found.");
-    }
+    const absolutePath = await ensureLocalStoredFile(video.remote_key);
 
     const responsePath = usesWorldTourPresentation(routePrefix)
       ? await ensureWorldTourMotionVideo(jobResult.rows[0], absolutePath)
@@ -2288,10 +2290,7 @@ app.get(["/d/:jobId/clip-download.mp4", "/world-tour/:jobId/clip-download.mp4", 
     }
 
     const video = videoResult.rows[0];
-    const absolutePath = absoluteUploadPath(video.remote_key);
-    if (!fs.existsSync(absolutePath)) {
-      return res.status(404).send("Countdown video file was not found.");
-    }
+    const absolutePath = await ensureLocalStoredFile(video.remote_key);
 
     const responsePath = usesWorldTourPresentation(routePrefix)
       ? await ensureWorldTourMotionVideo(jobResult.rows[0], absolutePath)
@@ -2456,7 +2455,7 @@ app.get(["/d/:jobId/image-download", "/world-tour/:jobId/image-download", "/kook
         }
         const composed = findLatestAsset(assets, "composed") || { remote_key: job.remote_asset_key };
         if (composed?.remote_key) {
-          const composedPath = absoluteUploadPath(composed.remote_key);
+          const composedPath = await ensureLocalStoredFile(composed.remote_key);
           if (fs.existsSync(composedPath)) {
             const outputPath = await ensureCompressedComposedImage(job, composedPath);
             return sendAttachmentFile(res, outputPath, "image/jpeg", `${jobId}-photo.jpg`);
@@ -2467,7 +2466,7 @@ app.get(["/d/:jobId/image-download", "/world-tour/:jobId/image-download", "/kook
 
       const photoAsset = rawCaptures[0] || findLatestAsset(assets, "composed") || findLatestAsset(assets, "live_image");
       if (photoAsset?.remote_key) {
-        const outputPath = await ensureWorldTourPhotoImage(job, absoluteUploadPath(photoAsset.remote_key));
+        const outputPath = await ensureWorldTourPhotoImage(job, await ensureLocalStoredFile(photoAsset.remote_key));
         return sendAttachmentFile(res, outputPath, "image/jpeg", `${jobId}-photo.jpg`);
       }
 
@@ -2481,7 +2480,7 @@ app.get(["/d/:jobId/image-download", "/world-tour/:jobId/image-download", "/kook
 
     const composed = findLatestAsset(assets, "composed") || { remote_key: job.remote_asset_key };
     if (composed?.remote_key) {
-      const composedPath = absoluteUploadPath(composed.remote_key);
+      const composedPath = await ensureLocalStoredFile(composed.remote_key);
       if (fs.existsSync(composedPath)) {
         const outputPath = await ensureCompressedComposedImage(job, composedPath);
         return sendAttachmentFile(res, outputPath, "image/jpeg", `${jobId}-photo.jpg`);
@@ -3054,15 +3053,19 @@ async function loadDownloadJobAssets(jobId) {
 }
 
 function absoluteUploadPath(remoteKey) {
-  const absolutePath = path.resolve(config.uploadsRoot, remoteKey || "");
-  if (!absolutePath.startsWith(`${config.uploadsRoot}${path.sep}`)) {
-    throw httpError(400, "INVALID_ASSET_PATH", "Asset path is invalid.");
-  }
-
+  const absolutePath = resolveUploadPath(remoteKey);
   if (!fs.existsSync(absolutePath)) {
     throw httpError(404, "ASSET_NOT_FOUND", "Asset file was not found.");
   }
 
+  return absolutePath;
+}
+
+function resolveUploadPath(remoteKey) {
+  const absolutePath = path.resolve(config.uploadsRoot, remoteKey || "");
+  if (!absolutePath.startsWith(`${config.uploadsRoot}${path.sep}`)) {
+    throw httpError(400, "INVALID_ASSET_PATH", "Asset path is invalid.");
+  }
   return absolutePath;
 }
 
@@ -3140,8 +3143,12 @@ function findFirstExistingAsset(assets) {
 }
 
 function uploadFileExists(remoteKey) {
-  const absolutePath = path.resolve(config.uploadsRoot, remoteKey || "");
-  return absolutePath.startsWith(`${config.uploadsRoot}${path.sep}`) && fs.existsSync(absolutePath);
+  try {
+    const absolutePath = resolveUploadPath(remoteKey);
+    return fs.existsSync(absolutePath) || objectStorage.enabled;
+  } catch (_error) {
+    return false;
+  }
 }
 
 function normalizeStorageKeyPrefix(value) {
@@ -3207,6 +3214,112 @@ async function putStoredFile(remoteKey, body, contentType) {
   }));
 }
 
+async function ensureLocalStoredFile(remoteKey) {
+  const absolutePath = resolveUploadPath(remoteKey);
+  if (fs.existsSync(absolutePath)) {
+    return absolutePath;
+  }
+  if (!objectStorage.enabled) {
+    throw httpError(404, "ASSET_NOT_FOUND", "Asset file was not found.");
+  }
+  if (localFileHydrationPromises.has(absolutePath)) {
+    return localFileHydrationPromises.get(absolutePath);
+  }
+
+  const hydration = (async () => {
+    fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
+    const tempPath = `${absolutePath}.tmp-${process.pid}-${Date.now()}`;
+    try {
+      const result = await objectStorage.client.send(new GetObjectCommand({
+        Bucket: config.spacesBucket,
+        Key: storageObjectKey(remoteKey)
+      }));
+      await pipeline(result.Body, fs.createWriteStream(tempPath));
+      fs.renameSync(tempPath, absolutePath);
+      return absolutePath;
+    } catch (error) {
+      if (fs.existsSync(tempPath)) {
+        fs.unlinkSync(tempPath);
+      }
+      if (error?.name === "NoSuchKey") {
+        throw httpError(404, "ASSET_NOT_FOUND", "Asset file was not found in storage.");
+      }
+      console.error("stored_file_hydration_failed", { remoteKey, error });
+      throw error;
+    }
+  })().finally(() => localFileHydrationPromises.delete(absolutePath));
+
+  localFileHydrationPromises.set(absolutePath, hydration);
+  return hydration;
+}
+
+function scheduleLocalCacheCleanup() {
+  if (!objectStorage.enabled || config.localCacheTtlHours <= 0) {
+    return;
+  }
+
+  const run = () => {
+    cleanupLocalUploadCache().catch((error) => {
+      console.error("local_cache_cleanup_failed", { error });
+    });
+  };
+
+  setTimeout(run, 30_000).unref();
+  setInterval(run, config.localCacheCleanupIntervalMinutes * 60_000).unref();
+}
+
+async function cleanupLocalUploadCache() {
+  const cutoffMs = Date.now() - (config.localCacheTtlHours * 60 * 60 * 1000);
+  const result = cleanupDirectoryFilesOlderThan(config.uploadsRoot, cutoffMs);
+  if (result.deletedFiles > 0 || result.deletedBytes > 0) {
+    console.info("local_cache_cleanup_complete", {
+      uploadsRoot: config.uploadsRoot,
+      ttlHours: config.localCacheTtlHours,
+      deletedFiles: result.deletedFiles,
+      deletedBytes: result.deletedBytes
+    });
+  }
+}
+
+function cleanupDirectoryFilesOlderThan(directory, cutoffMs) {
+  const result = { deletedFiles: 0, deletedBytes: 0 };
+  if (!fs.existsSync(directory)) {
+    return result;
+  }
+
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    const entryPath = path.join(directory, entry.name);
+    if (entry.isDirectory()) {
+      const child = cleanupDirectoryFilesOlderThan(entryPath, cutoffMs);
+      result.deletedFiles += child.deletedFiles;
+      result.deletedBytes += child.deletedBytes;
+      removeDirectoryIfEmpty(entryPath);
+      continue;
+    }
+    if (!entry.isFile()) {
+      continue;
+    }
+
+    const stats = fs.statSync(entryPath);
+    if (stats.mtimeMs > cutoffMs) {
+      continue;
+    }
+    fs.unlinkSync(entryPath);
+    result.deletedFiles += 1;
+    result.deletedBytes += stats.size;
+  }
+
+  return result;
+}
+
+function removeDirectoryIfEmpty(directory) {
+  try {
+    fs.rmdirSync(directory);
+  } catch (_error) {
+    // Directory is not empty or was removed by another worker.
+  }
+}
+
 async function serveStoredFile(req, res, next) {
   const remoteKey = normalizeStorageKeyPrefix(req.params[0] || "");
   if (!remoteKey || remoteKey.includes("..")) {
@@ -3225,7 +3338,7 @@ async function serveStoredFile(req, res, next) {
     }
     return result.Body.pipe(res);
   } catch (error) {
-    const absolutePath = absoluteUploadPath(remoteKey);
+    const absolutePath = resolveUploadPath(remoteKey);
     if (fs.existsSync(absolutePath)) {
       return res.sendFile(absolutePath);
     }
@@ -3285,7 +3398,7 @@ async function ensureLegacyFramedPhotoImage(job, rawCaptures) {
   }
 
   const sourcePath = path.join(generatedDirectory(job), "photo_legacy_piece03_source_4096.png");
-  const rawPaths = rawCaptures.slice(0, 4).map((asset) => absoluteUploadPath(asset.remote_key));
+  const rawPaths = await Promise.all(rawCaptures.slice(0, 4).map((asset) => ensureLocalStoredFile(asset.remote_key)));
   if (!fs.existsSync(sourcePath)) {
     await renderLegacyFramedPng(rawPaths, sourcePath);
   }
@@ -3419,12 +3532,13 @@ async function renderKookyWorldFramedPng(rawCaptures, outputPath, templatePath, 
   }
 
   const inputs = ["-y", "-i", templatePath];
-  const imagePaths = rawCaptures.map((asset) => {
+  const imagePathCandidates = await Promise.all(rawCaptures.map((asset) => {
     if (typeof asset === "string") {
       return asset;
     }
-    return absoluteUploadPath(asset?.remote_key);
-  }).filter(Boolean).slice(0, 3);
+    return ensureLocalStoredFile(asset?.remote_key);
+  }));
+  const imagePaths = imagePathCandidates.filter(Boolean).slice(0, 3);
 
   for (const imagePath of imagePaths) {
     inputs.push("-i", imagePath);
@@ -3515,7 +3629,7 @@ async function ensureFramedLiveviewVideo(job, rawCaptures) {
     return outputPath;
   }
 
-  const rawPaths = rawCaptures.slice(0, 4).map((asset) => absoluteUploadPath(asset.remote_key));
+  const rawPaths = await Promise.all(rawCaptures.slice(0, 4).map((asset) => ensureLocalStoredFile(asset.remote_key)));
   const frameSets = rawPaths.map((_, rotation) => rawPaths.map((__, slotIndex) => rawPaths[(slotIndex + rotation) % rawPaths.length]));
   await renderFramedVideo(frameSets, 0.25, outputPath, path.join(generatedDirectory(job), "liveview_frames"));
   return outputPath;
@@ -3527,8 +3641,8 @@ async function ensureLegacyFramedCountdownVideo(job, motionFrames) {
     return outputPath;
   }
 
-  const slotFrames = buildCountdownSlotFrameAssets(motionFrames)
-    .map((frames) => frames.map((asset) => absoluteUploadPath(asset.remote_key)));
+  const slotFrames = await Promise.all(buildCountdownSlotFrameAssets(motionFrames)
+    .map((frames) => Promise.all(frames.map((asset) => ensureLocalStoredFile(asset.remote_key)))));
   const maxFrameCount = Math.max(...slotFrames.map((frames) => frames.length));
   if (maxFrameCount <= 0) {
     throw httpError(404, "MOTION_FRAMES_NOT_FOUND", "Motion frame files were not found.");
@@ -3549,9 +3663,9 @@ async function ensureKookyWorldCountdownVideo(job, motionFrames) {
     return outputPath;
   }
   return generateMediaOnce(outputPath, async () => {
-    const slotFrames = buildCountdownSlotFrameAssets(motionFrames)
+    const slotFrames = await Promise.all(buildCountdownSlotFrameAssets(motionFrames)
       .slice(0, 3)
-      .map((frames) => frames.map((asset) => absoluteUploadPath(asset.remote_key)));
+      .map((frames) => Promise.all(frames.map((asset) => ensureLocalStoredFile(asset.remote_key)))));
     const maxFrameCount = Math.max(...slotFrames.map((frames) => frames.length));
     if (maxFrameCount <= 0) {
       throw httpError(404, "MOTION_FRAMES_NOT_FOUND", "Motion frame files were not found.");
@@ -3599,7 +3713,7 @@ async function ensureKookyWorldLiveviewVideo(job, rawCaptures) {
     return outputPath;
   }
   return generateMediaOnce(outputPath, async () => {
-    const rawPaths = rawCaptures.slice(0, 3).map((asset) => absoluteUploadPath(asset.remote_key));
+    const rawPaths = await Promise.all(rawCaptures.slice(0, 3).map((asset) => ensureLocalStoredFile(asset.remote_key)));
     const frameSets = buildRotatingFrameSets(rawPaths, 2);
 
     await renderKookyWorldFramedVideo(
@@ -3702,7 +3816,7 @@ async function ensureWorldTourCountdownVideo(job, motionFrames) {
     return outputPath;
   }
 
-  const sortedFrames = sortMotionFrameAssets(motionFrames).map((asset) => absoluteUploadPath(asset.remote_key));
+  const sortedFrames = await Promise.all(sortMotionFrameAssets(motionFrames).map((asset) => ensureLocalStoredFile(asset.remote_key)));
   if (sortedFrames.length === 0) {
     throw httpError(404, "MOTION_FRAMES_NOT_FOUND", "Motion frame files were not found.");
   }
