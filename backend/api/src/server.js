@@ -54,7 +54,11 @@ const config = {
   spacesPublicBaseUrl: (process.env.SPACES_PUBLIC_BASE_URL || "").trim().replace(/\/$/, ""),
   spacesKeyPrefix: normalizeStorageKeyPrefix(process.env.SPACES_KEY_PREFIX || ""),
   localCacheTtlHours: Math.max(0, Number.parseFloat(process.env.LOCAL_CACHE_TTL_HOURS || "24")),
-  localCacheCleanupIntervalMinutes: Math.max(1, Number.parseFloat(process.env.LOCAL_CACHE_CLEANUP_INTERVAL_MINUTES || "60"))
+  localCacheCleanupIntervalMinutes: Math.max(1, Number.parseFloat(process.env.LOCAL_CACHE_CLEANUP_INTERVAL_MINUTES || "60")),
+  localCacheMinFreeBytes: gigabytesToBytes(Math.max(0, Number.parseFloat(process.env.LOCAL_CACHE_MIN_FREE_GB || "15"))),
+  localCacheAggressiveFreeBytes: gigabytesToBytes(Math.max(0, Number.parseFloat(process.env.LOCAL_CACHE_AGGRESSIVE_FREE_GB || "10"))),
+  localCacheCriticalFreeBytes: gigabytesToBytes(Math.max(0, Number.parseFloat(process.env.LOCAL_CACHE_CRITICAL_FREE_GB || "5"))),
+  localCacheAggressiveTtlHours: Math.max(0, Number.parseFloat(process.env.LOCAL_CACHE_AGGRESSIVE_TTL_HOURS || "6"))
 };
 
 function cspSourceFromUrl(rawUrl) {
@@ -82,6 +86,10 @@ function pageCsp({ images = storedImageCspSources, media = "'self'", defaults = 
     connect ? `connect-src ${connect}` : ""
   ].filter(Boolean);
   return directives.join("; ");
+}
+
+function gigabytesToBytes(value) {
+  return Math.floor(value * 1024 * 1024 * 1024);
 }
 
 function normalizePostgresConnectionString(raw) {
@@ -3269,19 +3277,102 @@ function scheduleLocalCacheCleanup() {
 }
 
 async function cleanupLocalUploadCache() {
-  const cutoffMs = Date.now() - (config.localCacheTtlHours * 60 * 60 * 1000);
-  const result = cleanupDirectoryFilesOlderThan(config.uploadsRoot, cutoffMs);
-  if (result.deletedFiles > 0 || result.deletedBytes > 0) {
-    console.info("local_cache_cleanup_complete", {
-      uploadsRoot: config.uploadsRoot,
-      ttlHours: config.localCacheTtlHours,
-      deletedFiles: result.deletedFiles,
-      deletedBytes: result.deletedBytes
+  const result = cleanupLocalUploadCacheWithPolicy({
+    uploadsRoot: config.uploadsRoot,
+    getFreeBytes: () => getFilesystemAvailableBytes(config.uploadsRoot),
+    minFreeBytes: config.localCacheMinFreeBytes,
+    aggressiveFreeBytes: config.localCacheAggressiveFreeBytes,
+    criticalFreeBytes: config.localCacheCriticalFreeBytes,
+    ttlHours: config.localCacheTtlHours,
+    aggressiveTtlHours: config.localCacheAggressiveTtlHours
+  });
+
+  if (result.skipped) {
+    return result;
+  }
+
+  const logPayload = {
+    uploadsRoot: config.uploadsRoot,
+    freeBeforeBytes: result.freeBeforeBytes,
+    freeAfterBytes: result.freeAfterBytes,
+    minFreeBytes: config.localCacheMinFreeBytes,
+    aggressiveFreeBytes: config.localCacheAggressiveFreeBytes,
+    criticalFreeBytes: config.localCacheCriticalFreeBytes,
+    ttlHours: config.localCacheTtlHours,
+    aggressiveTtlHours: config.localCacheAggressiveTtlHours,
+    standardDeletedFiles: result.standard.deletedFiles,
+    standardDeletedBytes: result.standard.deletedBytes,
+    aggressiveDeletedFiles: result.aggressive.deletedFiles,
+    aggressiveDeletedBytes: result.aggressive.deletedBytes
+  };
+
+  if (result.critical) {
+    console.error("local_cache_cleanup_critical_disk_space", logPayload);
+  } else if (result.standard.deletedFiles > 0 || result.aggressive.deletedFiles > 0) {
+    console.info("local_cache_cleanup_complete", logPayload);
+  }
+  return result;
+}
+
+function cleanupLocalUploadCacheWithPolicy({
+  uploadsRoot,
+  getFreeBytes,
+  minFreeBytes,
+  aggressiveFreeBytes,
+  criticalFreeBytes,
+  ttlHours,
+  aggressiveTtlHours,
+  nowMs = Date.now()
+}) {
+  const freeBeforeBytes = getFreeBytes();
+  const result = {
+    skipped: false,
+    critical: false,
+    freeBeforeBytes,
+    freeAfterBytes: freeBeforeBytes,
+    standard: { deletedFiles: 0, deletedBytes: 0 },
+    aggressive: { deletedFiles: 0, deletedBytes: 0 }
+  };
+
+  if (!Number.isFinite(freeBeforeBytes)) {
+    result.skipped = true;
+    console.warn("local_cache_cleanup_skipped_disk_check_failed", { uploadsRoot });
+    return result;
+  }
+
+  if (freeBeforeBytes >= minFreeBytes) {
+    result.skipped = true;
+    return result;
+  }
+
+  const standardCutoffMs = nowMs - (ttlHours * 60 * 60 * 1000);
+  result.standard = cleanupDirectoryFilesOlderThan(uploadsRoot, standardCutoffMs);
+  result.freeAfterBytes = getFreeBytes();
+
+  if (Number.isFinite(result.freeAfterBytes) && result.freeAfterBytes < aggressiveFreeBytes && aggressiveTtlHours > 0) {
+    const aggressiveCutoffMs = nowMs - (aggressiveTtlHours * 60 * 60 * 1000);
+    result.aggressive = cleanupDirectoryFilesOlderThan(uploadsRoot, aggressiveCutoffMs, {
+      shouldDeleteFile: isGeneratedCacheFile
     });
+    result.freeAfterBytes = getFreeBytes();
+  }
+
+  result.critical = Number.isFinite(result.freeAfterBytes) && result.freeAfterBytes < criticalFreeBytes;
+  return result;
+}
+
+function getFilesystemAvailableBytes(targetPath) {
+  try {
+    const stats = fs.statfsSync(targetPath);
+    return Number(stats.bavail) * Number(stats.bsize);
+  } catch (error) {
+    console.warn("filesystem_free_space_check_failed", { targetPath, error });
+    return Number.NaN;
   }
 }
 
-function cleanupDirectoryFilesOlderThan(directory, cutoffMs) {
+function cleanupDirectoryFilesOlderThan(directory, cutoffMs, options = {}) {
+  const shouldDeleteFile = options.shouldDeleteFile || (() => true);
   const result = { deletedFiles: 0, deletedBytes: 0 };
   if (!fs.existsSync(directory)) {
     return result;
@@ -3290,7 +3381,7 @@ function cleanupDirectoryFilesOlderThan(directory, cutoffMs) {
   for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
     const entryPath = path.join(directory, entry.name);
     if (entry.isDirectory()) {
-      const child = cleanupDirectoryFilesOlderThan(entryPath, cutoffMs);
+      const child = cleanupDirectoryFilesOlderThan(entryPath, cutoffMs, options);
       result.deletedFiles += child.deletedFiles;
       result.deletedBytes += child.deletedBytes;
       removeDirectoryIfEmpty(entryPath);
@@ -3301,7 +3392,7 @@ function cleanupDirectoryFilesOlderThan(directory, cutoffMs) {
     }
 
     const stats = fs.statSync(entryPath);
-    if (stats.mtimeMs > cutoffMs) {
+    if (stats.mtimeMs > cutoffMs || !shouldDeleteFile(entryPath)) {
       continue;
     }
     fs.unlinkSync(entryPath);
@@ -3310,6 +3401,16 @@ function cleanupDirectoryFilesOlderThan(directory, cutoffMs) {
   }
 
   return result;
+}
+
+function isGeneratedCacheFile(filePath) {
+  const parts = filePath.split(path.sep);
+  const fileName = path.basename(filePath);
+  return parts.includes("generated") ||
+    /^frame_\d+\.png$/i.test(fileName) ||
+    /^photo_.*_(source|q\d+)\.(png|jpg|jpeg)$/i.test(fileName) ||
+    /^label_.*\.(png|jpg|jpeg)$/i.test(fileName) ||
+    /^(liveview|framed-countdown|countdown).*\.mp4$/i.test(fileName);
 }
 
 function removeDirectoryIfEmpty(directory) {
@@ -8578,6 +8679,8 @@ module.exports = {
   buildRotatingFrameSets,
   buildCountdownSlotFrameAssets,
   resolveKookyWorldCountdownFrameDurationSeconds,
+  cleanupLocalUploadCacheWithPolicy,
+  isGeneratedCacheFile,
   generateMediaOnce,
   kookyWorldStickerFileNames,
   requiredRawCaptureCount,

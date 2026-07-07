@@ -9,6 +9,7 @@ const testTempRoot = path.join(process.cwd(), "tmp-tests");
 const {
   buildPreparedDownloadResponse,
   buildCountdownSlotFrameAssets,
+  cleanupLocalUploadCacheWithPolicy,
   ensureKookyWorldOutputTemplate,
   buildRotatingFrameSets,
   generateMediaOnce,
@@ -21,8 +22,20 @@ const {
   renderPrintQuotaAdminPage,
   resolveLabelTemplateId,
   sortRawCaptureAssets,
-  uploadAssetBaseKey
+  uploadAssetBaseKey,
+  isGeneratedCacheFile
 } = require("../src/server");
+
+const gib = 1024 * 1024 * 1024;
+
+function writeFileWithAge(root, relativePath, ageHours, nowMs) {
+  const filePath = path.join(root, relativePath);
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, relativePath);
+  const mtime = new Date(nowMs - ageHours * 60 * 60 * 1000);
+  fs.utimesSync(filePath, mtime, mtime);
+  return filePath;
+}
 
 test("Kooky World output template is generated at 1800x1200", async () => {
   const tempRoot = path.join(testTempRoot, `kooky-output-template-${process.pid}-${Date.now()}`);
@@ -71,6 +84,70 @@ test("new uploads are grouped under project route prefix", () => {
   assert.equal(uploadAssetBaseKey("20260629_JOB-001", "kooky-world"), "kooky-world/jobs/20260629_JOB-001");
   assert.equal(uploadAssetBaseKey("20260629_JOB-002", "world-tour"), "world-tour/jobs/20260629_JOB-002");
   assert.equal(uploadAssetBaseKey("20260629_JOB-003", "d"), "jobs/20260629_JOB-003");
+});
+
+test("local cache cleanup skips when disk free space is above threshold", () => {
+  const tempRoot = path.join(testTempRoot, `cache-skip-${process.pid}-${Date.now()}`);
+  const nowMs = Date.now();
+  const oldRaw = writeFileWithAge(tempRoot, "kooky-world/jobs/job/raw/capture_01.jpg", 48, nowMs);
+
+  try {
+    const result = cleanupLocalUploadCacheWithPolicy({
+      uploadsRoot: tempRoot,
+      getFreeBytes: () => 20 * gib,
+      minFreeBytes: 15 * gib,
+      aggressiveFreeBytes: 10 * gib,
+      criticalFreeBytes: 5 * gib,
+      ttlHours: 24,
+      aggressiveTtlHours: 6,
+      nowMs
+    });
+
+    assert.equal(result.skipped, true);
+    assert.equal(fs.existsSync(oldRaw), true);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("local cache cleanup removes old uploads below threshold and only generated cache in aggressive mode", () => {
+  const tempRoot = path.join(testTempRoot, `cache-aggressive-${process.pid}-${Date.now()}`);
+  const nowMs = Date.now();
+  const oldRaw = writeFileWithAge(tempRoot, "kooky-world/jobs/job/raw/capture_01.jpg", 48, nowMs);
+  const recentRaw = writeFileWithAge(tempRoot, "kooky-world/jobs/job/raw/capture_02.jpg", 7, nowMs);
+  const generatedFrame = writeFileWithAge(tempRoot, "jobs/job/generated/frame_001.png", 7, nowMs);
+  const generatedVideo = writeFileWithAge(tempRoot, "jobs/job/generated/liveview_kooky-world_v15.mp4", 7, nowMs);
+  const freeReadings = [9 * gib, 9 * gib, 12 * gib];
+
+  try {
+    const result = cleanupLocalUploadCacheWithPolicy({
+      uploadsRoot: tempRoot,
+      getFreeBytes: () => freeReadings.shift(),
+      minFreeBytes: 15 * gib,
+      aggressiveFreeBytes: 10 * gib,
+      criticalFreeBytes: 5 * gib,
+      ttlHours: 24,
+      aggressiveTtlHours: 6,
+      nowMs
+    });
+
+    assert.equal(result.skipped, false);
+    assert.equal(result.critical, false);
+    assert.equal(fs.existsSync(oldRaw), false);
+    assert.equal(fs.existsSync(recentRaw), true);
+    assert.equal(fs.existsSync(generatedFrame), false);
+    assert.equal(fs.existsSync(generatedVideo), false);
+    assert.equal(result.standard.deletedFiles, 1);
+    assert.equal(result.aggressive.deletedFiles, 2);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("generated cache detection stays narrow for aggressive cleanup", () => {
+  assert.equal(isGeneratedCacheFile(path.join("jobs", "abc", "generated", "anything.tmp")), true);
+  assert.equal(isGeneratedCacheFile(path.join("jobs", "abc", "generated", "frame_001.png")), true);
+  assert.equal(isGeneratedCacheFile(path.join("kooky-world", "jobs", "abc", "raw", "capture_01.jpg")), false);
 });
 
 test("aggregate Unity motion frames split into three capture segments", () => {

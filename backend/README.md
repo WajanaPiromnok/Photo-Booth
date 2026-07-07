@@ -113,6 +113,19 @@ SPACES_PUBLIC_BASE_URL=https://<bucket>.<region>.digitaloceanspaces.com
 SPACES_KEY_PREFIX=
 ```
 
+When Spaces is enabled, treat Spaces as the source of truth and local `UPLOADS_ROOT` as cache/working storage. The backend hydrates missing local files from Spaces before generating downloads. To protect a 60GB production server from filling up, configure local cache cleanup thresholds:
+
+```text
+LOCAL_CACHE_TTL_HOURS=24
+LOCAL_CACHE_CLEANUP_INTERVAL_MINUTES=60
+LOCAL_CACHE_MIN_FREE_GB=15
+LOCAL_CACHE_AGGRESSIVE_FREE_GB=10
+LOCAL_CACHE_CRITICAL_FREE_GB=5
+LOCAL_CACHE_AGGRESSIVE_TTL_HOURS=6
+```
+
+Cleanup only runs when Spaces/object storage is enabled. If free disk is below `LOCAL_CACHE_MIN_FREE_GB`, files under `UPLOADS_ROOT` older than `LOCAL_CACHE_TTL_HOURS` are deleted locally. If disk is still below `LOCAL_CACHE_AGGRESSIVE_FREE_GB`, only generated/cache files older than `LOCAL_CACHE_AGGRESSIVE_TTL_HOURS` are removed. Do not use `docker system prune --volumes` for this project; production uploads live under `/opt/photo-booth/uploads`, while `.env` and compose files live outside that cache path.
+
 Use `STORAGE_DRIVER=local` to force local filesystem storage for development.
 
 Default CUPS options match the current kiosk print dialog:
