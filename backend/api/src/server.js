@@ -2374,17 +2374,56 @@ app.get(["/d/:jobId/framed-countdown.mp4", "/world-tour/:jobId/framed-countdown.
       return res.status(404).send("Motion frames were not uploaded for this job.");
     }
 
-    const outputPath = (routePrefix === "kooky-world")
-      ? await ensureKookyWorldCountdownVideo(job, motionFrames)
-      : usesWorldTourPresentation(routePrefix)
+    let outputPath;
+    if (routePrefix === "kooky-world") {
+      const countdownInfo = kookyWorldCountdownVideoInfo(job, motionFrames);
+      if (!isNonEmptyFile(countdownInfo.outputPath)) {
+        startKookyWorldCountdownVideoGeneration(job, motionFrames, jobId);
+        res.setHeader("Retry-After", "5");
+        return res.status(202).send("Countdown video is still processing.");
+      }
+      outputPath = await ensureKookyWorldCountdownVideo(job, motionFrames);
+    } else {
+      outputPath = usesWorldTourPresentation(routePrefix)
         ? await ensureWorldTourCountdownVideo(job, motionFrames)
         : await ensureLegacyFramedCountdownVideo(job, motionFrames);
+    }
     res.setHeader("Content-Type", "video/mp4");
     res.setHeader("Cache-Control", "public, max-age=300");
     return res.sendFile(outputPath);
   } catch (error) {
     console.error("framed_countdown_video_failed", { jobId, error });
     return res.status(error.statusCode || 500).send(error.message || "Internal server error.");
+  }
+});
+
+app.get("/kooky-world/:jobId/framed-countdown-status", async (req, res) => {
+  const jobId = normalizeJobId(req.params.jobId);
+  if (!jobId) {
+    return res.status(400).json(errorEnvelope("INVALID_JOB_ID", "Invalid job id."));
+  }
+
+  try {
+    const { job, assets } = await loadDownloadJobAssets(jobId);
+    const motionFrames = assets.filter((asset) => asset.asset_type === "motion_frame");
+    if (motionFrames.length === 0) {
+      return res.status(404).json(errorEnvelope("MOTION_FRAMES_NOT_FOUND", "Motion frames were not uploaded for this job."));
+    }
+
+    const countdownInfo = kookyWorldCountdownVideoInfo(job, motionFrames);
+    const ready = isNonEmptyFile(countdownInfo.outputPath);
+    if (!ready) {
+      startKookyWorldCountdownVideoGeneration(job, motionFrames, jobId);
+    }
+
+    return res.json({
+      ready,
+      url: ready ? `/kooky-world/${encodeURIComponent(jobId)}/framed-countdown.mp4` : null,
+      download_url: ready ? `/kooky-world/${encodeURIComponent(jobId)}/countdown-download.mp4` : null
+    });
+  } catch (error) {
+    console.error("framed_countdown_status_failed", { jobId, error });
+    return res.status(error.statusCode || 500).json(errorEnvelope(error.code || "INTERNAL_ERROR", error.message || "Internal server error."));
   }
 });
 
@@ -2402,11 +2441,20 @@ app.get(["/d/:jobId/countdown-download.mp4", "/world-tour/:jobId/countdown-downl
       return res.status(404).send("Motion frames were not uploaded for this job.");
     }
 
-    const outputPath = (routePrefix === "kooky-world")
-      ? await ensureKookyWorldCountdownVideo(job, motionFrames)
-      : usesWorldTourPresentation(routePrefix)
+    let outputPath;
+    if (routePrefix === "kooky-world") {
+      const countdownInfo = kookyWorldCountdownVideoInfo(job, motionFrames);
+      if (!isNonEmptyFile(countdownInfo.outputPath)) {
+        startKookyWorldCountdownVideoGeneration(job, motionFrames, jobId);
+        res.setHeader("Retry-After", "5");
+        return res.status(202).send("Countdown video is still processing.");
+      }
+      outputPath = await ensureKookyWorldCountdownVideo(job, motionFrames);
+    } else {
+      outputPath = usesWorldTourPresentation(routePrefix)
         ? await ensureWorldTourCountdownVideo(job, motionFrames)
         : await ensureLegacyFramedCountdownVideo(job, motionFrames);
+    }
     return sendAttachmentFile(res, outputPath, "video/mp4", `${jobId}-countdown.mp4`);
   } catch (error) {
     console.error("framed_countdown_video_download_failed", { jobId, error });
@@ -3547,7 +3595,10 @@ async function ensureKookyWorldNamedTemplate(job, labelTemplateId, templatePath)
   const nameKey = passengerNameCacheKey(passengerName);
   const outputPath = path.join(generatedDirectory(job), `label_kooky-world_frame-${labelTemplateId}_name-${nameKey}_${KOOKY_WORLD_NAME_TEMPLATE_CACHE_KEY}.png`);
   if (fs.existsSync(outputPath)) {
-    return outputPath;
+    if (await isUsableGeneratedImage(outputPath, { width: 1800, height: 1200 })) {
+      return outputPath;
+    }
+    removeInvalidGeneratedFile(outputPath, "kooky_named_template_invalid");
   }
 
   const fontBuffer = fs.readFileSync(fontPath);
@@ -3593,7 +3644,10 @@ async function ensureKookyWorldOutputTemplate(job, labelTemplateId, namedTemplat
     `label_kooky-world_frame-${labelTemplateId}_name-${passengerNameCacheKey(job.passenger_name)}_${cacheSuffix}_1800x1200.png`
   );
   if (fs.existsSync(outputPath)) {
-    return outputPath;
+    if (await isUsableGeneratedImage(outputPath, { width: 1800, height: 1200 })) {
+      return outputPath;
+    }
+    removeInvalidGeneratedFile(outputPath, "kooky_output_template_invalid");
   }
 
   await sharp(namedTemplatePath)
@@ -3601,6 +3655,33 @@ async function ensureKookyWorldOutputTemplate(job, labelTemplateId, namedTemplat
     .png()
     .toFile(outputPath);
   return outputPath;
+}
+
+async function isUsableGeneratedImage(filePath, expected = {}) {
+  try {
+    if (!isNonEmptyFile(filePath)) {
+      return false;
+    }
+    const metadata = await sharp(filePath).metadata();
+    if (expected.width && metadata.width !== expected.width) {
+      return false;
+    }
+    if (expected.height && metadata.height !== expected.height) {
+      return false;
+    }
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
+function removeInvalidGeneratedFile(filePath, reason) {
+  try {
+    fs.unlinkSync(filePath);
+    console.warn("generated_cache_invalid_removed", { reason, file: path.basename(filePath) });
+  } catch (error) {
+    console.warn("generated_cache_invalid_remove_failed", { reason, file: path.basename(filePath), error });
+  }
 }
 
 async function ensureKookyWorldPhotoImage(job, rawCaptures) {
@@ -3756,10 +3837,8 @@ async function ensureLegacyFramedCountdownVideo(job, motionFrames) {
 }
 
 async function ensureKookyWorldCountdownVideo(job, motionFrames) {
-  const labelTemplateId = resolveLabelTemplateId(job.image_preview_id || job.theme_id);
-  const nameKey = passengerNameCacheKey(job.passenger_name);
-  const frameDurationSeconds = resolveKookyWorldCountdownFrameDurationSeconds(motionFrames);
-  const outputPath = path.join(generatedDirectory(job), `framed-countdown_kooky-world_frame-${labelTemplateId}_name-${nameKey}_fps-${frameDurationCacheKey(frameDurationSeconds)}_${KOOKY_WORLD_COUNTDOWN_CACHE_VERSION}.mp4`);
+  const countdownInfo = kookyWorldCountdownVideoInfo(job, motionFrames);
+  const { labelTemplateId, nameKey, frameDurationSeconds, outputPath, frameDirectory } = countdownInfo;
   if (isNonEmptyFile(outputPath)) {
     return outputPath;
   }
@@ -3780,8 +3859,24 @@ async function ensureKookyWorldCountdownVideo(job, motionFrames) {
       frameSets,
       frameDurationSeconds,
       outputPath,
-      path.join(generatedDirectory(job), `countdown_kooky-world_frame-${labelTemplateId}_name-${nameKey}_fps-${frameDurationCacheKey(frameDurationSeconds)}_${KOOKY_WORLD_COUNTDOWN_CACHE_VERSION}_frames`)
+      frameDirectory
     );
+  });
+}
+
+function kookyWorldCountdownVideoInfo(job, motionFrames) {
+  const labelTemplateId = resolveLabelTemplateId(job.image_preview_id || job.theme_id);
+  const nameKey = passengerNameCacheKey(job.passenger_name);
+  const frameDurationSeconds = resolveKookyWorldCountdownFrameDurationSeconds(motionFrames);
+  const frameDurationKey = frameDurationCacheKey(frameDurationSeconds);
+  const outputPath = path.join(generatedDirectory(job), `framed-countdown_kooky-world_frame-${labelTemplateId}_name-${nameKey}_fps-${frameDurationKey}_${KOOKY_WORLD_COUNTDOWN_CACHE_VERSION}.mp4`);
+  const frameDirectory = path.join(generatedDirectory(job), `countdown_kooky-world_frame-${labelTemplateId}_name-${nameKey}_fps-${frameDurationKey}_${KOOKY_WORLD_COUNTDOWN_CACHE_VERSION}_frames`);
+  return { labelTemplateId, nameKey, frameDurationSeconds, outputPath, frameDirectory };
+}
+
+function startKookyWorldCountdownVideoGeneration(job, motionFrames, jobId) {
+  ensureKookyWorldCountdownVideo(job, motionFrames).catch((error) => {
+    console.error("framed_countdown_background_generation_failed", { jobId: jobId || job.job_id, error });
   });
 }
 
@@ -7765,7 +7860,8 @@ function renderKookyWorldDownloadPage({ job, composed, thumbnail, liveImage, mot
   const motionVideoDownloadUrl = motionVideo ? `/kooky-world/${encodeURIComponent(jobId)}/clip-download.mp4?v=frame-${labelTemplateId}-name-${passengerNameVersion}-v4` : "";
   const rawCaptureUrls = rawCaptures.map(assetUrl).filter(Boolean);
   const hasCountdownPreview = motionFrames.length > 0;
-  const framedCountdownVideoUrl = hasCountdownPreview ? `/kooky-world/${encodeURIComponent(jobId)}/framed-countdown.mp4?v=frame-${labelTemplateId}-name-${passengerNameVersion}-${KOOKY_WORLD_COUNTDOWN_CACHE_VERSION}` : "";
+  const countdownVideoReady = hasCountdownPreview && isNonEmptyFile(kookyWorldCountdownVideoInfo(job, motionFrames).outputPath);
+  const framedCountdownVideoUrl = countdownVideoReady ? `/kooky-world/${encodeURIComponent(jobId)}/framed-countdown.mp4?v=frame-${labelTemplateId}-name-${passengerNameVersion}-${KOOKY_WORLD_COUNTDOWN_CACHE_VERSION}` : "";
   const rawMotionVideoUrl = assetUrl(motionVideo);
 
   const passengerNameMarkup = passengerName
@@ -7803,18 +7899,26 @@ function renderKookyWorldDownloadPage({ job, composed, thumbnail, liveImage, mot
       const marker = document.querySelector('[data-kooky-vdo-processing="true"]');
       if (!marker) return;
       let pending = false;
+      const statusUrl = ${hasCountdownPreview ? JSON.stringify(`/kooky-world/${encodeURIComponent(jobId)}/framed-countdown-status`) : "null"};
       async function checkVdoReady() {
         if (pending || document.hidden) return;
         pending = true;
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 8000);
         try {
-          const response = await fetch(window.location.href, {
+          const response = await fetch(statusUrl || window.location.href, {
             cache: "no-store",
-            headers: { "Accept": "text/html" },
+            headers: { "Accept": statusUrl ? "application/json" : "text/html" },
             signal: controller.signal
           });
           if (!response.ok) return;
+          if (statusUrl) {
+            const status = await response.json();
+            if (status.ready) {
+              window.location.reload();
+            }
+            return;
+          }
           const html = await response.text();
           if (!html.includes('data-kooky-vdo-processing="true"')) {
             window.location.reload();
@@ -7831,7 +7935,7 @@ function renderKookyWorldDownloadPage({ job, composed, thumbnail, liveImage, mot
     })();
   </script>` : "";
 
-  const videoDownloadUrl = hasCountdownPreview
+  const videoDownloadUrl = countdownVideoReady
     ? framedCountdownVideoDownloadUrl
     : motionVideoDownloadUrl;
 

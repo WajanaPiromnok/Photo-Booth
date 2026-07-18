@@ -69,6 +69,38 @@ test("Kooky World output template is generated at 1800x1200", async () => {
   }
 });
 
+test("Kooky World output template regenerates unreadable cache files", async () => {
+  const tempRoot = path.join(testTempRoot, `kooky-output-template-invalid-${process.pid}-${Date.now()}`);
+  const sessionFolder = `session-folder-invalid-${process.pid}-${Date.now()}`;
+  const generatedRoot = path.join(process.cwd(), "uploads", "jobs", sessionFolder);
+  const sourcePath = path.join(tempRoot, "ticket_2.png");
+  fs.mkdirSync(tempRoot, { recursive: true });
+
+  try {
+    await sharp({
+      create: {
+        width: 1800,
+        height: 1200,
+        channels: 4,
+        background: "#1b1f18"
+      }
+    }).png().toFile(sourcePath);
+
+    const job = { job_id: "JOB-TEMPLATE-INVALID", session_folder: sessionFolder, passenger_name: "NOAH" };
+    const outputPath = await ensureKookyWorldOutputTemplate(job, "2", sourcePath, "test-invalid");
+    fs.writeFileSync(outputPath, "not a png");
+
+    const regeneratedPath = await ensureKookyWorldOutputTemplate(job, "2", sourcePath, "test-invalid");
+    const metadata = await sharp(regeneratedPath).metadata();
+    assert.equal(regeneratedPath, outputPath);
+    assert.equal(metadata.width, 1800);
+    assert.equal(metadata.height, 1200);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+    fs.rmSync(generatedRoot, { recursive: true, force: true });
+  }
+});
+
 test("livephoto rotates 123, 231, 312 for two rounds", () => {
   assert.deepEqual(buildRotatingFrameSets(["1", "2", "3"], 2), [
     ["1", "2", "3"],
@@ -251,6 +283,42 @@ test("download pages show processing placeholders before assets are uploaded", (
   assert.match(kookyHtml, /Processing please wait/);
   assert.match(kookyHtml, /data-kooky-vdo-processing="true"/);
   assert.match(kookyHtml, /setInterval\(checkVdoReady, 3500\)/);
+});
+
+test("Kooky World page polls countdown status before generated mp4 is ready", () => {
+  const sessionFolder = `kooky-countdown-pending-${process.pid}-${Date.now()}`;
+  const generatedRoot = path.join(process.cwd(), "uploads", "jobs", sessionFolder);
+  const job = {
+    job_id: "JOB-COUNTDOWN-PENDING",
+    session_folder: sessionFolder,
+    image_preview_id: "image_preview_1",
+    passenger_name: "QA",
+    created_at: "2026-06-24T00:00:00.000Z"
+  };
+
+  try {
+    const html = renderKookyWorldDownloadPage({
+      job,
+      composed: null,
+      thumbnail: null,
+      liveImage: null,
+      motionVideo: null,
+      rawCaptures: [
+        { remote_key: "raw/capture_01.jpg", original_file_name: "capture_01.jpg" },
+        { remote_key: "raw/capture_02.jpg", original_file_name: "capture_02.jpg" },
+        { remote_key: "raw/capture_03.jpg", original_file_name: "capture_03.jpg" }
+      ],
+      motionFrames: [
+        { remote_key: "motion/motion_000.jpg", original_file_name: "motion_000.jpg" }
+      ]
+    });
+
+    assert.match(html, /data-kooky-vdo-processing="true"/);
+    assert.match(html, /framed-countdown-status/);
+    assert.doesNotMatch(html, /<source src="\/kooky-world\/JOB-COUNTDOWN-PENDING\/framed-countdown\.mp4/);
+  } finally {
+    fs.rmSync(generatedRoot, { recursive: true, force: true });
+  }
 });
 
 test("raw captures are sorted by capture number", () => {
