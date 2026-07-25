@@ -1105,35 +1105,11 @@ namespace PhotoBooth.Booth.Frontend
             }
         }
 
-        public async void OpenVoucherEntryFromUi()
+        public void OpenVoucherEntryFromUi()
         {
-            if (!await BeginBusyAsync())
-            {
-                return;
-            }
-
-            try
-            {
-                EnsureCurrentJob();
-                if (pendingVoucherRedemptionId > 0)
-                {
-                    await ReleasePendingVoucherReservationAsync();
-                    currentJob = CreateCheckoutRetryJobPreservingSelection(currentJob);
-                }
-
-                voucherCode = string.IsNullOrWhiteSpace(pendingVoucherCode) ? voucherCode : ExtractVoucherSuffix(pendingVoucherCode);
-                UpdateVoucherCodeDisplay();
-                SwitchScreen(BoothUiScreenId.VoucherEntry, "Enter voucher code.");
-            }
-            catch (Exception exception)
-            {
-                Debug.LogError($"Opening voucher entry failed: {exception}");
-                ShowError(exception.Message);
-            }
-            finally
-            {
-                EndBusy();
-            }
+            // Label booth has no voucher redemption flow: treat the voucher choice
+            // exactly like the other payment choices and enter capture immediately.
+            PayMockFromUi();
         }
 
         public async void BackFromVoucherEntryFromUi()
@@ -2445,7 +2421,9 @@ namespace PhotoBooth.Booth.Frontend
                 return;
             }
 
-            ShowCaptureReviewImage(rawPath, mirrorCapturePreviewHorizontally);
+            // Captured frames are already mirrored by BoothCameraCaptureService to
+            // match the live preview, so mirroring again would reverse the review.
+            ShowCaptureReviewImage(rawPath);
             await Task.Delay(Mathf.RoundToInt(finalCapturePreviewDelaySeconds * 1000f), cancellationToken);
         }
 
@@ -4501,7 +4479,10 @@ namespace PhotoBooth.Booth.Frontend
 
         private bool ShouldMirrorArOverlay()
         {
-            return mirrorArOverlayHorizontally ^ IsHd33PreviewDevice();
+            // Tracking now receives the same mirrored frame that is saved and shown
+            // in the camera preview. Mirroring landmarks again shifts AR stickers to
+            // the opposite side of the face.
+            return false;
         }
 
         private void ApplyTracked3dFaceModelToTexture(Texture2D texture, ArTrackingFrame frame)
@@ -8216,7 +8197,7 @@ namespace PhotoBooth.Booth.Frontend
             WireButton("ArPresetConfirmButton", ConfirmArPresetSelectionFromUi);
             WireButton("QrPayButton", PayMockFromUi);
             WireButton("CardPayButton", PayMockFromUi);
-            WireButton("VoucherButton", OpenVoucherEntryFromUi);
+            WireButton("VoucherButton", PayMockFromUi);
             WireButton("PaymentBackButton", BackFromPaymentFromUi);
             WireButton("ConfirmNameButton", ConfirmNameFromUi);
             WireButton("ConfirmVoucherButton", ConfirmVoucherFromUi);

@@ -189,6 +189,7 @@ namespace PhotoBooth.Booth.AR
         private Texture2D defaultHorn;
         private Texture2D defaultMushroomHorn;
         private Texture2D defaultLozado;
+        private readonly Dictionary<int, Texture2D> readableSourceTextures = new();
 
         public static ArStickerDefinition[] CreateDefaultStickers()
         {
@@ -269,7 +270,11 @@ namespace PhotoBooth.Booth.AR
                         continue;
                     }
 
-                    DrawTexture(target, source, rect, rotation, sticker.tint);
+                    var readableSource = GetReadableSourceTexture(source);
+                    if (readableSource != null)
+                    {
+                        DrawTexture(target, readableSource, rect, rotation, sticker.tint);
+                    }
                 }
             }
 
@@ -281,6 +286,11 @@ namespace PhotoBooth.Booth.AR
             DestroyTexture(defaultHorn);
             DestroyTexture(defaultMushroomHorn);
             DestroyTexture(defaultLozado);
+            foreach (var texture in readableSourceTextures.Values)
+            {
+                DestroyTexture(texture);
+            }
+            readableSourceTextures.Clear();
             defaultHorn = null;
             defaultMushroomHorn = null;
             defaultLozado = null;
@@ -300,6 +310,59 @@ namespace PhotoBooth.Booth.AR
                 ArStickerBuiltinShape.Lozado => defaultLozado ??= CreateMustacheTexture(),
                 _ => null
             };
+        }
+
+        // Some sticker assets are imported as GPU-only textures. Cache a readable
+        // copy so applying AR effects cannot fail while a photo is being captured.
+        private Texture2D GetReadableSourceTexture(Texture2D source)
+        {
+            if (source == null)
+            {
+                return null;
+            }
+
+            var sourceId = source.GetInstanceID();
+            if (readableSourceTextures.TryGetValue(sourceId, out var cached)
+                && cached != null
+                && cached.width == source.width
+                && cached.height == source.height)
+            {
+                return cached;
+            }
+
+            DestroyTexture(cached);
+            var readable = new Texture2D(source.width, source.height, TextureFormat.RGBA32, false)
+            {
+                name = $"ReadableArSticker_{source.name}"
+            };
+            var previousRenderTarget = RenderTexture.active;
+            var temporaryRenderTarget = RenderTexture.GetTemporary(
+                source.width,
+                source.height,
+                0,
+                RenderTextureFormat.ARGB32,
+                RenderTextureReadWrite.Default);
+
+            try
+            {
+                Graphics.Blit(source, temporaryRenderTarget);
+                RenderTexture.active = temporaryRenderTarget;
+                readable.ReadPixels(new Rect(0, 0, source.width, source.height), 0, 0, false);
+                readable.Apply(false, false);
+                readableSourceTextures[sourceId] = readable;
+                return readable;
+            }
+            catch (Exception exception)
+            {
+                Debug.LogWarning($"PhotoBooth could not make AR sticker '{source.name}' readable: {exception.Message}");
+                DestroyTexture(readable);
+                return null;
+            }
+            finally
+            {
+                RenderTexture.active = previousRenderTarget;
+                RenderTexture.ReleaseTemporary(temporaryRenderTarget);
+            }
         }
 
         private static void DrawTexture(Texture2D target, Texture2D source, Rect rect, float rotationDegrees, Color tint)

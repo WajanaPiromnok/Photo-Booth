@@ -290,20 +290,10 @@ namespace PhotoBooth.Booth.Frontend
                 destination.name = "CachedCameraFrame";
             }
 
-            if (sourceTexture is WebCamTexture webcamTexture)
+            if (!TryCopyTextureToReadable(sourceTexture, destination))
             {
-                destination.SetPixels32(webcamTexture.GetPixels32());
+                throw new InvalidOperationException("Camera preview frame could not be read.");
             }
-            else if (sourceTexture is Texture2D texture2D)
-            {
-                destination.SetPixels32(texture2D.GetPixels32());
-            }
-            else
-            {
-                throw new InvalidOperationException("Unsupported camera preview texture type.");
-            }
-
-            destination.Apply(false, false);
         }
 
         public string CapturePng(string outputDirectory, string fileName = "capture.png")
@@ -555,7 +545,7 @@ namespace PhotoBooth.Booth.Frontend
             {
                 previewTarget.texture = cameraTexture;
                 previewTarget.color = Color.white;
-                previewTarget.uvRect = PreviewUvRect(mirrorPreviewHorizontally || !IsHd33DeviceName(selectedDeviceName));
+                previewTarget.uvRect = PreviewUvRect(mirrorPreviewHorizontally);
             }
 
             cameraTexture.Play();
@@ -880,7 +870,7 @@ namespace PhotoBooth.Booth.Frontend
             return texture;
         }
 
-        private static Texture2D CreateReadableCopy(Texture sourceTexture)
+        private Texture2D CreateReadableCopy(Texture sourceTexture)
         {
             try
             {
@@ -897,27 +887,69 @@ namespace PhotoBooth.Booth.Frontend
                 }
 
                 var texture = new Texture2D(sourceWidth, sourceHeight, TextureFormat.RGBA32, false);
-                if (sourceTexture is WebCamTexture webcamTexture && webcamTexture.width > 16)
-                {
-                    texture.SetPixels32(webcamTexture.GetPixels32());
-                }
-                else if (sourceTexture is Texture2D texture2D)
-                {
-                    texture.SetPixels32(texture2D.GetPixels32());
-                }
-                else
+                if (!TryCopyTextureToReadable(sourceTexture, texture))
                 {
                     UnityEngine.Object.Destroy(texture);
                     return null;
                 }
 
-                texture.Apply(false, false);
                 return texture;
             }
             catch
             {
                 return null;
             }
+        }
+
+        // OBSBOT Virtual Camera exposes a GPU-backed WebCamTexture on Windows. Its
+        // GetPixels32() call fails, so copy through a temporary render target first.
+        private bool TryCopyTextureToReadable(Texture sourceTexture, Texture2D destination)
+        {
+            if (sourceTexture == null || destination == null || sourceTexture.width <= 0 || sourceTexture.height <= 0)
+            {
+                return false;
+            }
+
+            var previousRenderTarget = RenderTexture.active;
+            var temporaryRenderTarget = RenderTexture.GetTemporary(
+                sourceTexture.width,
+                sourceTexture.height,
+                0,
+                RenderTextureFormat.ARGB32,
+                RenderTextureReadWrite.Default);
+
+            try
+            {
+                // Match the RawImage preview exactly; mirroring is controlled by the
+                // mirrorPreviewHorizontally setting for both preview and saved frames.
+                if (ShouldMirrorCapturedFrame())
+                {
+                    Graphics.Blit(sourceTexture, temporaryRenderTarget, new Vector2(-1f, 1f), new Vector2(1f, 0f));
+                }
+                else
+                {
+                    Graphics.Blit(sourceTexture, temporaryRenderTarget);
+                }
+                RenderTexture.active = temporaryRenderTarget;
+                destination.ReadPixels(new Rect(0, 0, sourceTexture.width, sourceTexture.height), 0, 0, false);
+                destination.Apply(false, false);
+                return true;
+            }
+            catch (Exception exception)
+            {
+                Debug.LogWarning($"PhotoBooth could not copy camera preview frame: {exception.Message}");
+                return false;
+            }
+            finally
+            {
+                RenderTexture.active = previousRenderTarget;
+                RenderTexture.ReleaseTemporary(temporaryRenderTarget);
+            }
+        }
+
+        private bool ShouldMirrorCapturedFrame()
+        {
+            return mirrorPreviewHorizontally;
         }
 
         private void ApplyPreviewTexture(Texture texture, bool flipHorizontally)
