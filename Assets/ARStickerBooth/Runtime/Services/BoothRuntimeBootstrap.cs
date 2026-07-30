@@ -57,6 +57,7 @@ namespace PhotoBooth.Booth.Services
         };
         [SerializeField] private string[] preferredCameraDeviceNames = Array.Empty<string>();
         [SerializeField] private int preferredCameraDeviceDiscoveryTimeoutSeconds = 0;
+        [SerializeField] private bool excludeObsbotCamera;
         [SerializeField] private string demoThemeId = "demo_theme";
         [SerializeField] private long demoAmountMinorUnits = 12000;
         [SerializeField] private int demoRawCaptureCount = 1;
@@ -96,6 +97,7 @@ namespace PhotoBooth.Booth.Services
         public int BackendRequestTimeoutSeconds => Math.Max(1, backendRequestTimeoutSeconds);
         public string[] PreferredCameraDeviceNames => preferredCameraDeviceNames ?? Array.Empty<string>();
         public int PreferredCameraDeviceDiscoveryTimeoutSeconds => Math.Max(0, preferredCameraDeviceDiscoveryTimeoutSeconds);
+        public bool ExcludeObsbotCamera => excludeObsbotCamera;
 
         private string lastDemoJobId;
 

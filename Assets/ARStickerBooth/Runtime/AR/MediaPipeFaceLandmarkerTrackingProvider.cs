@@ -17,6 +17,7 @@ namespace PhotoBooth.Booth.AR
         private const string DefaultModelStreamingAssetsPath = "MediaPipe/face_landmarker.task";
         private readonly int maxFaces;
         private readonly string modelStreamingAssetsPath;
+        private readonly bool mirrorLandmarksX;
         private FaceLandmarker faceLandmarker;
         private FaceLandmarkerResult reusableResult;
         private long frameIndex;
@@ -28,12 +29,14 @@ namespace PhotoBooth.Booth.AR
 
         public MediaPipeFaceLandmarkerTrackingProvider(
             int maxFaces = 4,
-            string modelStreamingAssetsPath = DefaultModelStreamingAssetsPath)
+            string modelStreamingAssetsPath = DefaultModelStreamingAssetsPath,
+            bool mirrorLandmarksX = true)
         {
             this.maxFaces = Mathf.Clamp(maxFaces, 1, 16);
             this.modelStreamingAssetsPath = string.IsNullOrWhiteSpace(modelStreamingAssetsPath)
                 ? DefaultModelStreamingAssetsPath
                 : modelStreamingAssetsPath;
+            this.mirrorLandmarksX = mirrorLandmarksX;
         }
 
         public string ProviderName => "MediaPipe Face Landmarker (3D)";
@@ -263,6 +266,23 @@ namespace PhotoBooth.Booth.AR
             Vector3? faceEulerDegrees,
             float confidence = 1f)
         {
+            return CreateTrackFromMediaPipeLandmarks(
+                trackId,
+                mediaPipeNormalizedLandmarks,
+                faceTransform,
+                faceEulerDegrees,
+                confidence,
+                mirrorLandmarksX: true);
+        }
+
+        private static FaceTrack CreateTrackFromMediaPipeLandmarks(
+            string trackId,
+            Vector3[] mediaPipeNormalizedLandmarks,
+            Matrix4x4? faceTransform,
+            Vector3? faceEulerDegrees,
+            float confidence,
+            bool mirrorLandmarksX)
+        {
             if (mediaPipeNormalizedLandmarks == null || mediaPipeNormalizedLandmarks.Length == 0)
             {
                 return null;
@@ -279,8 +299,8 @@ namespace PhotoBooth.Booth.AR
                 var source = mediaPipeNormalizedLandmarks[index];
                 // The rest of the AR stack uses normalized bottom-up Y and converts
                 // to UI top-left pixels when drawing. MediaPipe reports top-down Y.
-                // X is mirrored to match the currently displayed webcam preview.
-                var x = Mathf.Clamp01(1f - source.x);
+                // Match the horizontal orientation of the configured camera preview.
+                var x = Mathf.Clamp01(mirrorLandmarksX ? 1f - source.x : source.x);
                 var y = Mathf.Clamp01(1f - source.y);
                 landmarks2D[index] = new Vector2(x, y);
                 landmarks3D[index] = new Vector3(x, y, source.z);
@@ -312,7 +332,7 @@ namespace PhotoBooth.Booth.AR
             };
         }
 
-        private static FaceTrack CreateTrackFromMediaPipeLandmarks(
+        private FaceTrack CreateTrackFromMediaPipeLandmarks(
             string trackId,
             NormalizedLandmarks mediaPipeNormalizedLandmarks,
             Matrix4x4? faceTransform,
@@ -332,7 +352,13 @@ namespace PhotoBooth.Booth.AR
                 vectors[index] = new Vector3(landmark.x, landmark.y, landmark.z);
             }
 
-            return CreateTrackFromMediaPipeLandmarks(trackId, vectors, faceTransform, faceEulerDegrees, confidence);
+            return CreateTrackFromMediaPipeLandmarks(
+                trackId,
+                vectors,
+                faceTransform,
+                faceEulerDegrees,
+                confidence,
+                mirrorLandmarksX);
         }
 
         private static bool HasMediaPipeEyeLandmarks(Vector2[] landmarks)

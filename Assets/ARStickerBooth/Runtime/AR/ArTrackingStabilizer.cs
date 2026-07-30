@@ -10,9 +10,11 @@ namespace PhotoBooth.Booth.AR
         private const int RightEyeIndex = 263;
         private readonly Dictionary<string, FaceState> states = new();
 
-        public float PositionAlpha { get; set; } = 0.75f;
-        public float RotationAlpha { get; set; } = 0.85f;
-        public float ScaleAlpha { get; set; } = 0.9f;
+        // Keep a small amount of filtering for jitter, but favour the newest
+        // webcam sample so a face sticker does not visibly trail the user.
+        public float PositionAlpha { get; set; } = 0.94f;
+        public float RotationAlpha { get; set; } = 0.96f;
+        public float ScaleAlpha { get; set; } = 0.96f;
         public float CalibrationDurationSeconds { get; set; } = 1.2f;
         public ArTrackingDebugSnapshot DebugSnapshot { get; private set; } = ArTrackingDebugSnapshot.Empty;
 

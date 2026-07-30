@@ -46,7 +46,6 @@ namespace PhotoBooth.Booth.AR
     {
         private const int LeftEyeIndex = 33;
         private const int RightEyeIndex = 263;
-        private const int NoseIndex = 1;
         private const int ForeheadIndex = 10;
         private const int MouthLeftIndex = 61;
         private const int MouthRightIndex = 291;
@@ -108,11 +107,21 @@ namespace PhotoBooth.Booth.AR
             {
                 ArStickerAnchor.Eyes => (leftEye + rightEye) * 0.5f,
                 ArStickerAnchor.Forehead => GetPoint(face, ForeheadIndex, new Vector2(face.NormalizedBounds.center.x, face.NormalizedBounds.yMin + (face.NormalizedBounds.height * 0.9f))),
-                ArStickerAnchor.Nose => GetPoint(face, NoseIndex, face.NormalizedBounds.center),
+                ArStickerAnchor.Nose => ResolveNoseAnchor(face),
                 ArStickerAnchor.Mouth => (GetPoint(face, MouthLeftIndex, new Vector2(face.NormalizedBounds.xMin + (face.NormalizedBounds.width * 0.4f), face.NormalizedBounds.yMin + (face.NormalizedBounds.height * 0.28f)))
                     + GetPoint(face, MouthRightIndex, new Vector2(face.NormalizedBounds.xMin + (face.NormalizedBounds.width * 0.6f), face.NormalizedBounds.yMin + (face.NormalizedBounds.height * 0.28f)))) * 0.5f,
                 _ => face.NormalizedBounds.center
             };
+        }
+
+        private static Vector2 ResolveNoseAnchor(FaceTrack face)
+        {
+            // The camera frame can be vertically transformed by the device driver
+            // before MediaPipe receives it. Use the detected face bounds here,
+            // rather than a mesh point, so the 2D nose remains centred on the face
+            // instead of jumping to the forehead.
+            var bounds = face.NormalizedBounds;
+            return new Vector2(bounds.center.x, bounds.yMin + (bounds.height * 0.48f));
         }
 
         private static float ResolveBaseWidth(FaceTrack face, ArStickerAnchor anchor, float eyeDistance)
@@ -273,7 +282,16 @@ namespace PhotoBooth.Booth.AR
                     var readableSource = GetReadableSourceTexture(source);
                     if (readableSource != null)
                     {
-                        DrawTexture(target, readableSource, rect, rotation, sticker.tint);
+                        // TryResolve returns UI-style pixels (top-left origin), while
+                        // Texture2D.SetPixels/GetPixels use a bottom-left origin.
+                        // Convert only when baking into the captured image; the live
+                        // RawImage preview already applies the UI conversion itself.
+                        var textureRect = new Rect(
+                            rect.x,
+                            target.height - rect.y - rect.height,
+                            rect.width,
+                            rect.height);
+                        DrawTexture(target, readableSource, textureRect, -rotation, sticker.tint);
                     }
                 }
             }

@@ -11,8 +11,10 @@ namespace PhotoBooth.Booth.Frontend
         [SerializeField] private Vector2 manualAnchoredOffset;
         [SerializeField] private Vector2 manualSizeScale = Vector2.one;
         [SerializeField] private Vector3 manualEulerOffset;
-        [SerializeField] private bool useFacePose = true;
-        [SerializeField] private bool useYawForeshortening = true;
+        // 2D UI stickers must not rotate around their Y axis with the face pose:
+        // that produces a mirrored/"flipped" nose as the person turns.
+        [SerializeField] private bool useFacePose;
+        [SerializeField] private bool useYawForeshortening;
 
         private RectTransform rectTransform;
         private RawImage rawImage;

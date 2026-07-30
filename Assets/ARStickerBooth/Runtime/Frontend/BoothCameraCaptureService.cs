@@ -64,6 +64,7 @@ namespace PhotoBooth.Booth.Frontend
         private readonly int requestedFps;
         private readonly string[] preferredDeviceNames;
         private readonly int preferredDeviceDiscoveryTimeoutSeconds;
+        private readonly bool excludeObsbotCamera;
         private readonly bool useGPhoto2Preview;
         private readonly int gPhoto2PreviewFramesPerSecond;
         private readonly bool gPhoto2PreviewFailureFallbackEnabled;
@@ -73,6 +74,7 @@ namespace PhotoBooth.Booth.Frontend
         private readonly bool allowCameraFallback;
         private readonly int canonPreviewUiFramesPerSecond;
         private readonly bool mirrorPreviewHorizontally;
+        private readonly Rect normalizedFrameCrop;
         private readonly SemaphoreSlim previewLifecycleLock = new(1, 1);
 
         private WebCamTexture cameraTexture;
@@ -98,6 +100,7 @@ namespace PhotoBooth.Booth.Frontend
             int requestedFps = 30,
             IEnumerable<string> preferredDeviceNames = null,
             int preferredDeviceDiscoveryTimeoutSeconds = 3,
+            bool excludeObsbotCamera = false,
             GPhoto2CameraCaptureService gPhoto2CaptureService = null,
             bool useGPhoto2Preview = false,
             int gPhoto2PreviewFramesPerSecond = 3,
@@ -106,7 +109,8 @@ namespace PhotoBooth.Booth.Frontend
             bool useCanonEdsdk = false,
             bool allowCameraFallback = true,
             int canonPreviewUiFramesPerSecond = 10,
-            bool mirrorPreviewHorizontally = false)
+            bool mirrorPreviewHorizontally = false,
+            Rect normalizedFrameCrop = default)
         {
             this.previewTarget = previewTarget;
             this.requestedWidth = Math.Max(320, requestedWidth);
@@ -114,6 +118,7 @@ namespace PhotoBooth.Booth.Frontend
             this.requestedFps = Math.Max(15, requestedFps);
             this.preferredDeviceNames = NormalizePreferredDeviceNames(preferredDeviceNames);
             this.preferredDeviceDiscoveryTimeoutSeconds = Math.Max(0, preferredDeviceDiscoveryTimeoutSeconds);
+            this.excludeObsbotCamera = excludeObsbotCamera;
             this.gPhoto2CaptureService = gPhoto2CaptureService;
             this.useGPhoto2Preview = useGPhoto2Preview;
             this.gPhoto2PreviewFramesPerSecond = Mathf.Clamp(gPhoto2PreviewFramesPerSecond, 1, 30);
@@ -123,6 +128,7 @@ namespace PhotoBooth.Booth.Frontend
             this.allowCameraFallback = allowCameraFallback;
             this.canonPreviewUiFramesPerSecond = Mathf.Clamp(canonPreviewUiFramesPerSecond, 1, 15);
             this.mirrorPreviewHorizontally = mirrorPreviewHorizontally;
+            this.normalizedFrameCrop = NormalizeFrameCrop(normalizedFrameCrop);
         }
 
         public bool IsPreviewing => (cameraTexture != null && cameraTexture.isPlaying) || gPhoto2PreviewTexture != null || simulatedCameraTexture != null;
@@ -261,38 +267,30 @@ namespace PhotoBooth.Booth.Frontend
                 throw new InvalidOperationException("Camera preview is not ready.");
             }
 
-            return texture;
+            return CropReadableFrame(texture);
         }
 
         public void CaptureCurrentFrameTexture(ref Texture2D destination)
         {
             EnsureReady();
-            var sourceTexture = CurrentPreviewTexture;
-            if (sourceTexture == null)
+            var capturedFrame = CaptureCurrentFrameTexture();
+            try
             {
-                throw new InvalidOperationException("Camera preview is not ready.");
-            }
-
-            var sourceWidth = sourceTexture.width;
-            var sourceHeight = sourceTexture.height;
-            if (sourceWidth <= 16 || sourceHeight <= 16)
-            {
-                throw new InvalidOperationException("Camera preview dimensions are invalid.");
-            }
-
-            if (destination == null || destination.width != sourceWidth || destination.height != sourceHeight)
-            {
-                if (destination != null)
+                if (destination == null || destination.width != capturedFrame.width || destination.height != capturedFrame.height)
                 {
-                    UnityEngine.Object.Destroy(destination);
+                    if (destination != null)
+                    {
+                        UnityEngine.Object.Destroy(destination);
+                    }
+                    destination = new Texture2D(capturedFrame.width, capturedFrame.height, TextureFormat.RGBA32, false);
+                    destination.name = "CachedCameraFrame";
                 }
-                destination = new Texture2D(sourceWidth, sourceHeight, TextureFormat.RGBA32, false);
-                destination.name = "CachedCameraFrame";
-            }
 
-            if (!TryCopyTextureToReadable(sourceTexture, destination))
+                Graphics.CopyTexture(capturedFrame, destination);
+            }
+            finally
             {
-                throw new InvalidOperationException("Camera preview frame could not be read.");
+                UnityEngine.Object.Destroy(capturedFrame);
             }
         }
 
@@ -952,6 +950,53 @@ namespace PhotoBooth.Booth.Frontend
             return mirrorPreviewHorizontally;
         }
 
+        private Texture2D CropReadableFrame(Texture2D source)
+        {
+            if (source == null || normalizedFrameCrop == new Rect(0f, 0f, 1f, 1f))
+            {
+                return source;
+            }
+
+            var target = new Texture2D(source.width, source.height, TextureFormat.RGBA32, false);
+            var previousRenderTarget = RenderTexture.active;
+            var renderTarget = RenderTexture.GetTemporary(source.width, source.height, 0, RenderTextureFormat.ARGB32);
+            try
+            {
+                Graphics.Blit(source, renderTarget, normalizedFrameCrop.size, normalizedFrameCrop.position);
+                RenderTexture.active = renderTarget;
+                target.ReadPixels(new Rect(0f, 0f, source.width, source.height), 0, 0, false);
+                target.Apply(false, false);
+                UnityEngine.Object.Destroy(source);
+                return target;
+            }
+            catch
+            {
+                UnityEngine.Object.Destroy(target);
+                return source;
+            }
+            finally
+            {
+                RenderTexture.active = previousRenderTarget;
+                RenderTexture.ReleaseTemporary(renderTarget);
+            }
+        }
+
+        private static Rect NormalizeFrameCrop(Rect crop)
+        {
+            if (crop.width <= 0f || crop.height <= 0f)
+            {
+                return new Rect(0f, 0f, 1f, 1f);
+            }
+
+            var xMin = Mathf.Clamp01(crop.xMin);
+            var yMin = Mathf.Clamp01(crop.yMin);
+            var xMax = Mathf.Clamp01(crop.xMax);
+            var yMax = Mathf.Clamp01(crop.yMax);
+            return xMax <= xMin || yMax <= yMin
+                ? new Rect(0f, 0f, 1f, 1f)
+                : Rect.MinMaxRect(xMin, yMin, xMax, yMax);
+        }
+
         private void ApplyPreviewTexture(Texture texture, bool flipHorizontally)
         {
             if (previewTarget == null)
@@ -964,11 +1009,11 @@ namespace PhotoBooth.Booth.Frontend
             previewTarget.uvRect = PreviewUvRect(flipHorizontally);
         }
 
-        private static Rect PreviewUvRect(bool flipHorizontally)
+        private Rect PreviewUvRect(bool flipHorizontally)
         {
             return flipHorizontally
-                ? new Rect(1f, 0f, -1f, 1f)
-                : new Rect(0f, 0f, 1f, 1f);
+                ? new Rect(normalizedFrameCrop.xMax, normalizedFrameCrop.yMin, -normalizedFrameCrop.width, normalizedFrameCrop.height)
+                : normalizedFrameCrop;
         }
 
         private void StopGPhoto2Preview()
@@ -1001,7 +1046,7 @@ namespace PhotoBooth.Booth.Frontend
             do
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                latestDeviceNames = GetCurrentDeviceNames();
+                latestDeviceNames = GetCurrentDeviceNames(excludeObsbotCamera);
                 var deviceSignature = latestDeviceNames.Length == 0
                     ? "(none)"
                     : string.Join(", ", latestDeviceNames);
@@ -1037,12 +1082,13 @@ namespace PhotoBooth.Booth.Frontend
             return fallbackDeviceName;
         }
 
-        private static string[] GetCurrentDeviceNames()
+        private static string[] GetCurrentDeviceNames(bool excludeObsbotCamera = false)
         {
             return WebCamTexture.devices?
                 .Select(device => device.name)
                 .Where(deviceName => !string.IsNullOrWhiteSpace(deviceName))
                 .Select(deviceName => deviceName.Trim())
+                .Where(deviceName => !excludeObsbotCamera || !IsObsbotDeviceName(deviceName))
                 .ToArray() ?? Array.Empty<string>();
         }
 

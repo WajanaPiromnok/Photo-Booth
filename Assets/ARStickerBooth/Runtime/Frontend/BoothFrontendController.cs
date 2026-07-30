@@ -30,6 +30,11 @@ namespace PhotoBooth.Booth.Frontend
         private const string PaymentBypassSceneName = "PhotoBooth-Kooky";
         private const int NoArPresetIndex = -2;
         private const int VoucherCodeMaxLength = 24;
+        // The editable MRKREME UI is created at runtime. Keep every visual layer
+        // in this viewport on the same 16:9 rectangle as the webcam frames.
+        private static readonly Vector2 RuntimeCameraFrameSize = new(900f, 506.25f);
+        private static readonly Vector2 RuntimeCameraPreviewSize = new(860f, 483.75f);
+        private static readonly Vector2 RuntimeCameraViewportAnchor = new(0.5f, 0.54f);
         private const string VoucherCodePrefix = "PB-";
         private const int VoucherSuccessCountdownSeconds = 5;
         private const float VoucherQrScanIntervalSeconds = 0.25f;
@@ -143,6 +148,11 @@ namespace PhotoBooth.Booth.Frontend
         [SerializeField] private int canonEdsdkPreviewFramesPerSecond = 15;
         [SerializeField] private int canonEdsdkPreviewUiFramesPerSecond = 10;
         [SerializeField] private bool mirrorCapturePreviewHorizontally = true;
+        [SerializeField] private bool mirrorArTrackingLandmarksX = true;
+        [SerializeField] private bool fillCameraPreviewMask;
+        [SerializeField] private Vector4 cameraPreviewMaskInsets = new(25f, 15f, 25f, 15f);
+        [SerializeField] private Rect cameraFrameCrop = new(0f, 0f, 1f, 1f);
+        [SerializeField] private bool preserveCameraPreviewLayoutForMonsterFrame;
         [SerializeField] private Vector2Int cameraCaptureSize = new(1280, 720);
         [SerializeField] private Vector2Int thumbnailSize = new(320, 180);
         [SerializeField] private Sprite[] captureForegroundTextures;
@@ -644,6 +654,7 @@ namespace PhotoBooth.Booth.Frontend
 
             EnsureVoucherEntryScreen();
             BindUiEvents();
+            NormalizeRuntimeCameraViewport();
             flowCancellation = new CancellationTokenSource();
             SwitchScreen(BoothUiScreenId.Attract, "Touch start to begin.");
         }
@@ -2834,6 +2845,7 @@ namespace PhotoBooth.Booth.Frontend
                 requestedFps: useCanonEdsdk ? Mathf.Clamp(canonEdsdkPreviewFramesPerSecond, 1, 15) : 30,
                 preferredDeviceNames: runtime?.PreferredCameraDeviceNames,
                 preferredDeviceDiscoveryTimeoutSeconds: runtime?.PreferredCameraDeviceDiscoveryTimeoutSeconds ?? 3,
+                excludeObsbotCamera: runtime?.ExcludeObsbotCamera ?? false,
                 gPhoto2CaptureService: gPhoto2Capture,
                 useGPhoto2Preview: useGPhoto2Preview,
                 gPhoto2PreviewFramesPerSecond: gPhoto2PreviewFramesPerSecond,
@@ -2842,7 +2854,8 @@ namespace PhotoBooth.Booth.Frontend
                 useCanonEdsdk: useCanonEdsdk,
                 allowCameraFallback: allowCanonCameraFallback,
                 canonPreviewUiFramesPerSecond: canonEdsdkPreviewUiFramesPerSecond,
-                mirrorPreviewHorizontally: mirrorCapturePreviewHorizontally);
+                mirrorPreviewHorizontally: mirrorCapturePreviewHorizontally,
+                normalizedFrameCrop: cameraFrameCrop);
             service.PreviewFailed += HandleCameraPreviewFailed;
             service.PreviewFrameReceived += jpegMotionRecorder.AcceptFrame;
             return service;
@@ -4389,7 +4402,9 @@ namespace PhotoBooth.Booth.Frontend
             }
 
             if (!mediaPipeArUnavailable
-                && await TryStartArTrackingProviderAsync(new MediaPipeFaceLandmarkerTrackingProvider(maxArFaces), cancellationToken))
+                && await TryStartArTrackingProviderAsync(new MediaPipeFaceLandmarkerTrackingProvider(
+                    maxArFaces,
+                    mirrorLandmarksX: mirrorArTrackingLandmarksX), cancellationToken))
             {
                 return;
             }
@@ -4827,7 +4842,7 @@ namespace PhotoBooth.Booth.Frontend
             }
 
             previewFrameImage.gameObject.SetActive(true);
-            var captureSlots = ResolveSelectedPreviewCaptureSlots();
+            var activeSlotIndices = ResolveSelectedPreviewSlotIndices();
             for (var i = 0; i < previewFrameSlotImages.Length; i++)
             {
                 var slot = previewFrameSlotImages[i];
@@ -4836,21 +4851,22 @@ namespace PhotoBooth.Booth.Frontend
                     continue;
                 }
 
-                if (i >= captureSlots.Length)
+                var captureIndex = Array.IndexOf(activeSlotIndices, i);
+                if (captureIndex < 0)
                 {
                     ClearPreviewFrameSlot(i);
                     slot.gameObject.SetActive(false);
                     continue;
                 }
 
-                if (i >= rawImagePaths.Count || string.IsNullOrWhiteSpace(rawImagePaths[i]) || !File.Exists(rawImagePaths[i]))
+                if (captureIndex >= rawImagePaths.Count || string.IsNullOrWhiteSpace(rawImagePaths[captureIndex]) || !File.Exists(rawImagePaths[captureIndex]))
                 {
                     ClearPreviewFrameSlot(i);
                     slot.gameObject.SetActive(false);
                     continue;
                 }
 
-                LoadPreviewFrameSlot(i, rawImagePaths[i]);
+                LoadPreviewFrameSlot(i, rawImagePaths[captureIndex]);
                 slot.gameObject.SetActive(true);
             }
         }
@@ -4873,7 +4889,7 @@ namespace PhotoBooth.Booth.Frontend
             }
 
             previewFrameImage.gameObject.SetActive(true);
-            var captureSlots = ResolveSelectedPreviewCaptureSlots();
+            var activeSlotIndices = ResolveSelectedPreviewSlotIndices();
             for (var i = 0; i < previewFrameSlotImages.Length; i++)
             {
                 var slot = previewFrameSlotImages[i];
@@ -4882,7 +4898,7 @@ namespace PhotoBooth.Booth.Frontend
                     continue;
                 }
 
-                if (i >= captureSlots.Length)
+                if (Array.IndexOf(activeSlotIndices, i) < 0)
                 {
                     ClearPreviewFrameSlot(i);
                     slot.gameObject.SetActive(false);
@@ -4933,15 +4949,16 @@ namespace PhotoBooth.Booth.Frontend
                 var frameIndex = 0;
                 while (!cancellationToken.IsCancellationRequested)
                 {
-                    var slotLimit = ResolveSelectedPreviewCaptureSlots().Length;
+                    var activeSlotIndices = ResolveSelectedPreviewSlotIndices();
                     for (var slotIndex = 0; slotIndex < previewFrameSlotImages.Length; slotIndex++)
                     {
-                        if (slotIndex >= slotLimit)
+                        var captureIndex = Array.IndexOf(activeSlotIndices, slotIndex);
+                        if (captureIndex < 0)
                         {
                             continue;
                         }
 
-                        var frames = slotIndex >= 0 && slotIndex < slotFrames.Length ? slotFrames[slotIndex] : null;
+                        var frames = captureIndex < slotFrames.Length ? slotFrames[captureIndex] : null;
                         if (frames == null || frames.Length == 0)
                         {
                             continue;
@@ -5072,6 +5089,7 @@ namespace PhotoBooth.Booth.Frontend
             SetFallbackPreviewFrameSlotsVisible(layoutIndex == 1);
             var spriteRect = ResolvePreviewFrameSpriteRect(previewFrameImage);
             var captureSlots = ResolveSelectedPreviewCaptureSlots();
+            var activeSlotIndices = ResolveSelectedPreviewSlotIndices();
             ApplyPreviewFramePassengerName();
             for (var i = 0; i < previewFrameSlotImages.Length; i++)
             {
@@ -5099,7 +5117,8 @@ namespace PhotoBooth.Booth.Frontend
                     previewFrameSlotImages[i] = CreatePreviewFrameSlot(previewFrameImage.transform, i);
                 }
 
-                if (i >= captureSlots.Length)
+                var captureIndex = Array.IndexOf(activeSlotIndices, i);
+                if (captureIndex < 0)
                 {
                     previewFrameSlotImages[i].gameObject.SetActive(false);
                     continue;
@@ -5107,7 +5126,8 @@ namespace PhotoBooth.Booth.Frontend
 
                 if (!isSceneAuthoredSlot)
                 {
-                    PositionPreviewFrameSlot(previewFrameSlotImages[i].rectTransform, captureSlots[i], spriteRect, previewFrameImage.rectTransform);
+                    var rectIndex = Mathf.Clamp(captureIndex, 0, captureSlots.Length - 1);
+                    PositionPreviewFrameSlot(previewFrameSlotImages[i].rectTransform, captureSlots[rectIndex], spriteRect, previewFrameImage.rectTransform);
                 }
 
                 previewFrameSlotImages[i].transform.SetAsLastSibling();
@@ -5173,6 +5193,13 @@ namespace PhotoBooth.Booth.Frontend
                 new Rect(0f, 0f, 1f, 1f),
                 new Rect(0f, 0f, 1f, 1f)
             };
+        }
+
+        private int[] ResolveSelectedPreviewSlotIndices()
+        {
+            return ResolveSelectedImagePreviewIndex() == 2
+                ? new[] { 1 }
+                : new[] { 0 };
         }
 
         private void ApplyPreviewFramePassengerName()
@@ -6873,7 +6900,14 @@ namespace PhotoBooth.Booth.Frontend
             }
 
             captureForegroundOverlay.raycastTarget = false;
-            StretchGraphicToParent(captureForegroundOverlay);
+            if (UsesRuntimeCameraViewport())
+            {
+                CopyCameraPreviewRect(captureForegroundOverlay);
+            }
+            else
+            {
+                StretchGraphicToParent(captureForegroundOverlay);
+            }
             AlignArOverlaysToCameraPreview();
             UpdateCaptureForegroundOverlay();
         }
@@ -7175,7 +7209,7 @@ namespace PhotoBooth.Booth.Frontend
                 {
                     ApplyMonsterFrameOverlayRect(captureForegroundOverlay);
                 }
-                else if (ResolveSelectedCaptureFrameOverlays()?.Length > 0)
+                else if (ResolveSelectedCaptureFrameOverlays()?.Length > 0 && !UsesRuntimeCameraViewport())
                 {
                     StretchGraphicToParent(captureForegroundOverlay);
                 }
@@ -7193,6 +7227,12 @@ namespace PhotoBooth.Booth.Frontend
         {
             if (overlay == null || cameraPreview == null)
             {
+                return;
+            }
+
+            if (fillCameraPreviewMask || preserveCameraPreviewLayoutForMonsterFrame)
+            {
+                CopyCameraPreviewRect(overlay);
                 return;
             }
 
@@ -7221,7 +7261,11 @@ namespace PhotoBooth.Booth.Frontend
             }
 
             CaptureDefaultCameraPreviewRect();
-            if (useMonsterFrame)
+            if (fillCameraPreviewMask && IsSceneMaskCameraPreview())
+            {
+                ApplyCameraPreviewToMaskRect(cameraPreview.rectTransform);
+            }
+            else if (useMonsterFrame && !preserveCameraPreviewLayoutForMonsterFrame)
             {
                 ApplyMonsterFrameRect(cameraPreview.rectTransform);
             }
@@ -7231,6 +7275,80 @@ namespace PhotoBooth.Booth.Frontend
             }
 
             AlignArOverlaysToCameraPreview();
+        }
+
+        private bool IsSceneMaskCameraPreview()
+        {
+            return cameraPreview != null
+                && cameraPreview.transform.parent != null
+                && cameraPreview.transform.parent.name == "Mask Preview";
+        }
+
+        private bool UsesRuntimeCameraViewport()
+        {
+            return cameraPreview != null
+                && cameraPreview.transform.parent != null
+                && cameraPreview.transform.parent.name == "CaptureScreen";
+        }
+
+        // Existing projects can already contain an EditableMrkremeFrontendRoot in
+        // their scene. Normalize it at startup as well as when it is newly built,
+        // so its old square 860x860 camera rectangle cannot reappear.
+        private void NormalizeRuntimeCameraViewport()
+        {
+            if (!UsesRuntimeCameraViewport())
+            {
+                return;
+            }
+
+            ApplyRuntimeViewportRect(cameraPreview.rectTransform, RuntimeCameraPreviewSize);
+            ApplyRuntimeViewportRect(arPreviewOverlay != null ? arPreviewOverlay.rectTransform : null, RuntimeCameraPreviewSize);
+            ApplyRuntimeViewportRect(captureForegroundOverlay != null ? captureForegroundOverlay.rectTransform : null, RuntimeCameraPreviewSize);
+
+            var parent = cameraPreview.transform.parent;
+            for (var index = 0; index < parent.childCount; index++)
+            {
+                var child = parent.GetChild(index);
+                if (child.name == "CameraFrame" && child is RectTransform frameRect)
+                {
+                    ApplyRuntimeViewportRect(frameRect, RuntimeCameraFrameSize);
+                }
+            }
+
+            AlignArOverlaysToCameraPreview();
+        }
+
+        private static void ApplyRuntimeViewportRect(RectTransform rect, Vector2 size)
+        {
+            if (rect == null)
+            {
+                return;
+            }
+
+            rect.anchorMin = RuntimeCameraViewportAnchor;
+            rect.anchorMax = RuntimeCameraViewportAnchor;
+            rect.pivot = Vector2.one * 0.5f;
+            rect.anchoredPosition = Vector2.zero;
+            rect.sizeDelta = size;
+            rect.localRotation = Quaternion.identity;
+            rect.localScale = Vector3.one;
+        }
+
+        private void ApplyCameraPreviewToMaskRect(RectTransform rect)
+        {
+            if (rect == null || rect.parent is not RectTransform maskRect)
+            {
+                return;
+            }
+
+            rect.anchorMin = Vector2.zero;
+            rect.anchorMax = Vector2.one;
+            rect.pivot = Vector2.one * 0.5f;
+            rect.anchoredPosition = Vector2.zero;
+            rect.offsetMin = new Vector2(cameraPreviewMaskInsets.x, cameraPreviewMaskInsets.w);
+            rect.offsetMax = new Vector2(-cameraPreviewMaskInsets.z, -cameraPreviewMaskInsets.y);
+            rect.localRotation = Quaternion.identity;
+            rect.localScale = Vector3.one;
         }
 
         private void ApplyMonsterFrameRect(RectTransform rect)
@@ -8019,16 +8137,15 @@ namespace PhotoBooth.Booth.Frontend
             CreateBackgroundImage(capture.transform, "YellowGridBackground", "piece_05");
             CreatePanelBlock(capture.transform, "TopMetalPanel", new Vector2(0.5f, 0.91f), new Vector2(1080f, 330f), MetalColor);
             CreateText(capture.transform, "CaptureTitle", "TAKE A PHOTO", 62, TextAlignmentOptions.Center, new Vector2(0.5f, 0.91f), new Vector2(0.5f, 0.91f), Vector2.zero, new Vector2(760f, 120f)).color = Color.black;
-            CreatePanelBlock(capture.transform, "CameraFrame", new Vector2(0.5f, 0.54f), new Vector2(900f, 900f), Color.black);
-            cameraPreview = CreateRawImage(capture.transform, "CameraPreview", new Vector2(0.5f, 0.54f), Vector2.zero, new Vector2(860f, 860f));
+            CreatePanelBlock(capture.transform, "CameraFrame", RuntimeCameraViewportAnchor, RuntimeCameraFrameSize, Color.black);
+            cameraPreview = CreateRawImage(capture.transform, "CameraPreview", RuntimeCameraViewportAnchor, Vector2.zero, RuntimeCameraPreviewSize);
             cameraPreview.color = Color.white;
             arModelOverlay = null;
-            arPreviewOverlay = CreateRawImage(capture.transform, "ArPreviewOverlay", new Vector2(0.5f, 0.54f), Vector2.zero, new Vector2(860f, 860f));
+            arPreviewOverlay = CreateRawImage(capture.transform, "ArPreviewOverlay", RuntimeCameraViewportAnchor, Vector2.zero, RuntimeCameraPreviewSize);
             arPreviewOverlay.color = Color.clear;
-            captureForegroundOverlay = CreateImage(capture.transform, "CaptureForegroundOverlay", Vector2.one * 0.5f, Vector2.zero, new Vector2(1080f, 1920f));
+            captureForegroundOverlay = CreateImage(capture.transform, "CaptureForegroundOverlay", RuntimeCameraViewportAnchor, Vector2.zero, RuntimeCameraPreviewSize);
             captureForegroundOverlay.color = Color.clear;
             captureForegroundOverlay.raycastTarget = false;
-            StretchGraphicToParent(captureForegroundOverlay);
             countdownText = CreateText(capture.transform, "Countdown", string.Empty, 120, TextAlignmentOptions.Center, new Vector2(0.5f, 0.54f), new Vector2(0.5f, 0.54f), Vector2.zero, new Vector2(360f, 180f));
             captureCountText = CreateText(capture.transform, "CaptureCount", "AMOUNT 1 / 1", 28, TextAlignmentOptions.Center, new Vector2(0.5f, 0.205f), new Vector2(0.5f, 0.205f), Vector2.zero, new Vector2(300f, 50f));
             captureCountText.color = new Color(0.08f, 0.08f, 0.08f, 1f);
