@@ -118,7 +118,7 @@ const pool = new Pool({
 });
 
 const generatedMediaPromises = new Map();
-const FEATURED_LABEL_PROJECT_ID = "prj_world_tour";
+const FEATURED_LABEL_PROJECT_ID = "prj_main";
 const WORLD_TOUR_LABEL_RENDER_VERSION = "v2";
 const localFileHydrationPromises = new Map();
 const objectStorage = createObjectStorageClient();
@@ -2024,8 +2024,8 @@ app.get("/v1/assets/composed/rendered/:jobId", async (req, res) => {
 
   try {
     const { job, assets } = await loadDownloadJobAssets(jobId);
-    if (job.project_id !== FEATURED_LABEL_PROJECT_ID || job.upload_status !== "LINK_READY") {
-      return res.status(404).json(errorEnvelope("FEATURED_LABEL_NOT_FOUND", "A ready World Tour label was not found."));
+    if (!isFeaturedLabelJobEligible(job)) {
+      return res.status(404).json(errorEnvelope("FEATURED_LABEL_NOT_FOUND", "A ready featured label was not found for the main project."));
     }
 
     const rawCapture = sortRawCaptureAssets(
@@ -3237,6 +3237,10 @@ function featuredComposedImagePath(jobId) {
   }
 
   return `/v1/assets/composed/rendered/${encodeURIComponent(normalized)}`;
+}
+
+function isFeaturedLabelJobEligible(job) {
+  return job?.project_id === FEATURED_LABEL_PROJECT_ID && job?.upload_status === "LINK_READY";
 }
 
 function projectIdForAssetRoute(route) {
@@ -5637,7 +5641,7 @@ function buildOpenApiSpec(req) {
         get: {
           tags: ["Assets"],
           summary: "Get featured composed image",
-          description: "Redirects to a server-rendered World Tour label using the selected job's raw capture, frame 1 or 2, and BatteryPark passenger name. Selects the newest ready job from the recent window, or a random eligible job when no recent image exists. Add ?format=json for debugging metadata.",
+          description: "Redirects to a server-rendered label for the main project using the selected job's raw capture, frame 1 or 2, and BatteryPark passenger name. Selects the newest ready main-project job from the recent window, or a random eligible main-project job when no recent image exists. Add ?format=json for debugging metadata.",
           parameters: [
             {
               name: "format",
@@ -5648,7 +5652,7 @@ function buildOpenApiSpec(req) {
             }
           ],
           responses: {
-            302: { description: "Redirects to the rendered World Tour label image." },
+            302: { description: "Redirects to the rendered main-project label image." },
             200: {
               description: "Selected image metadata when format=json.",
               content: {
@@ -5663,7 +5667,7 @@ function buildOpenApiSpec(req) {
                             type: "object",
                             properties: {
                               job_id: { type: "string" },
-                              project_id: { type: "string", example: "prj_world_tour" },
+                              project_id: { type: "string", example: "prj_main" },
                               asset_type: { type: "string", example: "composed" },
                               selection_mode: { type: "string", enum: ["latest", "random"] },
                               template_id: { type: "string", enum: ["1", "2"] },
@@ -8873,7 +8877,10 @@ module.exports = {
   buildCountdownSlotFrameAssets,
   ensureWorldTourNamedTemplate,
   ensureWorldTourPhotoImage,
+  featuredLabelProjectId: FEATURED_LABEL_PROJECT_ID,
   featuredComposedImagePath,
+  isFeaturedLabelJobEligible,
+  projectIdForAssetRoute,
   resolveKookyWorldCountdownFrameDurationSeconds,
   cleanupLocalUploadCacheWithPolicy,
   isGeneratedCacheFile,

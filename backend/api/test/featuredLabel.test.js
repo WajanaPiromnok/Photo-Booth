@@ -10,7 +10,10 @@ const projectRoot = path.join(__dirname, "..", "..", "..");
 const {
   ensureWorldTourNamedTemplate,
   ensureWorldTourPhotoImage,
+  featuredLabelProjectId,
   featuredComposedImagePath,
+  isFeaturedLabelJobEligible,
+  projectIdForAssetRoute,
   resolveWorldTourTemplate
 } = require("../src/server");
 
@@ -33,6 +36,17 @@ test("featured composed image keeps a stable rendered URL", () => {
     featuredComposedImagePath("JOB-20260803-142909-7d280c75"),
     "/v1/assets/composed/rendered/JOB-20260803-142909-7d280c75"
   );
+});
+
+test("featured labels select normal main jobs", () => {
+  assert.equal(featuredLabelProjectId, "prj_main");
+  assert.equal(isFeaturedLabelJobEligible({ project_id: "prj_main", upload_status: "LINK_READY" }), true);
+  assert.equal(isFeaturedLabelJobEligible({ project_id: "prj_world_tour", upload_status: "LINK_READY" }), false);
+  assert.equal(isFeaturedLabelJobEligible({ project_id: "prj_main", upload_status: "PENDING" }), false);
+});
+
+test("project-specific World Tour featured routes keep their existing project mapping", () => {
+  assert.equal(projectIdForAssetRoute("world-tour"), "prj_world_tour");
 });
 
 test("World Tour templates use the anti-alias-safe white openings", () => {
