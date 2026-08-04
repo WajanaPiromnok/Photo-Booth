@@ -3208,7 +3208,7 @@ async function selectFeaturedComposedAsset() {
 
 async function selectRandomFeaturedComposedAsset() {
   const randomResult = await pool.query(
-    `SELECT composed.job_id, composed.asset_type, composed.remote_key, composed.content_type,
+    `SELECT j.job_id, composed.asset_type, composed.remote_key, composed.content_type,
             composed.original_file_name, composed.created_at,
             COALESCE(j.session_started_at_utc, j.created_at, composed.created_at) AS captured_at,
             j.project_id, j.theme_id, j.image_preview_id, j.passenger_name
