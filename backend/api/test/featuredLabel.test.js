@@ -10,6 +10,8 @@ const projectRoot = path.join(__dirname, "..", "..", "..");
 const {
   ensureWorldTourNamedTemplate,
   ensureWorldTourPhotoImage,
+  chooseFeaturedAsset,
+  featuredComposedRecencySeconds,
   featuredLabelProjectId,
   featuredComposedImagePath,
   isFeaturedLabelJobEligible,
@@ -40,9 +42,31 @@ test("featured composed image keeps a stable rendered URL", () => {
 
 test("featured labels select normal main jobs", () => {
   assert.equal(featuredLabelProjectId, "prj_main");
+  assert.equal(featuredComposedRecencySeconds, 300);
   assert.equal(isFeaturedLabelJobEligible({ project_id: "prj_main", upload_status: "LINK_READY" }), true);
   assert.equal(isFeaturedLabelJobEligible({ project_id: "prj_world_tour", upload_status: "LINK_READY" }), false);
   assert.equal(isFeaturedLabelJobEligible({ project_id: "prj_main", upload_status: "PENDING" }), false);
+});
+
+test("featured selection prefers the newest recent photo and otherwise uses the random candidate list", () => {
+  const selectionFolder = `tmp-tests/featured-selection-${process.pid}-${Date.now()}`;
+  const recentKey = `${selectionFolder}/recent.jpg`;
+  const randomKey = `${selectionFolder}/random.jpg`;
+  const selectionRoot = path.join(process.cwd(), "uploads", selectionFolder);
+  const recentPath = path.join(selectionRoot, "recent.jpg");
+  const randomPath = path.join(selectionRoot, "random.jpg");
+  fs.mkdirSync(selectionRoot, { recursive: true });
+  fs.writeFileSync(recentPath, "recent");
+  fs.writeFileSync(randomPath, "random");
+  try {
+    const recent = { job_id: "JOB-RECENT", remote_key: recentKey };
+    const random = { job_id: "JOB-RANDOM", remote_key: randomKey };
+
+    assert.equal(chooseFeaturedAsset([recent], [random]).selection_mode, "latest");
+    assert.equal(chooseFeaturedAsset([], [random]).selection_mode, "random");
+  } finally {
+    fs.rmSync(selectionRoot, { recursive: true, force: true });
+  }
 });
 
 test("project-specific World Tour featured routes keep their existing project mapping", () => {

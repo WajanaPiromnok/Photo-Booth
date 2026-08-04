@@ -42,7 +42,7 @@ const config = {
   voucherScanPath: normalizeRoutePath(process.env.VOUCHER_SCAN_PATH || "/voucher-scan"),
   kioskSessionTtlSeconds: Math.max(60, Number.parseInt(process.env.KIOSK_SESSION_TTL_SECONDS || "900", 10)),
   voucherScanSessionTtlSeconds: Math.max(60, Number.parseInt(process.env.VOUCHER_SCAN_SESSION_TTL_SECONDS || "300", 10)),
-  featuredComposedRecencySeconds: Math.max(1, Number.parseInt(process.env.FEATURED_COMPOSED_RECENCY_SECONDS || "600", 10)),
+  featuredComposedRecencySeconds: Math.max(1, Number.parseInt(process.env.FEATURED_COMPOSED_RECENCY_SECONDS || "300", 10)),
   featuredRawRecencySeconds: Math.max(1, Number.parseInt(process.env.FEATURED_RAW_RECENCY_SECONDS || process.env.FEATURED_COMPOSED_RECENCY_SECONDS || "600", 10)),
   printQuotaTotal: Math.max(1, Number.parseInt(process.env.PRINT_QUOTA_TOTAL || "700", 10)),
   storageDriver: (process.env.STORAGE_DRIVER || "auto").trim().toLowerCase(),
@@ -1984,6 +1984,7 @@ app.get("/v1/jobs/:jobId", async (req, res) => {
 });
 
 app.get("/v1/assets/composed/featured", async (req, res) => {
+  setFeaturedSelectionNoStore(res);
   try {
     const selected = await selectFeaturedComposedAsset();
     if (!selected) {
@@ -2003,6 +2004,7 @@ app.get("/v1/assets/composed/featured", async (req, res) => {
           template_id: templateId,
           layout_version: WORLD_TOUR_LABEL_RENDER_VERSION,
           url: absolutePublicUrl(req, assetUrl),
+          captured_at: selected.captured_at || selected.created_at,
           created_at: selected.created_at
         },
         error: null
@@ -3182,8 +3184,10 @@ async function selectFeaturedRawAsset() {
 async function selectFeaturedAssetByType(assetType, recencySeconds, projectId = null, options = {}) {
   const readyOnly = Boolean(options.readyOnly);
   const requireRawCapture = Boolean(options.requireRawCapture);
+  const captureTimeSql = "COALESCE(j.session_started_at_utc, j.created_at, a.created_at)";
   const recentResult = await pool.query(
-    `SELECT a.job_id, a.asset_type, a.remote_key, a.content_type, a.original_file_name, a.created_at,
+    `SELECT a.id, a.job_id, a.asset_type, a.remote_key, a.content_type, a.original_file_name, a.created_at,
+            ${captureTimeSql} AS captured_at,
             j.project_id, j.theme_id, j.image_preview_id, j.passenger_name
      FROM booth_assets a
      JOIN booth_jobs j ON j.job_id = a.job_id
@@ -3196,17 +3200,14 @@ async function selectFeaturedAssetByType(assetType, recencySeconds, projectId = 
          WHERE raw.job_id = j.job_id
            AND raw.asset_type = 'raw_capture'
        ))
-       AND a.created_at >= NOW() - ($2::int * INTERVAL '1 second')
-     ORDER BY a.created_at DESC`,
+       AND ${captureTimeSql} >= NOW() - ($2::int * INTERVAL '1 second')
+     ORDER BY ${captureTimeSql} DESC, a.created_at DESC, a.id DESC`,
     [assetType, recencySeconds, projectId, readyOnly, requireRawCapture]
   );
-  const recentAsset = findFirstExistingAsset(recentResult.rows);
-  if (recentAsset) {
-    return { ...recentAsset, selection_mode: "latest" };
-  }
 
   const randomResult = await pool.query(
-    `SELECT a.job_id, a.asset_type, a.remote_key, a.content_type, a.original_file_name, a.created_at,
+    `SELECT a.id, a.job_id, a.asset_type, a.remote_key, a.content_type, a.original_file_name, a.created_at,
+            ${captureTimeSql} AS captured_at,
             j.project_id, j.theme_id, j.image_preview_id, j.passenger_name
      FROM booth_assets a
      JOIN booth_jobs j ON j.job_id = a.job_id
@@ -3222,12 +3223,27 @@ async function selectFeaturedAssetByType(assetType, recencySeconds, projectId = 
      ORDER BY RANDOM()`,
     [assetType, projectId, readyOnly, requireRawCapture]
   );
-  const randomAsset = findFirstExistingAsset(randomResult.rows);
+  return chooseFeaturedAsset(recentResult.rows, randomResult.rows);
+}
+
+function chooseFeaturedAsset(recentAssets, randomAssets) {
+  const recentAsset = findFirstExistingAsset(recentAssets);
+  if (recentAsset) {
+    return { ...recentAsset, selection_mode: "latest" };
+  }
+
+  const randomAsset = findFirstExistingAsset(randomAssets);
   if (randomAsset) {
     return { ...randomAsset, selection_mode: "random" };
   }
 
   return null;
+}
+
+function setFeaturedSelectionNoStore(res) {
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
 }
 
 function featuredComposedImagePath(jobId) {
@@ -5641,7 +5657,7 @@ function buildOpenApiSpec(req) {
         get: {
           tags: ["Assets"],
           summary: "Get featured composed image",
-          description: "Redirects to a server-rendered label for the main project using the selected job's raw capture, frame 1 or 2, and BatteryPark passenger name. Selects the newest ready main-project job from the recent window, or a random eligible main-project job when no recent image exists. Add ?format=json for debugging metadata.",
+          description: "Redirects to a server-rendered label for the main project using the selected job's raw capture, frame 1 or 2, and BatteryPark passenger name. Selects the newest ready main-project photo captured within the last 5 minutes, or a random eligible main-project job when no photo was captured in that window. The selector response is not cached. Add ?format=json for debugging metadata.",
           parameters: [
             {
               name: "format",
@@ -5673,6 +5689,7 @@ function buildOpenApiSpec(req) {
                               template_id: { type: "string", enum: ["1", "2"] },
                               layout_version: { type: "string", example: "v2" },
                               url: { type: "string", format: "uri" },
+                              captured_at: { type: "string", format: "date-time" },
                               created_at: { type: "string", format: "date-time" }
                             }
                           }
@@ -8877,6 +8894,8 @@ module.exports = {
   buildCountdownSlotFrameAssets,
   ensureWorldTourNamedTemplate,
   ensureWorldTourPhotoImage,
+  chooseFeaturedAsset,
+  featuredComposedRecencySeconds: config.featuredComposedRecencySeconds,
   featuredLabelProjectId: FEATURED_LABEL_PROJECT_ID,
   featuredComposedImagePath,
   isFeaturedLabelJobEligible,
