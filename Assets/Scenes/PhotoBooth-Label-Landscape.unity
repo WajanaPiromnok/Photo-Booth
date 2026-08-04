@@ -13646,7 +13646,7 @@ RectTransform:
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0, y: 0.5}
   m_AnchorMax: {x: 0, y: 0.5}
-  m_AnchoredPosition: {x: 50.00014, y: -330.99994}
+  m_AnchoredPosition: {x: 50.000244, y: -330.99994}
   m_SizeDelta: {x: 393, y: 392}
   m_Pivot: {x: 0.5, y: 0.5}
 --- !u!114 &681150766
@@ -35734,7 +35734,7 @@ MonoBehaviour:
   backendDeviceToken: 05e57607415ec8e17884563afbbff6b78af6684a2dfa17a945cc3fc627c4f34f
   backendBoothApiBaseUrl: https://api.wajanapir.com
   backendPublishApiBaseUrl: https://api.wajanapir.com
-  backendDownloadBaseUrl: https://api.wajanapir.com/world-tour
+  backendDownloadBaseUrl: https://api.wajanapir.com/d
   backendAssetUploadPathTemplate: /v1/jobs/{jobId}/assets/upload
   backendRawCaptureUploadPathTemplate: /v1/jobs/{jobId}/assets/raw-capture
   backendAssetRegistrationPathTemplate: /v1/jobs/{jobId}/assets

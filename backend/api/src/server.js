@@ -71,6 +71,8 @@ const pool = new Pool({
 });
 
 const generatedMediaPromises = new Map();
+const FEATURED_LABEL_PROJECT_ID = "prj_world_tour";
+const WORLD_TOUR_LABEL_RENDER_VERSION = "v2";
 
 fs.mkdirSync(config.uploadsRoot, { recursive: true });
 
@@ -1934,13 +1936,18 @@ app.get("/v1/assets/composed/featured", async (req, res) => {
       return res.status(404).json(errorEnvelope("NO_COMPOSED_ASSETS", "No composed assets were found."));
     }
 
-    const assetUrl = `/files/${encodeURIPath(selected.remote_key)}`;
+    const assetUrl = featuredComposedImagePath(selected.job_id);
+    const templateId = resolveLabelTemplateId(selected.image_preview_id || selected.theme_id);
     if (String(req.query?.format || "").toLowerCase() === "json") {
       return res.json({
         success: true,
         data: {
+          job_id: selected.job_id,
+          project_id: selected.project_id,
           asset_type: selected.asset_type,
           selection_mode: selected.selection_mode,
+          template_id: templateId,
+          layout_version: WORLD_TOUR_LABEL_RENDER_VERSION,
           url: absolutePublicUrl(req, assetUrl),
           created_at: selected.created_at
         },
@@ -1952,6 +1959,37 @@ app.get("/v1/assets/composed/featured", async (req, res) => {
   } catch (error) {
     console.error("featured_composed_asset_failed", { error });
     return res.status(error.statusCode || 500).json(errorEnvelope(error.code || "FEATURED_COMPOSED_ASSET_FAILED", error.message));
+  }
+});
+
+app.get("/v1/assets/composed/rendered/:jobId", async (req, res) => {
+  const jobId = normalizeJobId(req.params.jobId);
+  if (!jobId) {
+    return res.status(400).json(errorEnvelope("INVALID_JOB_ID", "Job id is required."));
+  }
+
+  try {
+    const { job, assets } = await loadDownloadJobAssets(jobId);
+    if (job.project_id !== FEATURED_LABEL_PROJECT_ID || job.upload_status !== "LINK_READY") {
+      return res.status(404).json(errorEnvelope("FEATURED_LABEL_NOT_FOUND", "A ready World Tour label was not found."));
+    }
+
+    const rawCapture = sortRawCaptureAssets(
+      assets.filter((asset) => asset.asset_type === "raw_capture")
+    )[0];
+    if (!rawCapture?.remote_key) {
+      return res.status(404).json(errorEnvelope("RAW_CAPTURE_NOT_FOUND", "A raw capture was not found for this label."));
+    }
+
+    const outputPath = await ensureWorldTourPhotoImage(job, absoluteUploadPath(rawCapture.remote_key));
+    const safeFileName = `${sanitizeFilename(jobId)}-featured-label.jpg`;
+    res.setHeader("Content-Type", "image/jpeg");
+    res.setHeader("Content-Disposition", `inline; filename="${safeFileName}"`);
+    res.setHeader("Cache-Control", "public, max-age=300");
+    return res.sendFile(outputPath);
+  } catch (error) {
+    console.error("featured_composed_render_failed", { jobId, error });
+    return res.status(error.statusCode || 500).json(errorEnvelope(error.code || "FEATURED_COMPOSED_RENDER_FAILED", error.message));
   }
 });
 
@@ -3020,23 +3058,38 @@ function absoluteUploadPath(remoteKey) {
 }
 
 async function selectFeaturedComposedAsset() {
-  return selectFeaturedAssetByType("composed", config.featuredComposedRecencySeconds);
+  return selectFeaturedAssetByType(
+    "composed",
+    config.featuredComposedRecencySeconds,
+    FEATURED_LABEL_PROJECT_ID,
+    { readyOnly: true, requireRawCapture: true }
+  );
 }
 
 async function selectFeaturedRawAsset() {
   return selectFeaturedAssetByType("raw_capture", config.featuredRawRecencySeconds);
 }
 
-async function selectFeaturedAssetByType(assetType, recencySeconds, projectId = null) {
+async function selectFeaturedAssetByType(assetType, recencySeconds, projectId = null, options = {}) {
+  const readyOnly = Boolean(options.readyOnly);
+  const requireRawCapture = Boolean(options.requireRawCapture);
   const recentResult = await pool.query(
-    `SELECT a.asset_type, a.remote_key, a.content_type, a.original_file_name, a.created_at
+    `SELECT a.job_id, a.asset_type, a.remote_key, a.content_type, a.original_file_name, a.created_at,
+            j.project_id, j.theme_id, j.image_preview_id, j.passenger_name
      FROM booth_assets a
      JOIN booth_jobs j ON j.job_id = a.job_id
      WHERE a.asset_type = $1
        AND ($3::text IS NULL OR j.project_id = $3)
+       AND ($4::boolean = FALSE OR j.upload_status = 'LINK_READY')
+       AND ($5::boolean = FALSE OR EXISTS (
+         SELECT 1
+         FROM booth_assets raw
+         WHERE raw.job_id = j.job_id
+           AND raw.asset_type = 'raw_capture'
+       ))
        AND a.created_at >= NOW() - ($2::int * INTERVAL '1 second')
      ORDER BY a.created_at DESC`,
-    [assetType, recencySeconds, projectId]
+    [assetType, recencySeconds, projectId, readyOnly, requireRawCapture]
   );
   const recentAsset = findFirstExistingAsset(recentResult.rows);
   if (recentAsset) {
@@ -3044,13 +3097,21 @@ async function selectFeaturedAssetByType(assetType, recencySeconds, projectId = 
   }
 
   const randomResult = await pool.query(
-    `SELECT a.asset_type, a.remote_key, a.content_type, a.original_file_name, a.created_at
+    `SELECT a.job_id, a.asset_type, a.remote_key, a.content_type, a.original_file_name, a.created_at,
+            j.project_id, j.theme_id, j.image_preview_id, j.passenger_name
      FROM booth_assets a
      JOIN booth_jobs j ON j.job_id = a.job_id
      WHERE a.asset_type = $1
        AND ($2::text IS NULL OR j.project_id = $2)
+       AND ($3::boolean = FALSE OR j.upload_status = 'LINK_READY')
+       AND ($4::boolean = FALSE OR EXISTS (
+         SELECT 1
+         FROM booth_assets raw
+         WHERE raw.job_id = j.job_id
+           AND raw.asset_type = 'raw_capture'
+       ))
      ORDER BY RANDOM()`,
-    [assetType, projectId]
+    [assetType, projectId, readyOnly, requireRawCapture]
   );
   const randomAsset = findFirstExistingAsset(randomResult.rows);
   if (randomAsset) {
@@ -3058,6 +3119,15 @@ async function selectFeaturedAssetByType(assetType, recencySeconds, projectId = 
   }
 
   return null;
+}
+
+function featuredComposedImagePath(jobId) {
+  const normalized = normalizeJobId(jobId);
+  if (!normalized) {
+    throw httpError(500, "FEATURED_JOB_ID_MISSING", "The featured asset has no job id.");
+  }
+
+  return `/v1/assets/composed/rendered/${encodeURIComponent(normalized)}`;
 }
 
 function projectIdForAssetRoute(route) {
@@ -3158,20 +3228,36 @@ async function ensureLegacyFramedPhotoImage(job, rawCaptures) {
 async function ensureWorldTourPhotoImage(job, photoPath) {
   const labelTemplateId = resolveLabelTemplateId(job.image_preview_id || job.theme_id);
   const nameKey = passengerNameCacheKey(job.passenger_name);
-  const outputPath = path.join(generatedDirectory(job), `photo_world-tour_frame-${labelTemplateId}_name-${nameKey}_3072_q86.jpg`);
-  if (fs.existsSync(outputPath)) {
+  const sourceKey = localMediaCacheKey(photoPath);
+  const outputPath = path.join(
+    generatedDirectory(job),
+    `photo_world-tour_${WORLD_TOUR_LABEL_RENDER_VERSION}_frame-${labelTemplateId}_name-${nameKey}_source-${sourceKey}_q86.jpg`
+  );
+  if (isNonEmptyFile(outputPath)) {
     return outputPath;
   }
 
-  const template = resolveWorldTourTemplate(labelTemplateId);
-  const templatePath = await ensureWorldTourNamedTemplate(job, labelTemplateId, template.path, template.fromName);
-  const sourcePath = path.join(generatedDirectory(job), `photo_world-tour_frame-${labelTemplateId}_name-${nameKey}_source.png`);
-  if (!fs.existsSync(sourcePath)) {
-    await renderSingleSlotFramedPng(photoPath, sourcePath, templatePath, template.slot);
-  }
+  return generateMediaOnce(outputPath, async () => {
+    const template = resolveWorldTourTemplate(labelTemplateId);
+    const templatePath = await ensureWorldTourNamedTemplate(job, labelTemplateId, template.path, template.fromName);
+    const sourcePath = path.join(
+      generatedDirectory(job),
+      `photo_world-tour_${WORLD_TOUR_LABEL_RENDER_VERSION}_frame-${labelTemplateId}_name-${nameKey}_source-${sourceKey}.png`
+    );
+    if (!isNonEmptyFile(sourcePath)) {
+      await renderSingleSlotFramedPng(photoPath, sourcePath, templatePath, template.slot);
+    }
 
-  await compressStillImage(sourcePath, outputPath, "format=yuvj420p");
-  return outputPath;
+    await compressStillImage(sourcePath, outputPath, "format=yuvj420p");
+  });
+}
+
+function localMediaCacheKey(filePath) {
+  const stats = fs.statSync(filePath);
+  return crypto.createHash("sha1")
+    .update(`${path.resolve(filePath)}:${stats.size}:${Math.trunc(stats.mtimeMs)}`)
+    .digest("hex")
+    .slice(0, 10);
 }
 
 async function ensureKookyWorldNamedTemplate(job, labelTemplateId, templatePath) {
@@ -3552,7 +3638,7 @@ async function renderKookyWorldFramedVideo(job, frameSets, frameDurationSeconds,
 async function ensureWorldTourCountdownVideo(job, motionFrames) {
   const labelTemplateId = resolveLabelTemplateId(job.image_preview_id || job.theme_id);
   const nameKey = passengerNameCacheKey(job.passenger_name);
-  const outputPath = path.join(generatedDirectory(job), `framed-countdown_world-tour_frame-${labelTemplateId}_name-${nameKey}_v3.mp4`);
+  const outputPath = path.join(generatedDirectory(job), `framed-countdown_world-tour_frame-${labelTemplateId}_name-${nameKey}_v4.mp4`);
   if (fs.existsSync(outputPath)) {
     return outputPath;
   }
@@ -3578,7 +3664,7 @@ async function ensureWorldTourCountdownVideo(job, motionFrames) {
 async function ensureWorldTourMotionVideo(job, videoPath) {
   const labelTemplateId = resolveLabelTemplateId(job.image_preview_id || job.theme_id);
   const nameKey = passengerNameCacheKey(job.passenger_name);
-  const outputPath = path.join(generatedDirectory(job), `motion-video_world-tour_frame-${labelTemplateId}_name-${nameKey}_v3.mp4`);
+  const outputPath = path.join(generatedDirectory(job), `motion-video_world-tour_frame-${labelTemplateId}_name-${nameKey}_v4.mp4`);
   if (fs.existsSync(outputPath)) {
     return outputPath;
   }
@@ -5093,7 +5179,7 @@ function buildOpenApiSpec(req) {
         get: {
           tags: ["Assets"],
           summary: "Get featured composed image",
-          description: "Redirects to the newest composed asset from the recent window, or a random composed asset when no recent image exists. Add ?format=json for debugging metadata.",
+          description: "Redirects to a server-rendered World Tour label using the selected job's raw capture, frame 1 or 2, and BatteryPark passenger name. Selects the newest ready job from the recent window, or a random eligible job when no recent image exists. Add ?format=json for debugging metadata.",
           parameters: [
             {
               name: "format",
@@ -5104,7 +5190,7 @@ function buildOpenApiSpec(req) {
             }
           ],
           responses: {
-            302: { description: "Redirects to the selected image under /files/." },
+            302: { description: "Redirects to the rendered World Tour label image." },
             200: {
               description: "Selected image metadata when format=json.",
               content: {
@@ -5118,8 +5204,12 @@ function buildOpenApiSpec(req) {
                           data: {
                             type: "object",
                             properties: {
+                              job_id: { type: "string" },
+                              project_id: { type: "string", example: "prj_world_tour" },
                               asset_type: { type: "string", example: "composed" },
                               selection_mode: { type: "string", enum: ["latest", "random"] },
+                              template_id: { type: "string", enum: ["1", "2"] },
+                              layout_version: { type: "string", example: "v2" },
                               url: { type: "string", format: "uri" },
                               created_at: { type: "string", format: "date-time" }
                             }
@@ -6789,27 +6879,23 @@ function resolveWorldTourTemplate(labelTemplateId) {
     "1": { width: 2136, height: 3132 },
     "2": { width: 2138, height: 3134 }
   };
-  const percentSlotById = {
-    "1": { x: 0.029, y: 0.565, width: 0.943, height: 0.36 },
-    "2": { x: 0.051, y: 0.2, width: 0.898, height: 0.345 }
+  const slotById = {
+    // Pixel-scanned, anti-alias-safe white openings. Keep the inset so the
+    // source-over photo never erases the black border or frame 2 PASS stamp.
+    "1": { x: 72, y: 1766, width: 1993, height: 1137 },
+    "2": { x: 114, y: 621, width: 1925, height: 1086 }
   };
   const fromNameById = {
     "1": { x: 167, y: 528, fontSize: 104, color: "0x17477f" },
     "2": { x: 220, y: 1920, fontSize: 104, color: "0x17477f" }
   };
   const dimensions = dimensionsById[id];
-  const percentSlot = percentSlotById[id];
 
   return {
     path: pathById[id],
     width: dimensions.width,
     height: dimensions.height,
-    slot: {
-      x: Math.round(dimensions.width * percentSlot.x),
-      y: Math.round(dimensions.height * percentSlot.y),
-      width: Math.round(dimensions.width * percentSlot.width),
-      height: Math.round(dimensions.height * percentSlot.height)
-    },
+    slot: slotById[id],
     fromName: fromNameById[id]
   };
 }
@@ -8318,6 +8404,9 @@ module.exports = {
   buildPreparedDownloadResponse,
   buildRotatingFrameSets,
   buildCountdownSlotFrameAssets,
+  ensureWorldTourNamedTemplate,
+  ensureWorldTourPhotoImage,
+  featuredComposedImagePath,
   resolveKookyWorldCountdownFrameDurationSeconds,
   generateMediaOnce,
   kookyWorldStickerFileNames,
@@ -8330,6 +8419,7 @@ module.exports = {
   renderKookyWorldDownloadPage,
   renderLegacyDownloadPage,
   resolveLabelTemplateId,
+  resolveWorldTourTemplate,
   sortRawCaptureAssets,
   uploadAssetBaseKey
 };
