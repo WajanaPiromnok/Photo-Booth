@@ -11,6 +11,7 @@ const {
   ensureWorldTourNamedTemplate,
   ensureWorldTourPhotoImage,
   chooseFeaturedAsset,
+  chooseFeaturedComposedAsset,
   featuredComposedRecencySeconds,
   featuredLabelProjectId,
   featuredComposedImagePath,
@@ -42,10 +43,43 @@ test("featured composed image keeps a stable rendered URL", () => {
 
 test("featured labels select normal main jobs", () => {
   assert.equal(featuredLabelProjectId, "prj_main");
-  assert.equal(featuredComposedRecencySeconds, 300);
+  assert.equal(featuredComposedRecencySeconds, 90);
   assert.equal(isFeaturedLabelJobEligible({ project_id: "prj_main", upload_status: "LINK_READY" }), true);
   assert.equal(isFeaturedLabelJobEligible({ project_id: "prj_world_tour", upload_status: "LINK_READY" }), false);
   assert.equal(isFeaturedLabelJobEligible({ project_id: "prj_main", upload_status: "PENDING" }), false);
+});
+
+test("featured composed selection checks the newest job strictly before falling back to random", () => {
+  const selectionFolder = `tmp-tests/featured-strict-selection-${process.pid}-${Date.now()}`;
+  const selectionRoot = path.join(process.cwd(), "uploads", selectionFolder);
+  const latestComposedKey = `${selectionFolder}/latest-composed.jpg`;
+  const latestRawKey = `${selectionFolder}/latest-raw.jpg`;
+  const randomKey = `${selectionFolder}/random-composed.jpg`;
+  fs.mkdirSync(selectionRoot, { recursive: true });
+  fs.writeFileSync(path.join(selectionRoot, "latest-composed.jpg"), "latest");
+  fs.writeFileSync(path.join(selectionRoot, "latest-raw.jpg"), "raw");
+  fs.writeFileSync(path.join(selectionRoot, "random-composed.jpg"), "random");
+
+  try {
+    const latestReady = {
+      job_id: "JOB-LATEST",
+      project_id: "prj_main",
+      upload_status: "LINK_READY",
+      asset_type: "composed",
+      remote_key: latestComposedKey,
+      raw_remote_key: latestRawKey
+    };
+    const latestPending = { ...latestReady, upload_status: "UPLOADED" };
+    const randomAsset = { job_id: "JOB-RANDOM", remote_key: randomKey, asset_type: "composed" };
+
+    assert.equal(chooseFeaturedComposedAsset(latestReady, randomAsset).job_id, "JOB-LATEST");
+    assert.equal(chooseFeaturedComposedAsset(latestReady, randomAsset).selection_mode, "latest");
+    assert.equal(chooseFeaturedComposedAsset(latestPending, randomAsset).job_id, "JOB-RANDOM");
+    assert.equal(chooseFeaturedComposedAsset(latestPending, randomAsset).selection_mode, "random");
+    assert.equal(chooseFeaturedComposedAsset(latestPending, null), null);
+  } finally {
+    fs.rmSync(selectionRoot, { recursive: true, force: true });
+  }
 });
 
 test("featured selection prefers the newest recent photo and otherwise uses the random candidate list", () => {
