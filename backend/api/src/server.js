@@ -3186,7 +3186,7 @@ async function selectFeaturedAssetByType(assetType, recencySeconds, projectId = 
   const requireRawCapture = Boolean(options.requireRawCapture);
   const captureTimeSql = "COALESCE(j.session_started_at_utc, j.created_at, a.created_at)";
   const recentResult = await pool.query(
-    `SELECT a.id, a.job_id, a.asset_type, a.remote_key, a.content_type, a.original_file_name, a.created_at,
+    `SELECT a.job_id, a.asset_type, a.remote_key, a.content_type, a.original_file_name, a.created_at,
             ${captureTimeSql} AS captured_at,
             j.project_id, j.theme_id, j.image_preview_id, j.passenger_name
      FROM booth_assets a
@@ -3201,12 +3201,12 @@ async function selectFeaturedAssetByType(assetType, recencySeconds, projectId = 
            AND raw.asset_type = 'raw_capture'
        ))
        AND ${captureTimeSql} >= NOW() - ($2::int * INTERVAL '1 second')
-     ORDER BY ${captureTimeSql} DESC, a.created_at DESC, a.id DESC`,
+     ORDER BY ${captureTimeSql} DESC, a.created_at DESC`,
     [assetType, recencySeconds, projectId, readyOnly, requireRawCapture]
   );
 
   const randomResult = await pool.query(
-    `SELECT a.id, a.job_id, a.asset_type, a.remote_key, a.content_type, a.original_file_name, a.created_at,
+    `SELECT a.job_id, a.asset_type, a.remote_key, a.content_type, a.original_file_name, a.created_at,
             ${captureTimeSql} AS captured_at,
             j.project_id, j.theme_id, j.image_preview_id, j.passenger_name
      FROM booth_assets a
