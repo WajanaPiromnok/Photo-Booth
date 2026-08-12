@@ -3638,7 +3638,7 @@ async function renderKookyWorldFramedVideo(job, frameSets, frameDurationSeconds,
 async function ensureWorldTourCountdownVideo(job, motionFrames) {
   const labelTemplateId = resolveLabelTemplateId(job.image_preview_id || job.theme_id);
   const nameKey = passengerNameCacheKey(job.passenger_name);
-  const outputPath = path.join(generatedDirectory(job), `framed-countdown_world-tour_frame-${labelTemplateId}_name-${nameKey}_v4.mp4`);
+  const outputPath = path.join(generatedDirectory(job), `framed-countdown_world-tour_frame-${labelTemplateId}_name-${nameKey}_v5.mp4`);
   if (fs.existsSync(outputPath)) {
     return outputPath;
   }
@@ -3654,7 +3654,7 @@ async function ensureWorldTourCountdownVideo(job, motionFrames) {
     sortedFrames,
     0.25,
     outputPath,
-    path.join(generatedDirectory(job), `countdown_world-tour_frame-${labelTemplateId}_name-${nameKey}_frames`),
+    path.join(generatedDirectory(job), `countdown_world-tour_frame-${labelTemplateId}_name-${nameKey}_v5_frames`),
     templatePath,
     template.slot
   );
@@ -3664,7 +3664,7 @@ async function ensureWorldTourCountdownVideo(job, motionFrames) {
 async function ensureWorldTourMotionVideo(job, videoPath) {
   const labelTemplateId = resolveLabelTemplateId(job.image_preview_id || job.theme_id);
   const nameKey = passengerNameCacheKey(job.passenger_name);
-  const outputPath = path.join(generatedDirectory(job), `motion-video_world-tour_frame-${labelTemplateId}_name-${nameKey}_v4.mp4`);
+  const outputPath = path.join(generatedDirectory(job), `motion-video_world-tour_frame-${labelTemplateId}_name-${nameKey}_v5.mp4`);
   if (fs.existsSync(outputPath)) {
     return outputPath;
   }
@@ -6671,7 +6671,9 @@ function downloadRoutePrefixFromRequest(req) {
 }
 
 function usesWorldTourPresentation(routePrefix) {
-  return routePrefix !== "d";
+  // The public short /d/:jobId URL now uses the World Tour experience too.
+  // Keep Kooky World on its dedicated renderer and generator.
+  return routePrefix !== "kooky-world";
 }
 
 function requiredRawCaptureCount(projectId) {
@@ -7972,11 +7974,11 @@ function renderWorldTourDownloadPage({ job, composed, thumbnail, liveImage, moti
   const labelTemplateUrl = `/assets/label/frame-${labelTemplateId}.png`;
   const imageDownloadUrl = `/${prefix}/${encodeURIComponent(jobId)}/image-download`;
   const framedCountdownVideoDownloadUrl = `/${prefix}/${encodeURIComponent(jobId)}/countdown-download.mp4`;
-  const motionVideoUrl = motionVideo ? `/${prefix}/${encodeURIComponent(jobId)}/clip.mp4?v=frame-${labelTemplateId}-name-${passengerNameVersion}-v3` : "";
-  const motionVideoDownloadUrl = motionVideo ? `/${prefix}/${encodeURIComponent(jobId)}/clip-download.mp4?v=frame-${labelTemplateId}-name-${passengerNameVersion}-v3` : "";
+  const motionVideoUrl = motionVideo ? `/${prefix}/${encodeURIComponent(jobId)}/clip.mp4?v=frame-${labelTemplateId}-name-${passengerNameVersion}-v5` : "";
+  const motionVideoDownloadUrl = motionVideo ? `/${prefix}/${encodeURIComponent(jobId)}/clip-download.mp4?v=frame-${labelTemplateId}-name-${passengerNameVersion}-v5` : "";
   const rawCaptureUrls = rawCaptures.map(assetUrl).filter(Boolean);
   const hasCountdownPreview = motionFrames.length > 0;
-  const framedCountdownVideoUrl = hasCountdownPreview ? `/${prefix}/${encodeURIComponent(jobId)}/framed-countdown.mp4?v=frame-${labelTemplateId}-name-${passengerNameVersion}-v3` : "";
+  const framedCountdownVideoUrl = hasCountdownPreview ? `/${prefix}/${encodeURIComponent(jobId)}/framed-countdown.mp4?v=frame-${labelTemplateId}-name-${passengerNameVersion}-v5` : "";
   const rawMotionVideoUrl = assetUrl(motionVideo);
   const passengerNameMarkup = passengerName
     ? `<div class="label-passenger-name">${escapeHtml(passengerName)}</div>`
